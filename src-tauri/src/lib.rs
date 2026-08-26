@@ -1,14 +1,14 @@
 mod commands;
-mod db;
-mod error;
+pub mod db;
+pub mod error;
 mod forward;
-mod models;
+pub mod models;
 mod monitor;
 mod recorder;
 mod sftp;
-mod ssh;
+pub mod ssh;
 mod sync;
-mod vault;
+pub mod vault;
 
 use std::sync::Arc;
 
@@ -31,15 +31,23 @@ pub fn run() {
             let forwards = Arc::new(forward::ForwardManager::default());
             let monitor_state = Arc::new(monitor::MonitorState::default());
 
-            monitor::spawn_monitor_loop(app.handle().clone(), sessions.clone(), monitor_state.clone());
-            ssh::spawn_latency_loop(app.handle().clone(), db.clone());
-            forward::spawn_restore_enabled(
-                app.handle().clone(),
-                db.clone(),
-                vault.clone(),
-                sessions.clone(),
-                forwards.clone(),
-            );
+            // setup 运行在主线程(无 tokio 上下文),内部的 tokio::spawn 须进入
+            // tauri 的 tokio runtime 后再调用
+            {
+                let app_handle = app.handle().clone();
+                let (db, vault, sessions, forwards, monitor_state) = (
+                    db.clone(),
+                    vault.clone(),
+                    sessions.clone(),
+                    forwards.clone(),
+                    monitor_state.clone(),
+                );
+                tauri::async_runtime::spawn(async move {
+                    monitor::spawn_monitor_loop(app_handle.clone(), sessions.clone(), monitor_state);
+                    ssh::spawn_latency_loop(app_handle.clone(), db.clone());
+                    forward::spawn_restore_enabled(app_handle, db, vault, sessions, forwards);
+                });
+            }
 
             app.manage(AppState {
                 db,
