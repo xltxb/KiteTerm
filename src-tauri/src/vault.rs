@@ -18,8 +18,36 @@ pub struct Vault {
 }
 
 impl Vault {
+    /// 设备密钥优先存系统 Keychain(macOS 钥匙串 / Windows 凭据管理器 / Secret Service);
+    /// 旧版 device.key 文件自动迁移后删除;Keychain 不可用时回退文件存储。
     pub fn open(data_dir: &Path) -> Result<Self> {
         let path = data_dir.join(DEVICE_KEY_FILE);
+        if let Ok(entry) = keyring::Entry::new("com.vela.term", "device-key") {
+            // 1) Keychain 已有
+            if let Ok(hex) = entry.get_password() {
+                if let Some(key) = decode_key_hex(&hex) {
+                    return Ok(Self { cipher: XChaCha20Poly1305::new((&key).into()) });
+                }
+            }
+            // 2) 旧文件迁移进 Keychain
+            if path.exists() {
+                let raw = std::fs::read(&path)?;
+                let key: [u8; 32] =
+                    raw.try_into().map_err(|_| AppError("device.key 已损坏".into()))?;
+                if entry.set_password(&encode_key_hex(&key)).is_ok() {
+                    let _ = std::fs::remove_file(&path);
+                    return Ok(Self { cipher: XChaCha20Poly1305::new((&key).into()) });
+                }
+                return Ok(Self { cipher: XChaCha20Poly1305::new((&key).into()) });
+            }
+            // 3) 全新生成并写入 Keychain
+            let key = XChaCha20Poly1305::generate_key(&mut AeadOsRng);
+            let key_bytes: [u8; 32] = key.into();
+            if entry.set_password(&encode_key_hex(&key_bytes)).is_ok() {
+                return Ok(Self { cipher: XChaCha20Poly1305::new((&key_bytes).into()) });
+            }
+        }
+        // Keychain 不可用:回退 0600 文件
         let key_bytes: [u8; 32] = if path.exists() {
             let raw = std::fs::read(&path)?;
             raw.try_into().map_err(|_| AppError("device.key 已损坏".into()))?
@@ -56,6 +84,21 @@ impl Vault {
             .decrypt(XNonce::from_slice(nonce), ct)
             .map_err(|e| AppError(format!("解密失败(设备密钥不匹配?): {e}")))
     }
+}
+
+fn encode_key_hex(key: &[u8; 32]) -> String {
+    key.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn decode_key_hex(hex: &str) -> Option<[u8; 32]> {
+    if hex.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for i in 0..32 {
+        out[i] = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).ok()?;
+    }
+    Some(out)
 }
 
 pub struct GeneratedKey {

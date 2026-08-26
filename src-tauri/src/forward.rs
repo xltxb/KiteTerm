@@ -64,7 +64,7 @@ pub fn spawn_restore_enabled(
 ) {
     tokio::spawn(async move {
         let rules = db.list_forwards().unwrap_or_default();
-        for rule in rules.into_iter().filter(|r| r.enabled && r.kind != "R") {
+        for rule in rules.into_iter().filter(|r| r.enabled) {
             if let Err(e) = start_forward(
                 app.clone(),
                 db.clone(),
@@ -85,6 +85,31 @@ pub fn spawn_restore_enabled(
     });
 }
 
+/// 定期把流量计数落库并推送前端;规则停用后任务自行退出
+fn spawn_traffic_flush(
+    app: AppHandle,
+    db: Arc<Db>,
+    rule_id: String,
+    up: Arc<AtomicU64>,
+    down: Arc<AtomicU64>,
+) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            let (u, d) = (up.swap(0, Ordering::Relaxed), down.swap(0, Ordering::Relaxed));
+            if db.add_forward_traffic(&rule_id, u, d).is_err() {
+                break;
+            }
+            match db.list_forwards() {
+                Ok(list) if list.iter().any(|f| f.id == rule_id && f.enabled) => {
+                    let _ = app.emit("forward://stats", list);
+                }
+                _ => break,
+            }
+        }
+    });
+}
+
 pub async fn start_forward(
     app: AppHandle,
     db: Arc<Db>,
@@ -94,7 +119,7 @@ pub async fn start_forward(
     rule: ForwardRule,
 ) -> Result<()> {
     if rule.kind == "R" {
-        return Err(AppError("远程转发(R)将在后续版本支持".into()));
+        return start_remote_forward(app, db, vault, forwards, rule).await;
     }
     let handle = handle_for_host(&db, &vault, &sessions, &rule.via_host_id).await?;
     let listener = TcpListener::bind(("127.0.0.1", rule.local_port))
@@ -132,27 +157,51 @@ pub async fn start_forward(
         .lock()
         .unwrap()
         .insert(rule.id.clone(), ActiveForward { task, up: up.clone(), down: down.clone() });
+    spawn_traffic_flush(app, db, rule.id.clone(), up, down);
+    Ok(())
+}
 
-    // 定期把流量计数落库并推送前端
-    let rule_id = rule.id.clone();
-    tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-            let (u, d) = (up.swap(0, Ordering::Relaxed), down.swap(0, Ordering::Relaxed));
-            if db.add_forward_traffic(&rule_id, u, d).is_err() {
-                break;
-            }
-            if let Ok(list) = db.list_forwards() {
-                let _ = app.emit("forward://stats", list);
-            }
-            // 规则被停用后计数任务退出
-            match db.list_forwards() {
-                Ok(list) if list.iter().any(|f| f.id == rule_id && f.enabled) => {}
-                _ => break,
-            }
-        }
+/// R 型远程转发:让服务器监听 rule.local_port,进站连接经 SSH 回送到本地 rule.target。
+/// 使用专用 SSH 连接以持有 R 登记表;连接由 keeper 任务保活,停用时随任务中止而断开。
+async fn start_remote_forward(
+    app: AppHandle,
+    db: Arc<Db>,
+    vault: Arc<Vault>,
+    forwards: Arc<ForwardManager>,
+    rule: ForwardRule,
+) -> Result<()> {
+    let (handle, _, _, r_targets) =
+        ssh::connect_host_full(db.clone(), &vault, &rule.via_host_id, None).await?;
+    let (host, port) = split_target(&rule.target)?;
+
+    let up = Arc::new(AtomicU64::new(0));
+    let down = Arc::new(AtomicU64::new(0));
+    r_targets.lock().unwrap().insert(
+        rule.local_port as u32,
+        crate::ssh::RTarget {
+            host: host.to_string(),
+            port,
+            up: up.clone(),
+            down: down.clone(),
+        },
+    );
+
+    handle
+        .tcpip_forward("127.0.0.1", rule.local_port as u32)
+        .await
+        .map_err(|e| AppError(format!("远端监听 127.0.0.1:{} 被拒绝: {e}", rule.local_port)))?;
+
+    // keeper:持有专用连接;task.abort() 即丢弃 handle → 连接关闭,远端监听随之失效
+    let task = tokio::spawn(async move {
+        let _keep = handle;
+        std::future::pending::<()>().await;
     });
-
+    forwards
+        .active
+        .lock()
+        .unwrap()
+        .insert(rule.id.clone(), ActiveForward { task, up: up.clone(), down: down.clone() });
+    spawn_traffic_flush(app, db, rule.id.clone(), up, down);
     Ok(())
 }
 

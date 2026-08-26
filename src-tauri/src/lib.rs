@@ -1,3 +1,4 @@
+mod ai;
 mod commands;
 pub mod db;
 pub mod error;
@@ -12,7 +13,7 @@ pub mod vault;
 
 use std::sync::Arc;
 
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 use commands::AppState;
 
@@ -100,7 +101,35 @@ pub fn run() {
             commands::sync_now,
             commands::settings_get,
             commands::settings_save,
+            commands::ai_get_config,
+            commands::ai_save_config,
+            commands::ai_ask,
+            commands::restore_targets,
+            commands::app_quit,
         ])
+        .on_window_event(|window, event| {
+            // 退出前确认:有活跃会话且设置开启时拦截关闭,交由前端确认后调 app_quit
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let state = window.state::<AppState>();
+                let confirm = state
+                    .db
+                    .kv_get("settings")
+                    .ok()
+                    .flatten()
+                    .and_then(|j| serde_json::from_str::<models::AppSettings>(&j).ok())
+                    .map(|s| s.confirm_on_quit)
+                    .unwrap_or(false);
+                let active = state
+                    .sessions
+                    .list()
+                    .iter()
+                    .any(|s| s.state == "connected");
+                if confirm && active {
+                    api.prevent_close();
+                    let _ = window.emit("app://close-requested", state.sessions.list().len());
+                }
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

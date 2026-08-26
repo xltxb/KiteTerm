@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Cpu, Database, Globe, KeyRound, Lock, Server, Trash2 } from "lucide-react";
+import { Cpu, Database, Globe, KeyRound, Lock, Pencil, Server, Trash2 } from "lucide-react";
 import { Badge, Button, ScreenHeader, TextInput } from "@/components/ui";
 import { ipc } from "@/ipc";
 import { useDataStore } from "@/stores/data";
@@ -22,16 +22,20 @@ function latColor(ms: number | null) {
   return "var(--danger)";
 }
 
-function NewHostModal({ onClose }: { onClose: () => void }) {
+function HostModal({ edit, onClose }: { edit?: Host; onClose: () => void }) {
   const { groups, keys, saveHost } = useDataStore();
-  const [form, setForm] = useState({ name: "", addr: "", port: "22", user: "root", groupId: groups[0]?.id ?? "", keyId: keys[0]?.id ?? "", tags: "" });
+  const [form, setForm] = useState(
+    edit
+      ? { name: edit.name, addr: edit.addr, port: String(edit.port), user: edit.user, groupId: edit.groupId, keyId: edit.keyId ?? "", tags: edit.tags.join(", ") }
+      : { name: "", addr: "", port: "22", user: "root", groupId: groups[0]?.id ?? "", keyId: keys[0]?.id ?? "", tags: "" },
+  );
   const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
   const valid = form.name.trim() && form.addr.trim();
 
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h3 style={{ fontSize: 17, marginBottom: 16 }}>新建主机</h3>
+        <h3 style={{ fontSize: 17, marginBottom: 16 }}>{edit ? "编辑主机" : "新建主机"}</h3>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
           <TextInput label="名称" placeholder="prod-web-03" value={form.name} onChange={(e) => set("name", e.target.value)} />
           <TextInput label="用户" placeholder="root" value={form.user} onChange={(e) => set("user", e.target.value)} />
@@ -61,6 +65,7 @@ function NewHostModal({ onClose }: { onClose: () => void }) {
             disabled={!valid}
             onClick={async () => {
               await saveHost({
+                id: edit?.id,
                 name: form.name.trim(),
                 addr: form.addr.trim(),
                 port: Number(form.port) || 22,
@@ -72,7 +77,7 @@ function NewHostModal({ onClose }: { onClose: () => void }) {
               onClose();
             }}
           >
-            创建
+            {edit ? "保存" : "创建"}
           </Button>
         </div>
       </div>
@@ -87,6 +92,7 @@ export function HostsScreen() {
   const go = useUiStore((s) => s.go);
   const [query, setQuery] = useState("");
   const [showNew, setShowNew] = useState(false);
+  const [editHost, setEditHost] = useState<Host | null>(null);
   const [connecting, setConnecting] = useState<string | null>(null);
 
   const filtered = useMemo(() => {
@@ -167,6 +173,14 @@ export function HostsScreen() {
                     <Button variant="secondary" loading={connecting === h.id} onClick={() => void connect(h)}>连接</Button>
                     <div
                       className="hover-row"
+                      onClick={() => setEditHost(h)}
+                      title="编辑"
+                      style={{ padding: 6, borderRadius: 8, cursor: "pointer", color: "var(--text-faint)" }}
+                    >
+                      <Pencil size={15} />
+                    </div>
+                    <div
+                      className="hover-row"
                       onClick={() => { if (confirm(`删除主机 ${h.name}?`)) void deleteHost(h.id); }}
                       style={{ padding: 6, borderRadius: 8, cursor: "pointer", color: "var(--text-faint)" }}
                     >
@@ -185,7 +199,8 @@ export function HostsScreen() {
           </div>
         )}
       </div>
-      {showNew && <NewHostModal onClose={() => setShowNew(false)} />}
+      {showNew && <HostModal onClose={() => setShowNew(false)} />}
+      {editHost && <HostModal edit={editHost} onClose={() => setEditHost(null)} />}
       {pwHost && (
         <PasswordModal
           host={pwHost}

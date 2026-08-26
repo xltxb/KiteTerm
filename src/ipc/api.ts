@@ -101,6 +101,17 @@ export interface VelaIpc {
   // ---- settings ----
   getSettings(): Promise<AppSettings>;
   saveSettings(s: AppSettings): Promise<void>;
+
+  // ---- AI 助手 ----
+  aiGetConfig(): Promise<{ model: string; hasKey: boolean }>;
+  aiSaveConfig(model: string, apiKey?: string): Promise<void>;
+  /** messages 为完整对话历史;terminalContext 为当前会话最近输出 */
+  aiAsk(messages: { role: "user" | "assistant"; content: string }[], terminalContext: string): Promise<string>;
+
+  // ---- 会话恢复 / 退出 ----
+  restoreTargets(): Promise<string[]>;
+  appQuit(): Promise<void>;
+  onCloseRequested(cb: (activeSessions: number) => void): Unsubscribe;
 }
 
 export function isTauri(): boolean {

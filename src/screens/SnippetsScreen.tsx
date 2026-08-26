@@ -1,19 +1,20 @@
 import { useMemo, useState } from "react";
-import { Trash2 } from "lucide-react";
+import { Pencil, Trash2 } from "lucide-react";
 import { Button, ScreenHeader, TextInput } from "@/components/ui";
 import { useDataStore } from "@/stores/data";
 import { useSessionStore } from "@/stores/session";
 import { useUiStore } from "@/stores/ui";
+import type { Snippet } from "@/types";
 
-function NewSnippetModal({ onClose }: { onClose: () => void }) {
+function SnippetModal({ edit, onClose }: { edit?: Snippet; onClose: () => void }) {
   const saveSnippet = useDataStore((s) => s.saveSnippet);
-  const [name, setName] = useState("");
-  const [command, setCommand] = useState("");
-  const [tags, setTags] = useState("");
+  const [name, setName] = useState(edit?.name ?? "");
+  const [command, setCommand] = useState(edit?.command ?? "");
+  const [tags, setTags] = useState(edit?.tags.join(", ") ?? "");
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h3 style={{ fontSize: 17, marginBottom: 16 }}>新建片段</h3>
+        <h3 style={{ fontSize: 17, marginBottom: 16 }}>{edit ? "编辑片段" : "新建片段"}</h3>
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           <TextInput label="名称" placeholder="重启网关" value={name} onChange={(e) => setName(e.target.value)} />
           <div>
@@ -33,11 +34,11 @@ function NewSnippetModal({ onClose }: { onClose: () => void }) {
             variant="primary"
             disabled={!name.trim() || !command.trim()}
             onClick={async () => {
-              await saveSnippet({ name: name.trim(), command: command.trim(), tags: tags.split(",").map((t) => t.trim()).filter(Boolean) });
+              await saveSnippet({ id: edit?.id, name: name.trim(), command: command.trim(), tags: tags.split(",").map((t) => t.trim()).filter(Boolean) });
               onClose();
             }}
           >
-            创建
+            {edit ? "保存" : "创建"}
           </Button>
         </div>
       </div>
@@ -52,6 +53,7 @@ export function SnippetsScreen() {
   const go = useUiStore((s) => s.go);
   const [query, setQuery] = useState("");
   const [showNew, setShowNew] = useState(false);
+  const [editSnip, setEditSnip] = useState<Snippet | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
 
   const filtered = useMemo(() => {
@@ -84,6 +86,14 @@ export function SnippetsScreen() {
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <span style={{ fontWeight: 700, fontSize: 14, color: "var(--text-strong)", flex: 1 }}>{s.name}</span>
                 <span style={{ fontSize: 11, color: "var(--text-faint)" }}>用过 {s.useCount} 次</span>
+                <div
+                  className="hover-row"
+                  onClick={() => setEditSnip(s)}
+                  title="编辑"
+                  style={{ padding: 4, borderRadius: 6, cursor: "pointer", color: "var(--text-faint)" }}
+                >
+                  <Pencil size={13} />
+                </div>
                 <div
                   className="hover-row"
                   onClick={() => { if (confirm(`删除片段「${s.name}」?`)) void deleteSnippet(s.id); }}
@@ -120,7 +130,8 @@ export function SnippetsScreen() {
           </div>
         )}
       </div>
-      {showNew && <NewSnippetModal onClose={() => setShowNew(false)} />}
+      {showNew && <SnippetModal onClose={() => setShowNew(false)} />}
+      {editSnip && <SnippetModal edit={editSnip} onClose={() => setEditSnip(null)} />}
     </div>
   );
 }

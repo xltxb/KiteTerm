@@ -74,5 +74,13 @@ export function createTauriIpc(): VelaIpc {
 
     getSettings: () => invoke("settings_get"),
     saveSettings: (s) => invoke("settings_save", { settings: s }),
+
+    aiGetConfig: () => invoke("ai_get_config"),
+    aiSaveConfig: (model, apiKey) => invoke("ai_save_config", { model, apiKey }),
+    aiAsk: (messages, terminalContext) => invoke("ai_ask", { messages, terminalContext }),
+
+    restoreTargets: () => invoke("restore_targets"),
+    appQuit: () => invoke("app_quit"),
+    onCloseRequested: (cb) => sub<number>("app://close-requested", cb),
   };
 }

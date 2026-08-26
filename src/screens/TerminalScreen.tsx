@@ -4,7 +4,6 @@ import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { WebglAddon } from "@xterm/addon-webgl";
 import {
-  ArrowUp,
   Circle,
   Lock,
   PanelRight,
@@ -15,6 +14,7 @@ import {
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui";
+import { AiDock } from "@/components/AiDock";
 import { CastPlayer } from "@/components/CastPlayer";
 import { useDataStore } from "@/stores/data";
 import { getTerminal, useSessionStore } from "@/stores/session";
@@ -114,8 +114,6 @@ function RightDock() {
   const runCommand = useSessionStore((s) => s.runCommand);
   const go = useUiStore((s) => s.go);
   const bump = useDataStore((s) => s.bumpSnippet);
-  const [aiMsgs, setAiMsgs] = useState<{ role: "user" | "ai"; text: string }[]>([]);
-  const [aiInput, setAiInput] = useState("");
   const [playRec, setPlayRec] = useState<Recording | null>(null);
 
   const quick = useMemo(
@@ -141,17 +139,6 @@ function RightDock() {
       {label}
     </div>
   );
-
-  const sendAi = () => {
-    const text = aiInput.trim();
-    if (!text) return;
-    setAiMsgs((m) => [
-      ...m,
-      { role: "user", text },
-      { role: "ai", text: "AI 助手尚未接入模型后端 — 在设置中配置 API Key 后可分析会话输出、解释报错并生成命令。" },
-    ]);
-    setAiInput("");
-  };
 
   return (
     <div style={{ width: 284, flex: "none", borderLeft: "1px solid var(--border-subtle)", background: "var(--surface-card)", display: "flex", flexDirection: "column" }}>
@@ -206,43 +193,7 @@ function RightDock() {
         </div>
       )}
 
-      {rightTab === "ai" && (
-        <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
-          <div className="vscroll" style={{ flex: 1, overflow: "auto", padding: "6px 12px", display: "flex", flexDirection: "column", gap: 10 }}>
-            {aiMsgs.length === 0 && (
-              <div style={{ fontSize: 12, color: "var(--text-faint)", lineHeight: 1.6, padding: "8px 4px" }}>
-                向 AI 提问,或让它解释上一条输出。AI 可读取当前会话输出;命令执行前需你确认。
-              </div>
-            )}
-            {aiMsgs.map((m, i) =>
-              m.role === "user" ? (
-                <div key={i} style={{ alignSelf: "flex-end", maxWidth: "88%", background: "var(--accent-subtle)", color: "var(--text-strong)", borderRadius: "12px 12px 4px 12px", padding: "8px 12px", fontSize: 12.5, lineHeight: 1.5 }}>
-                  {m.text}
-                </div>
-              ) : (
-                <div key={i} style={{ alignSelf: "flex-start", maxWidth: "94%", background: "var(--surface-sunken)", border: "1px solid var(--border-subtle)", borderRadius: "12px 12px 12px 4px", padding: "9px 12px", fontSize: 12.5, lineHeight: 1.6, color: "var(--text-body)" }}>
-                  {m.text}
-                </div>
-              ),
-            )}
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", borderTop: "1px solid var(--border-subtle)" }}>
-            <input
-              value={aiInput}
-              onChange={(e) => setAiInput(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && sendAi()}
-              placeholder="询问 AI,或让它解释上一条输出…"
-              style={{ flex: 1, background: "var(--surface-sunken)", border: "1px solid var(--border-subtle)", borderRadius: 10, padding: "8px 12px", outline: "none", fontFamily: "var(--font-sans)", fontSize: 12.5, color: "var(--text-strong)" }}
-            />
-            <div onClick={sendAi} style={{ width: 32, height: 32, flex: "none", borderRadius: 10, background: "var(--accent)", color: "var(--text-on-accent)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
-              <ArrowUp size={15} />
-            </div>
-          </div>
-          <div style={{ fontSize: 10.5, color: "var(--text-faint)", padding: "0 12px 10px 12px" }}>
-            AI 可读取当前会话输出;命令执行前需你确认。
-          </div>
-        </div>
-      )}
+      {rightTab === "ai" && <AiDock />}
       {playRec && <CastPlayer recording={playRec} onClose={() => setPlayRec(null)} />}
     </div>
   );

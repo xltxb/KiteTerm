@@ -5,8 +5,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use russh_sftp::client::SftpSession;
+use russh_sftp::protocol::OpenFlags;
 use tauri::{AppHandle, Emitter};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 
 use crate::error::{AppError, Result};
 use crate::models::{FileEntry, TransferJob, TransferRequest};
@@ -207,10 +208,31 @@ async fn run_job(
     if job.direction == "upload" {
         let mut src = tokio::fs::File::open(&job.local_path).await?;
         let total = src.metadata().await?.len().max(1);
-        let mut dst = sftp
-            .create(&job.remote_path)
+        // 断点续传:远端已有部分文件(0 < size < total)则从该偏移续写
+        // 简化:仅按大小判断;文档 3.2 的「大小 + mtime + 前 1MB 哈希」校验后续补
+        let offset = sftp
+            .metadata(&job.remote_path)
             .await
-            .map_err(|e| AppError(format!("远端创建 {} 失败: {e}", job.remote_path)))?;
+            .ok()
+            .and_then(|m| m.size)
+            .filter(|s| *s > 0 && *s < total)
+            .unwrap_or(0);
+        let mut dst = if offset > 0 {
+            src.seek(SeekFrom::Start(offset)).await?;
+            let mut f = sftp
+                .open_with_flags(&job.remote_path, OpenFlags::WRITE)
+                .await
+                .map_err(|e| AppError(format!("远端打开 {} 失败: {e}", job.remote_path)))?;
+            f.seek(SeekFrom::Start(offset))
+                .await
+                .map_err(|e| AppError(format!("远端定位失败: {e}")))?;
+            f
+        } else {
+            sftp.create(&job.remote_path)
+                .await
+                .map_err(|e| AppError(format!("远端创建 {} 失败: {e}", job.remote_path)))?
+        };
+        moved = offset;
         loop {
             let n = src.read(&mut buf).await?;
             if n == 0 { break; }
@@ -233,7 +255,24 @@ async fn run_job(
             .and_then(|m| m.size)
             .unwrap_or(0)
             .max(1);
-        let mut dst = tokio::fs::File::create(&job.local_path).await?;
+        // 断点续传:本地已有部分文件则从该偏移续传
+        let offset = tokio::fs::metadata(&job.local_path)
+            .await
+            .ok()
+            .map(|m| m.len())
+            .filter(|s| *s > 0 && *s < total)
+            .unwrap_or(0);
+        let mut dst = if offset > 0 {
+            src.seek(SeekFrom::Start(offset))
+                .await
+                .map_err(|e| AppError(format!("远端定位失败: {e}")))?;
+            let mut f = tokio::fs::OpenOptions::new().write(true).open(&job.local_path).await?;
+            f.seek(SeekFrom::Start(offset)).await?;
+            f
+        } else {
+            tokio::fs::File::create(&job.local_path).await?
+        };
+        moved = offset;
         loop {
             let n = src
                 .read(&mut buf)

@@ -1,4 +1,6 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
+import { ipc } from "@/ipc";
+import { isTauri } from "@/ipc/api";
 import { Sidebar } from "./Sidebar";
 import { CommandPalette } from "./CommandPalette";
 import { TerminalScreen } from "@/screens/TerminalScreen";
@@ -20,10 +22,34 @@ export function App() {
   const load = useDataStore((s) => s.load);
   const loadSync = useSyncStore((s) => s.load);
 
+  const restored = useRef(false);
+
   useEffect(() => {
     void loadSettings();
     void load();
     void loadSync();
+
+    // 启动恢复会话(仅桌面端;设置关闭时后端返回空列表)
+    if (isTauri() && !restored.current) {
+      restored.current = true;
+      void (async () => {
+        const targets = await ipc.restoreTargets();
+        for (const hostId of targets) {
+          try {
+            await useSessionStore.getState().open(hostId);
+          } catch {
+            // 需要密码或主机不可达的会话跳过,由用户手动重连
+          }
+        }
+      })();
+    }
+
+    // 退出前确认(后端拦截 CloseRequested 后询问)
+    return ipc.onCloseRequested((n) => {
+      if (window.confirm(`还有 ${n} 个会话打开中,确认退出 Vela Term?`)) {
+        void ipc.appQuit();
+      }
+    });
   }, [loadSettings, load, loadSync]);
 
   useEffect(() => {

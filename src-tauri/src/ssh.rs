@@ -2,6 +2,7 @@
 //! 密钥/密码认证、断线自动重连(指数退避 1/2/4/8/8s,上限 5 次)、录制旁路。
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -11,6 +12,7 @@ use russh::keys::ssh_key::HashAlg;
 use russh::keys::{PrivateKeyWithHashAlg, PublicKeyOrCertificate};
 use russh::{Channel, ChannelMsg};
 use tauri::{AppHandle, Emitter};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 
 use crate::db::Db;
@@ -19,11 +21,23 @@ use crate::models::{AppSettings, SessionInfo, TermData};
 use crate::recorder::Recorder;
 use crate::vault::{self, Vault};
 
+/// R 型远程转发的投递目标(远端监听端口 → 本地 host:port)
+pub struct RTarget {
+    pub host: String,
+    pub port: u16,
+    pub up: Arc<AtomicU64>,
+    pub down: Arc<AtomicU64>,
+}
+
+pub type RForwardMap = Arc<Mutex<HashMap<u32, RTarget>>>;
+
 pub struct ClientHandler {
     db: Arc<Db>,
     host_id: String,
     /// 指纹不匹配时记录服务器本次出示的指纹,供上层生成告警信息
     presented_mismatch: Arc<Mutex<Option<String>>>,
+    /// 远端端口 → R 转发目标;由 forward 模块在 tcpip_forward 前登记
+    r_targets: RForwardMap,
 }
 
 impl client::Handler for ClientHandler {
@@ -55,6 +69,73 @@ impl client::Handler for ClientHandler {
             Err(_) => Ok(false),
         }
     }
+
+    /// R 型远程转发:服务器上有连接进入被监听端口时回调,接通到登记的本地目标
+    async fn server_channel_open_forwarded_tcpip(
+        &mut self,
+        channel: Channel<client::Msg>,
+        _connected_address: &str,
+        connected_port: u32,
+        _originator_address: &str,
+        _originator_port: u32,
+        reply: russh::client::ChannelOpenHandle,
+        _session: &mut client::Session,
+    ) -> std::result::Result<(), Self::Error> {
+        let target = {
+            let map = self.r_targets.lock().unwrap();
+            map.get(&connected_port)
+                .map(|t| (t.host.clone(), t.port, t.up.clone(), t.down.clone()))
+        };
+        let Some((host, port, up, down)) = target else {
+            drop(reply); // 未登记的端口:拒绝
+            return Ok(());
+        };
+        reply.accept().await;
+        tokio::spawn(async move {
+            match tokio::net::TcpStream::connect((host.as_str(), port)).await {
+                Ok(local) => {
+                    let _ = pipe_counted(channel.into_stream(), local, up, down).await;
+                }
+                Err(e) => eprintln!("[forward:R] 连接本地目标 {host}:{port} 失败: {e}"),
+            }
+        });
+        Ok(())
+    }
+}
+
+/// 双向搬运并计数:a 为远端通道,b 为本地连接;down = 远端→本地,up = 本地→远端
+async fn pipe_counted(
+    a: impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send,
+    b: impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send,
+    up: Arc<AtomicU64>,
+    down: Arc<AtomicU64>,
+) -> std::io::Result<()> {
+    let (mut ar, mut aw) = tokio::io::split(a);
+    let (mut br, mut bw) = tokio::io::split(b);
+    let a2b = async {
+        let mut buf = vec![0u8; 32 * 1024];
+        loop {
+            let n = ar.read(&mut buf).await?;
+            if n == 0 { break; }
+            bw.write_all(&buf[..n]).await?;
+            down.fetch_add(n as u64, Ordering::Relaxed);
+        }
+        bw.shutdown().await.ok();
+        Ok::<_, std::io::Error>(())
+    };
+    let b2a = async {
+        let mut buf = vec![0u8; 32 * 1024];
+        loop {
+            let n = br.read(&mut buf).await?;
+            if n == 0 { break; }
+            aw.write_all(&buf[..n]).await?;
+            up.fetch_add(n as u64, Ordering::Relaxed);
+        }
+        aw.shutdown().await.ok();
+        Ok::<_, std::io::Error>(())
+    };
+    let _ = tokio::join!(a2b, b2a);
+    Ok(())
 }
 
 pub enum Ctl {
@@ -128,6 +209,17 @@ pub async fn connect_host(
     host_id: &str,
     password: Option<&str>,
 ) -> Result<(Arc<Handle<ClientHandler>>, crate::models::Host, u32)> {
+    let (handle, host, latency, _) = connect_host_full(db, vault, host_id, password).await?;
+    Ok((handle, host, latency))
+}
+
+/// 完整版:额外返回 R 转发登记表(forward 模块用)
+pub async fn connect_host_full(
+    db: Arc<Db>,
+    vault: &Vault,
+    host_id: &str,
+    password: Option<&str>,
+) -> Result<(Arc<Handle<ClientHandler>>, crate::models::Host, u32, RForwardMap)> {
     let host = db.get_host(host_id)?;
 
     let config = Arc::new(client::Config {
@@ -135,11 +227,13 @@ pub async fn connect_host(
         ..Default::default()
     });
 
+    let r_targets: RForwardMap = Arc::new(Mutex::new(HashMap::new()));
     let presented_mismatch = Arc::new(Mutex::new(None));
     let handler = ClientHandler {
         db: db.clone(),
         host_id: host_id.to_string(),
         presented_mismatch: presented_mismatch.clone(),
+        r_targets: r_targets.clone(),
     };
 
     let t0 = Instant::now();
@@ -198,7 +292,7 @@ pub async fn connect_host(
         )));
     }
     db.touch_host_connected(host_id)?;
-    Ok((Arc::new(handle), host, latency))
+    Ok((Arc::new(handle), host, latency, r_targets))
 }
 
 async fn open_shell_channel(

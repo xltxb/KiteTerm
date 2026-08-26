@@ -193,7 +193,7 @@ pub async fn session_open(
     host_id: String,
     password: Option<String>,
 ) -> Result<SessionInfo> {
-    ssh::open_shell_session(
+    let info = ssh::open_shell_session(
         app,
         state.db.clone(),
         state.vault.clone(),
@@ -201,7 +201,9 @@ pub async fn session_open(
         &host_id,
         password,
     )
-    .await
+    .await?;
+    persist_open_sessions(&state);
+    Ok(info)
 }
 
 /// 主机密钥指纹变更后,用户确认信任:清除旧记录,下次连接 TOFU 重新记录
@@ -222,7 +224,9 @@ pub fn session_resize(state: State<AppState>, id: String, cols: u16, rows: u16) 
 
 #[tauri::command]
 pub fn session_close(app: AppHandle, state: State<AppState>, id: String) -> Result<()> {
-    ssh::close_session(&app, &state.sessions, &id)
+    ssh::close_session(&app, &state.sessions, &id)?;
+    persist_open_sessions(&state);
+    Ok(())
 }
 
 // ---- sftp / transfer ----
@@ -355,6 +359,65 @@ pub fn sync_save_config(state: State<AppState>, cfg: SyncConfig) -> Result<()> {
 #[tauri::command]
 pub async fn sync_now(app: AppHandle, state: State<'_, AppState>) -> Result<()> {
     sync::sync_now(app, state.db.clone(), state.vault.clone()).await
+}
+
+// ---- AI 助手 ----
+
+#[tauri::command]
+pub fn ai_get_config(state: State<AppState>) -> Result<crate::ai::AiConfig> {
+    crate::ai::get_config(&state.db)
+}
+
+#[tauri::command]
+pub fn ai_save_config(
+    state: State<AppState>,
+    model: String,
+    api_key: Option<String>,
+) -> Result<()> {
+    crate::ai::save_config(&state.db, &state.vault, model, api_key)
+}
+
+#[tauri::command]
+pub async fn ai_ask(
+    state: State<'_, AppState>,
+    messages: Vec<crate::ai::ChatMessage>,
+    terminal_context: String,
+) -> Result<String> {
+    crate::ai::ask(&state.db, &state.vault, messages, terminal_context).await
+}
+
+// ---- 会话恢复 ----
+
+/// 把当前打开会话的主机列表落库(启动恢复用)
+pub fn persist_open_sessions(state: &AppState) {
+    let hosts: Vec<String> = state
+        .sessions
+        .list()
+        .into_iter()
+        .map(|s| s.host_id)
+        .collect();
+    let _ = state
+        .db
+        .kv_set("open_hosts", &serde_json::to_string(&hosts).unwrap_or_default());
+}
+
+/// 启动时应恢复的主机 ID 列表(仅当设置开启)
+#[tauri::command]
+pub fn restore_targets(state: State<AppState>) -> Result<Vec<String>> {
+    let settings = settings_get(state.clone())?;
+    if !settings.restore_sessions {
+        return Ok(vec![]);
+    }
+    Ok(state
+        .db
+        .kv_get("open_hosts")?
+        .and_then(|j| serde_json::from_str(&j).ok())
+        .unwrap_or_default())
+}
+
+#[tauri::command]
+pub fn app_quit(app: AppHandle) {
+    app.exit(0);
 }
 
 // ---- settings ----

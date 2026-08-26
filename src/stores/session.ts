@@ -13,6 +13,20 @@ export function getTerminal(id: string): Terminal | undefined {
   return terminals.get(id);
 }
 
+/** 提取会话终端最近 maxLines 行输出(AI 助手上下文用) */
+export function getTerminalContext(id: string, maxLines = 80): string {
+  const term = terminals.get(id);
+  if (!term) return "";
+  const buf = term.buffer.active;
+  const end = buf.baseY + buf.cursorY;
+  const start = Math.max(0, end - maxLines);
+  const lines: string[] = [];
+  for (let i = start; i <= end; i++) {
+    lines.push(buf.getLine(i)?.translateToString(true) ?? "");
+  }
+  return lines.join("\n").trim();
+}
+
 interface SessionState {
   sessions: SessionInfo[];
   activeId: string | null;

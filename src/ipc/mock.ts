@@ -125,6 +125,7 @@ export function createMockIpc(): VelaIpc {
     { id: "t3", direction: "upload", name: ".env.production", localPath: "~/projects/vela", remotePath: "/var/www/vela/shared", sessionId: "", progress: 0, rateBps: 0, state: "queued", error: null, elapsedMs: 0 },
   ];
   let settings: AppSettings = { ...DEFAULT_SETTINGS };
+  let aiConfig = { model: "claude-opus-5", hasKey: false };
   let syncStatus: SyncStatus = { configured: true, syncing: false, lastSyncAt: "2 分钟前", devices: mockDevices };
   let syncConfig: SyncConfig = {
     endpoint: "https://r2.example.com",
@@ -359,5 +360,19 @@ export function createMockIpc(): VelaIpc {
 
     async getSettings() { return settings; },
     async saveSettings(s) { settings = s; },
+
+    async aiGetConfig() { return aiConfig; },
+    async aiSaveConfig(model, apiKey) {
+      aiConfig = { model: model || "claude-opus-5", hasKey: aiConfig.hasKey || !!apiKey };
+    },
+    async aiAsk(messages) {
+      await new Promise((r) => setTimeout(r, 600));
+      const last = messages[messages.length - 1]?.content ?? "";
+      return `[mock] 浏览器预览模式没有真实 AI 后端。你问的是:「${last.slice(0, 60)}」\n\n在桌面应用的设置里配置 Claude API Key 后可用。示例命令:\n\`\`\`\nlsof -ti :8080 | xargs -r kill\n\`\`\``;
+    },
+
+    async restoreTargets() { return []; },
+    async appQuit() { window.close(); },
+    onCloseRequested: () => () => {},
   };
 }
