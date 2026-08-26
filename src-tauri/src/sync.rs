@@ -246,7 +246,7 @@ pub fn restore_master_from_phrase(db: &Db, vault: &Vault, phrase: &str) -> Resul
 
 fn scope_allows(cfg: &SyncConfig, entity: &str) -> bool {
     match entity {
-        "host" | "forward" => cfg.scopes.hosts,
+        "host" | "forward" | "group" => cfg.scopes.hosts,
         "key" => cfg.scopes.keys,
         "snippet" => cfg.scopes.snippets,
         "settings" => cfg.scopes.settings,
@@ -323,6 +323,12 @@ fn apply_wire(db: &Db, vault: &Vault, wire: &WireOp) -> Result<()> {
             let dev_enc = vault.encrypt(pem.as_bytes())?;
             db.upsert_key_raw(&meta, &dev_enc)?;
         }
+        "group" => {
+            let name = payload["name"].as_str().unwrap_or_default();
+            if !name.is_empty() {
+                db.group_by_name_or_create(name)?;
+            }
+        }
         "settings" => {
             db.kv_set("settings", &payload.to_string())?;
         }
@@ -337,6 +343,7 @@ fn build_snapshot(db: &Db, vault: &Vault, cfg: &SyncConfig) -> Result<Snapshot> 
     let hosts = db.list_hosts()?;
     let snippets = db.list_snippets()?;
     let forwards = db.list_forwards()?;
+    let groups = db.list_groups()?;
     let mut entries = Vec::new();
     for (entity, entity_id, lamport, device_id, op) in db.list_sync_versions()? {
         if !scope_allows(cfg, &entity) {
@@ -366,6 +373,11 @@ fn build_snapshot(db: &Db, vault: &Vault, cfg: &SyncConfig) -> Result<Snapshot> 
                     }
                     Err(_) => None,
                 },
+                // 分组的 entity_id 即分组名
+                "group" => groups
+                    .iter()
+                    .find(|g| g.name == entity_id)
+                    .map(|g| serde_json::json!({ "name": g.name })),
                 "settings" => db.kv_get("settings")?.map(|s| serde_json::from_str(&s)).transpose()?,
                 _ => None,
             };
@@ -386,6 +398,9 @@ fn build_snapshot(db: &Db, vault: &Vault, cfg: &SyncConfig) -> Result<Snapshot> 
             created_at: now.clone(),
         });
     }
+    // 按 lamport 升序:快照重放必须保持因果序,否则「删分组」可能早于「主机迁出该组」
+    // 被应用,导致删除被空组判定拦下而残留。
+    entries.sort_by_key(|e| e.lamport);
     Ok(Snapshot { lamport: db.lamport_now()?, entries })
 }
 
@@ -420,7 +435,8 @@ async fn pull_snapshot(
         .await
         .map_err(|e| AppError(format!("下载快照失败: {e}")))?;
     let plain = unseal(cipher, resp.bytes(), &key)?;
-    let snap: Snapshot = serde_json::from_slice(&plain)?;
+    let mut snap: Snapshot = serde_json::from_slice(&plain)?;
+    snap.entries.sort_by_key(|e| e.lamport); // 兼容旧版未排序的快照
     for wire in &snap.entries {
         if scope_allows(cfg, &wire.entity)
             && db.version_accept_remote(&wire.entity, &wire.entity_id, wire.lamport, &wire.device_id, &wire.op)?

@@ -31,6 +31,10 @@ fn uid() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
+fn group_payload(name: &str) -> String {
+    serde_json::json!({ "name": name }).to_string()
+}
+
 impl Db {
     pub fn open(data_dir: PathBuf) -> Result<Self> {
         std::fs::create_dir_all(&data_dir)?;
@@ -156,6 +160,107 @@ impl Db {
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
+    }
+
+    /// 新建分组(同名幂等)。同步用分组名做 entity_id,跨设备天然一致。
+    pub fn create_group(&self, name: &str) -> Result<HostGroup> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(crate::error::AppError("分组名不能为空".into()));
+        }
+        if let Some(g) = self.list_groups()?.into_iter().find(|g| g.name == name) {
+            return Ok(g);
+        }
+        let id = uid();
+        {
+            let conn = self.conn.lock().unwrap();
+            let max_sort: i64 =
+                conn.query_row("SELECT COALESCE(MAX(sort),0) FROM groups", [], |r| r.get(0))?;
+            conn.execute(
+                "INSERT INTO groups (id, name, sort) VALUES (?1, ?2, ?3)",
+                params![id, name, max_sort + 1],
+            )?;
+        }
+        self.oplog_append("group", name, "put", Some(group_payload(name)))?;
+        self.list_groups()?
+            .into_iter()
+            .find(|g| g.id == id)
+            .ok_or_else(|| crate::error::AppError("分组创建后读取失败".into()))
+    }
+
+    pub fn rename_group(&self, id: &str, new_name: &str) -> Result<()> {
+        let new_name = new_name.trim();
+        if new_name.is_empty() {
+            return Err(crate::error::AppError("分组名不能为空".into()));
+        }
+        let groups = self.list_groups()?;
+        let old = groups
+            .iter()
+            .find(|g| g.id == id)
+            .ok_or_else(|| crate::error::AppError("分组不存在".into()))?;
+        if old.name == new_name {
+            return Ok(());
+        }
+        if groups.iter().any(|g| g.name == new_name) {
+            return Err(crate::error::AppError(format!("已存在同名分组:{new_name}")));
+        }
+        let old_name = old.name.clone();
+        {
+            let conn = self.conn.lock().unwrap();
+            conn.execute("UPDATE groups SET name = ?2 WHERE id = ?1", params![id, new_name])?;
+        }
+        // 顺序要紧:对端按 seq 依次应用,必须先建新组、再迁主机,最后才删空的旧组
+        // ——否则删旧组时对端主机仍在其中,删除会被跳过而残留空分组
+        self.oplog_append("group", new_name, "put", Some(group_payload(new_name)))?;
+        for h in self.list_hosts()?.into_iter().filter(|h| h.group_id == id) {
+            let payload = self.host_payload(&h)?;
+            self.oplog_append("host", &h.id, "put", Some(payload))?;
+        }
+        self.oplog_append("group", &old_name, "del", None)?;
+        Ok(())
+    }
+
+    /// 删除分组:组内主机迁到另一分组(不删主机);至少保留一个分组
+    pub fn delete_group(&self, id: &str) -> Result<()> {
+        let groups = self.list_groups()?;
+        if groups.len() <= 1 {
+            return Err(crate::error::AppError("至少保留一个分组".into()));
+        }
+        let target = groups
+            .iter()
+            .find(|g| g.id == id)
+            .ok_or_else(|| crate::error::AppError("分组不存在".into()))?;
+        let name = target.name.clone();
+        let fallback = groups
+            .iter()
+            .find(|g| g.id != id)
+            .expect("至少两个分组")
+            .id
+            .clone();
+        let moved: Vec<String> = self
+            .list_hosts()?
+            .into_iter()
+            .filter(|h| h.group_id == id)
+            .map(|h| h.id)
+            .collect();
+        {
+            let conn = self.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE hosts SET group_id = ?2 WHERE group_id = ?1",
+                params![id, fallback],
+            )?;
+            conn.execute("DELETE FROM groups WHERE id = ?1", [id])?;
+        }
+        // 同 rename:先让对端把主机迁走,分组变空后删除才会生效
+        let hosts = self.list_hosts()?;
+        for host_id in moved {
+            if let Some(h) = hosts.iter().find(|h| h.id == host_id) {
+                let payload = self.host_payload(h)?;
+                self.oplog_append("host", &h.id, "put", Some(payload))?;
+            }
+        }
+        self.oplog_append("group", &name, "del", None)?;
+        Ok(())
     }
 
     // ---- hosts ----
@@ -775,6 +880,15 @@ impl Db {
             "key" => {
                 conn.execute("DELETE FROM keys WHERE id = ?1", [entity_id])?;
                 conn.execute("UPDATE hosts SET key_id = NULL WHERE key_id = ?1", [entity_id])?;
+            }
+            // 分组以名字为 entity_id;仅删空分组,避免把本机仍在用的分组删掉
+            "group" => {
+                conn.execute(
+                    "DELETE FROM groups WHERE name = ?1
+                     AND id NOT IN (SELECT DISTINCT group_id FROM hosts)
+                     AND (SELECT COUNT(*) FROM groups) > 1",
+                    [entity_id],
+                )?;
             }
             _ => {}
         }

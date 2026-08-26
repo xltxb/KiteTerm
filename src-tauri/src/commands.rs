@@ -30,6 +30,21 @@ pub fn list_groups(state: State<AppState>) -> Result<Vec<HostGroup>> {
 }
 
 #[tauri::command]
+pub fn create_group(state: State<AppState>, name: String) -> Result<HostGroup> {
+    state.db.create_group(&name)
+}
+
+#[tauri::command]
+pub fn rename_group(state: State<AppState>, id: String, name: String) -> Result<()> {
+    state.db.rename_group(&id, &name)
+}
+
+#[tauri::command]
+pub fn delete_group(state: State<AppState>, id: String) -> Result<()> {
+    state.db.delete_group(&id)
+}
+
+#[tauri::command]
 pub fn list_hosts(state: State<AppState>) -> Result<Vec<Host>> {
     let mut hosts = state.db.list_hosts()?;
     // 用活跃会话的实测延迟填充

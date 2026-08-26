@@ -11,6 +11,9 @@ interface DataState {
   recordings: Recording[];
   loaded: boolean;
   load: () => Promise<void>;
+  createGroup: (name: string) => Promise<HostGroup>;
+  renameGroup: (id: string, name: string) => Promise<void>;
+  deleteGroup: (id: string) => Promise<void>;
   saveHost: (h: Partial<Host> & { name: string }) => Promise<void>;
   deleteHost: (id: string) => Promise<void>;
   generateKey: (name: string, algo: "ed25519" | "rsa4096") => Promise<void>;
@@ -52,6 +55,21 @@ export const useDataStore = create<DataState>((set, get) => ({
         ),
       })),
     );
+  },
+  createGroup: async (name) => {
+    const g = await ipc.createGroup(name);
+    set({ groups: await ipc.listGroups() });
+    return g;
+  },
+  renameGroup: async (id, name) => {
+    await ipc.renameGroup(id, name);
+    set({ groups: await ipc.listGroups() });
+  },
+  deleteGroup: async (id) => {
+    await ipc.deleteGroup(id);
+    // 组内主机会被迁移,分组与主机都要刷新
+    const [groups, hosts] = await Promise.all([ipc.listGroups(), ipc.listHosts()]);
+    set({ groups, hosts });
   },
   saveHost: async (h) => {
     await ipc.saveHost(h);
