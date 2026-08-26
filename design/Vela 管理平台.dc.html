@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="_ds/vela-design-system-c1e10b8b-97e8-4176-9954-0f443e59deda/tokens/fonts.css">
+  <link rel="stylesheet" href="_ds/vela-design-system-c1e10b8b-97e8-4176-9954-0f443e59deda/tokens/colors.css">
+  <link rel="stylesheet" href="_ds/vela-design-system-c1e10b8b-97e8-4176-9954-0f443e59deda/tokens/typography.css">
+  <link rel="stylesheet" href="_ds/vela-design-system-c1e10b8b-97e8-4176-9954-0f443e59deda/tokens/spacing.css">
+  <link rel="stylesheet" href="_ds/vela-design-system-c1e10b8b-97e8-4176-9954-0f443e59deda/tokens/effects.css">
+  <link rel="stylesheet" href="_ds/vela-design-system-c1e10b8b-97e8-4176-9954-0f443e59deda/tokens/motion.css">
+  <link rel="stylesheet" href="_ds/vela-design-system-c1e10b8b-97e8-4176-9954-0f443e59deda/tokens/base.css">
+  <link rel="stylesheet" href="_ds/vela-design-system-c1e10b8b-97e8-4176-9954-0f443e59deda/styles.css">
+  <script src="_ds/vela-design-system-c1e10b8b-97e8-4176-9954-0f443e59deda/_ds_bundle.js"></script>
+  <script src="https://unpkg.com/lucide@0.462.0/dist/umd/lucide.min.js"></script>
+  <script>
+    document.documentElement.setAttribute('data-theme','dark');
+    (function(){
+      if(window.customElements.get('v-icon')) return;
+      var SVG='http://www.w3.org/2000/svg';
+      function pascal(n){return n.split('-').map(function(s){return s.charAt(0).toUpperCase()+s.slice(1)}).join('')}
+      class VIcon extends HTMLElement{
+        constructor(){super();this._root=this.attachShadow({mode:'open'});}
+        static get observedAttributes(){return ['name','size']}
+        connectedCallback(){this.renderIcon()}
+        attributeChangedCallback(){this.renderIcon()}
+        renderIcon(){
+          var self=this;
+          if(!window.lucide||!window.lucide.icons){
+            if(!this._t){this._t=setInterval(function(){ if(window.lucide&&window.lucide.icons){clearInterval(self._t);self._t=null;self.renderIcon();} },120);}
+            return;
+          }
+          var name=this.getAttribute('name')||'', size=this.getAttribute('size')||'18';
+          var node=window.lucide.icons[pascal(name)];
+          this._root.innerHTML='';
+          if(!node) return;
+          var svg=document.createElementNS(SVG,'svg');
+          var attrs={width:size,height:size,viewBox:'0 0 24 24',fill:'none',stroke:'currentColor','stroke-width':'2','stroke-linecap':'round','stroke-linejoin':'round'};
+          for(var k in attrs) svg.setAttribute(k,attrs[k]);
+          function append(parent,n){
+            if(!Array.isArray(n)) return;
+            if(typeof n[0]==='string'){
+              var el=document.createElementNS(SVG,n[0]); var a=n[1]||{};
+              for(var k in a) el.setAttribute(k,a[k]);
+              if(Array.isArray(n[2])) n[2].forEach(function(c){append(el,c)});
+              parent.appendChild(el);
+            } else { n.forEach(function(c){append(parent,c)}); }
+          }
+          append(svg,node);
+          var st=document.createElement('style');st.textContent=':host{display:inline-flex;line-height:0}';
+          this._root.appendChild(st);this._root.appendChild(svg);
+        }
+      }
+      window.customElements.define('v-icon',VIcon);
+    })();
+  </script>
+  <style>
+    /* 与 Vela Term 客户端一致的石墨深色:中性近黑,强调色仍为 Vela azure/cyan */
+    [data-theme="dark"]{
+      --surface-page:#0d0d0f;
+      --surface-card:#151517;
+      --surface-sunken:#0a0a0c;
+      --surface-raised:#1d1d20;
+      --border-subtle:rgba(255,255,255,0.06);
+      --border-default:rgba(255,255,255,0.12);
+    }
+    html,body{margin:0;padding:0;min-height:100%;}
+    body{font-family:var(--font-sans);background:var(--surface-page);color:var(--text-body);}
+    v-icon{display:inline-flex;flex:none;line-height:0;}
+    .vscroll::-webkit-scrollbar{width:8px;height:8px;}
+    .vscroll::-webkit-scrollbar-thumb{background:var(--border-default);border-radius:99px;}
+  </style>
+</helmet>
+
+<div style="min-height:100vh;background:var(--surface-page);color:var(--text-body);font-family:var(--font-sans);font-size:14px">
+
+  <!-- ============ 登录 ============ -->
+  <sc-if value="{{ isLogin }}" hint-placeholder-val="{{ false }}">
+    <div data-screen-label="管理登录" style="min-height:100vh;display:flex;align-items:flex-start;justify-content:center;padding-top:14vh">
+      <div style="width:420px;background:var(--surface-card);border:1px solid var(--border-subtle);border-radius:14px;padding:28px">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
+          <div style="width:34px;height:34px;flex:none;border-radius:10px;background:linear-gradient(135deg,var(--azure-500),var(--cyan-400));display:flex;align-items:center;justify-content:center;color:#fff;box-shadow:var(--glow-sm)"><v-icon name="sailboat" size="18"></v-icon></div>
+          <div style="line-height:1.2">
+            <div style="font-family:var(--font-display);font-weight:700;font-size:16px;color:var(--text-strong);letter-spacing:-0.02em">Vela 管理平台</div>
+            <div style="font-family:var(--font-mono);font-size:10px;letter-spacing:0.09em;color:var(--text-faint)">ADMIN CONSOLE</div>
+          </div>
+        </div>
+        <div style="font-size:11.5px;font-weight:600;color:var(--text-muted);margin-bottom:6px">管理密钥(X-Admin-Key)</div>
+        <input type="password" placeholder="输入管理密钥" value="••••••••••••" style="width:100%;height:36px;background:var(--surface-sunken);border:1px solid var(--border-default);border-radius:10px;padding:0 12px;outline:none;font-family:var(--font-sans);font-size:13px;color:var(--text-strong)">
+        <div style="height:16px;font-size:12px;color:var(--danger-text);margin-top:8px">{{ loginError }}</div>
+        <div onClick="{{ doLogin }}" style="margin-top:6px;height:38px;border-radius:10px;background:var(--accent);color:var(--text-on-accent);display:flex;align-items:center;justify-content:center;font-weight:600;font-size:13.5px;cursor:pointer" style-hover="background:var(--accent-hover);box-shadow:var(--glow-sm)">进入控制台</div>
+        <div style="margin-top:16px;font-size:11.5px;color:var(--text-faint);line-height:1.6">
+          密钥由平台部署方通过 <span style="font-family:var(--font-mono)">VELA_ADMIN_KEY</span> 配置,仅用于管理接口鉴权;不参与用户数据加解密。
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  <!-- ============ 控制台 ============ -->
+  <sc-if value="{{ isConsole }}" hint-placeholder-val="{{ true }}">
+    <div data-screen-label="用户与同步管控" class="vscroll" style="min-height:100vh;padding:36px 28px">
+      <div style="max-width:1080px;margin:0 auto">
+
+        <div style="display:flex;align-items:flex-end;gap:14px;margin-bottom:22px">
+          <div style="flex:1">
+            <div style="font-family:var(--font-mono);font-size:11px;letter-spacing:0.12em;color:var(--accent-text);margin-bottom:8px">VELA PLATFORM · ADMIN</div>
+            <h1 style="margin:0;font-family:var(--font-display);font-size:26px;font-weight:700;letter-spacing:-0.02em;color:var(--text-strong)">用户与同步管控</h1>
+          </div>
+          <x-import component-from-global-scope="VelaDesignSystem_c1e10b.Button" variant="secondary" size="sm" onClick="{{ noop }}" hint-size="auto,34px">刷新</x-import>
+          <x-import component-from-global-scope="VelaDesignSystem_c1e10b.Button" variant="ghost" size="sm" onClick="{{ doLogout }}" hint-size="auto,34px">退出</x-import>
+        </div>
+
+        <!-- 统计卡 -->
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:16px">
+          <sc-for list="{{ stats }}" as="s" hint-placeholder-count="3">
+            <div style="background:var(--surface-card);border:1px solid var(--border-subtle);border-radius:14px;padding:18px 20px" style-hover="border-color:var(--accent-subtle-border)">
+              <div style="font-family:var(--font-mono);font-size:10.5px;letter-spacing:0.09em;color:var(--text-muted);text-transform:uppercase">{{ s.label }}</div>
+              <div style="margin-top:6px;font-family:var(--font-display);font-size:34px;font-weight:700;letter-spacing:-0.02em;line-height:1.1;background:linear-gradient(90deg,var(--azure-500),var(--cyan-400));-webkit-background-clip:text;background-clip:text;color:transparent">{{ s.value }}</div>
+              <div style="font-size:11.5px;color:var(--text-faint);margin-top:2px">{{ s.sub }}</div>
+            </div>
+          </sc-for>
+        </div>
+
+        <!-- 用户表 -->
+        <div style="background:var(--surface-card);border:1px solid var(--border-subtle);border-radius:14px;overflow:hidden">
+          <div style="display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--border-subtle)">
+            <x-import component-from-global-scope="VelaDesignSystem_c1e10b.Input" placeholder="搜索邮箱 / 用户 ID…" size="sm" hint-size="260px,36px"></x-import>
+            <span style="flex:1"></span>
+            <span style="font-family:var(--font-mono);font-size:11.5px;color:var(--text-faint)">{{ storageInfo }}</span>
+            <x-import component-from-global-scope="VelaDesignSystem_c1e10b.Badge" color="{{ stsColor }}" dot="{{ true }}" hint-size="auto,22px">{{ stsLabel }}</x-import>
+          </div>
+
+          <div style="display:flex;align-items:center;gap:14px;padding:12px 16px;border-bottom:1px solid var(--border-subtle);font-size:11px;font-weight:700;letter-spacing:0.04em;color:var(--text-muted)">
+            <span style="flex:1">用户</span>
+            <span style="width:132px">注册时间</span>
+            <span style="width:120px">存储用量</span>
+            <span style="width:150px">同步</span>
+            <span style="width:88px;text-align:right">操作</span>
+          </div>
+
+          <sc-for list="{{ users }}" as="u" hint-placeholder-count="5">
+            <div style="display:flex;align-items:center;gap:14px;padding:12px 16px;border-bottom:1px solid var(--border-subtle)" style-hover="background:var(--surface-sunken)">
+              <div style="flex:1;min-width:0;line-height:1.35">
+                <div style="font-weight:600;font-size:13px;color:var(--text-strong);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ u.email }}</div>
+                <div style="font-family:var(--font-mono);font-size:11px;color:var(--text-faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ u.id }}</div>
+              </div>
+              <span style="width:132px;font-size:12.5px;color:var(--text-muted);white-space:nowrap">{{ u.createdAt }}</span>
+              <span style="width:120px;font-family:var(--font-mono);font-size:11.5px;color:var(--text-body)">{{ u.usage }}</span>
+              <div style="width:150px;display:flex;align-items:center;gap:10px">
+                <x-import component-from-global-scope="VelaDesignSystem_c1e10b.Switch" checked="{{ u.on }}" onChange="{{ u.toggle }}" hint-size="40px,24px"></x-import>
+                <x-import component-from-global-scope="VelaDesignSystem_c1e10b.Badge" color="{{ u.badgeColor }}" dot="{{ true }}" hint-size="auto,22px">{{ u.badge }}</x-import>
+              </div>
+              <div style="width:88px;display:flex;justify-content:flex-end">
+                <div onClick="{{ u.revoke }}" style="padding:5px 10px;border-radius:8px;font-size:11.5px;font-weight:600;color:var(--danger-text);cursor:pointer" style-hover="background:var(--danger-subtle)">强制下线</div>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+
+        <div style="display:flex;align-items:flex-start;gap:8px;margin-top:14px;font-size:12px;color:var(--text-faint);line-height:1.6">
+          <v-icon name="shield-check" size="13"></v-icon>
+          <span>同步开关即时生效:停用后该账户下一次同步请求被拒(<span style="font-family:var(--font-mono)">SYNC_DISABLED</span>),客户端提示联系管理员;强制下线吊销该用户全部登录令牌。桶内均为用户主密码派生密钥加密的密文,平台与管理员均无法解读。</span>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  <!-- toast -->
+  <sc-if value="{{ toastOpen }}" hint-placeholder-val="{{ false }}">
+    <div style="position:fixed;right:22px;bottom:22px;max-width:420px;background:var(--surface-raised);border:1px solid var(--border-default);border-radius:10px;padding:10px 16px;font-size:12.5px;color:var(--text-strong);box-shadow:var(--shadow-lg);display:flex;align-items:center;gap:8px">
+      <v-icon name="{{ toastIcon }}" size="14"></v-icon>{{ toastText }}
+    </div>
+  </sc-if>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;: {&quot;width&quot;: 1280, &quot;height&quot;: 860}, &quot;view&quot;: {&quot;editor&quot;: &quot;enum&quot;, &quot;options&quot;: [&quot;console&quot;, &quot;login&quot;], &quot;default&quot;: &quot;console&quot;, &quot;tsType&quot;: &quot;\&quot;console\&quot;|\&quot;login\&quot;&quot;, &quot;section&quot;: &quot;视图&quot;}, &quot;theme&quot;: {&quot;editor&quot;: &quot;enum&quot;, &quot;options&quot;: [&quot;dark&quot;, &quot;light&quot;], &quot;default&quot;: &quot;dark&quot;, &quot;tsType&quot;: &quot;\&quot;dark\&quot;|\&quot;light\&quot;&quot;, &quot;section&quot;: &quot;外观&quot;}, &quot;stsEnabled&quot;: {&quot;editor&quot;: &quot;boolean&quot;, &quot;default&quot;: true, &quot;tsType&quot;: &quot;boolean&quot;, &quot;section&quot;: &quot;平台&quot;}}">
+class Component extends DCLogic {
+  state = {
+    view: null,
+    syncOn: [true, true, false, true, true],
+    toast: null
+  };
+  curView() { return this.state.view || this.props.view || 'console'; }
+  applyTheme() { document.documentElement.setAttribute('data-theme', this.props.theme || 'dark'); }
+  componentDidMount() { this.applyTheme(); }
+  componentDidUpdate() { this.applyTheme(); }
+  showToast(text, icon) {
+    this.setState({ toast: { text, icon } });
+    clearTimeout(this._t);
+    this._t = setTimeout(() => this.setState({ toast: null }), 2600);
+  }
+  renderVals() {
+    const S = this.state, view = this.curView();
+    const userDefs = [
+      ['lin@vela.dev', 'a3f21c88-6b04-4e17-9c52-1d8ff0a2e441', '2026-05-12 09:41', '18.4 MB · 214 objs'],
+      ['ops@vela.dev', '7c19be40-2a55-4f3d-8e61-90b7c4d5e112', '2026-06-03 14:07', '6.2 MB · 88 objs'],
+      ['zhang@studio.cn', 'e08d5a71-9f3c-42b8-b5d0-6c2a1e7f9a33', '2026-07-19 21:55', '0 B · 0 objs'],
+      ['ci-bot@vela.dev', '2b6f39c5-08ea-4d91-a7c3-5f4e8b0d6c27', '2026-08-01 08:12', '1.1 MB · 32 objs'],
+      ['kim@homelab.io', '9d4c7e13-5b82-4a06-8f19-3e7d2c5a8b60', '2026-08-21 17:30', '4.7 MB · 61 objs']
+    ];
+    const users = userDefs.map((d, i) => ({
+      email: d[0], id: d[1], createdAt: d[2], usage: d[3],
+      on: S.syncOn[i],
+      badge: S.syncOn[i] ? '已放开' : '已停用',
+      badgeColor: S.syncOn[i] ? 'success' : 'danger',
+      toggle: () => {
+        const next = !S.syncOn[i];
+        this.setState(s => { const a = s.syncOn.slice(); a[i] = next; return { syncOn: a }; });
+        this.showToast(d[0] + ' 同步' + (next ? '已放开' : '已停用'), next ? 'check' : 'ban');
+      },
+      revoke: () => this.showToast('已吊销 ' + d[0] + ' 的全部登录令牌', 'log-out')
+    }));
+    const enabled = S.syncOn.filter(Boolean).length;
+    const sts = this.props.stsEnabled !== false;
+    return {
+      users,
+      stats: [
+        { label: 'Users 总用户', value: String(userDefs.length), sub: 'http://s3.vela.dev' },
+        { label: 'Sync Enabled 同步放开', value: String(enabled), sub: '停用账户将无法获取存储凭据' },
+        { label: 'Active Tokens 活跃令牌', value: '9', sub: '强制下线会吊销该用户全部令牌' }
+      ],
+      storageInfo: 'bucket: vela-sync',
+      stsLabel: sts ? 'STS 限权凭据' : '共享凭据(回退)',
+      stsColor: sts ? 'accent' : 'warning',
+      isLogin: view === 'login',
+      isConsole: view === 'console',
+      loginError: '',
+      doLogin: () => this.setState({ view: 'console' }),
+      doLogout: () => this.setState({ view: 'login' }),
+      noop: () => this.showToast('已刷新', 'refresh-cw'),
+      toastOpen: !!S.toast,
+      toastText: S.toast ? S.toast.text : '',
+      toastIcon: S.toast ? S.toast.icon : 'check'
+    };
+  }
+}
+</script>
+</body>
+</html>
