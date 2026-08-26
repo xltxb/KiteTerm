@@ -181,5 +181,92 @@ async fn main() {
     sync::sync_once(&db_a, &v_a).await.expect("恢复后同步应成功");
     println!("step6 平台管控停用/恢复 OK");
 
+    // 7) STS 限权凭据:应含 sessionToken;自己前缀可访问,他人前缀被拒
+    let creds_a = account::sync_credentials(&db_a, &v_a).await.expect("凭据");
+    if let Some(token) = creds_a.session_token.clone() {
+        use s3::creds::Credentials;
+        use s3::{Bucket, Region};
+        let region = Region::Custom { region: creds_a.region.clone(), endpoint: creds_a.endpoint.clone() };
+        let c = Credentials::new(
+            Some(&creds_a.access_key),
+            Some(&creds_a.secret_key),
+            Some(&token),
+            Some(&token),
+            None,
+        )
+        .unwrap();
+        let scoped = Bucket::new(&creds_a.bucket, region, c).unwrap().with_path_style();
+        scoped
+            .list(format!("{}/oplog/", creds_a.prefix), None)
+            .await
+            .expect("限权凭据应能访问自己前缀");
+        let foreign = scoped.list("users/00000000-not-mine/".to_string(), None).await;
+        assert!(foreign.is_err(), "限权凭据不得访问他人前缀");
+        println!("step7 STS 限权凭据 OK");
+    } else {
+        println!("step7 SKIP(平台回退共享凭据模式)");
+    }
+
+    // 8) 压实:阈值收窄为 0 → 同步触发压实(旧 oplog 并入快照后删除);
+    //    manifest 应为密文;新设备 C 仅凭快照完成引导
+    std::env::set_var("VELA_COMPACT_MAX_AGE_SECS", "0");
+    sync::sync_once(&db_a, &v_a).await.expect("A 压实同步");
+    {
+        // 用 root 凭据直查桶:oplog 应已清空、快照存在、manifest 非明文 JSON
+        use s3::creds::Credentials;
+        use s3::{Bucket, Region};
+        let region = Region::Custom { region: "us-east-1".into(), endpoint: "http://127.0.0.1:19000".into() };
+        let c = Credentials::new(Some("velatest"), Some("velatest-secret-1"), None, None, None).unwrap();
+        let root = Bucket::new(&creds_a.bucket, region, c).unwrap().with_path_style();
+        let count = |pages: Vec<s3::serde_types::ListBucketResult>| {
+            pages.into_iter().map(|p| p.contents.len()).sum::<usize>()
+        };
+        let oplog_n = count(root.list(format!("{}/oplog/", creds_a.prefix), None).await.unwrap());
+        let snap_n = count(root.list(format!("{}/snapshot/", creds_a.prefix), None).await.unwrap());
+        assert_eq!(oplog_n, 0, "压实后 oplog 应清空");
+        assert_eq!(snap_n, 1, "应只保留最新快照");
+        let m = root.get_object(format!("{}/manifest.json", creds_a.prefix)).await.unwrap();
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(m.bytes()).is_err(),
+            "manifest 应为密文而非明文 JSON"
+        );
+    }
+    let db_c = Db::open(scratch("dev-c")).unwrap();
+    let v_c = Vault::open(&db_c.data_dir).unwrap();
+    account::set_platform_url(&db_c, PLATFORM).unwrap();
+    account::login(&db_c, &v_c, &email, "check-password-123").await.expect("C 登录");
+    configure(&db_c, &v_c);
+    sync::sync_once(&db_c, &v_c).await.expect("C 快照引导");
+    assert!(
+        db_c.list_hosts().unwrap().iter().any(|h| h.name.starts_with("conflict-")),
+        "C 应从快照引导出主机终态"
+    );
+    assert!(
+        db_c.list_keys().unwrap().iter().any(|k| k.fingerprint == generated.fingerprint),
+        "C 应从快照引导出密钥"
+    );
+    assert!(
+        !db_c.list_snippets().unwrap().iter().any(|s| s.name == "sync-snippet"),
+        "被墓碑删除的片段不应复活"
+    );
+    println!("step8 压实 + 快照引导 + manifest 密文 OK");
+
+    // 9) 恢复短语:各设备一致(24 词);新设备 D 不知主密码,仅凭短语恢复后可解密同步
+    let ph_a = sync::recovery_phrase(&db_a, &v_a).unwrap();
+    let ph_b = sync::recovery_phrase(&db_b, &v_b).unwrap();
+    assert_eq!(ph_a, ph_b, "同一主密钥的恢复短语应一致");
+    assert_eq!(ph_a.split_whitespace().count(), 24);
+    let db_d = Db::open(scratch("dev-d")).unwrap();
+    let v_d = Vault::open(&db_d.data_dir).unwrap();
+    account::set_platform_url(&db_d, PLATFORM).unwrap();
+    account::login(&db_d, &v_d, &email, "check-password-123").await.expect("D 登录");
+    sync::restore_master_from_phrase(&db_d, &v_d, &ph_a).expect("短语恢复");
+    sync::sync_once(&db_d, &v_d).await.expect("D 恢复后同步");
+    assert!(
+        db_d.list_hosts().unwrap().iter().any(|h| h.name.starts_with("conflict-")),
+        "D 凭恢复短语应能解密数据"
+    );
+    println!("step9 BIP39 恢复短语 OK");
+
     println!("SYNC_CHECK_PASS");
 }

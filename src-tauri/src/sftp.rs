@@ -104,6 +104,24 @@ pub fn shellexpand_home(path: &str) -> String {
     path.to_string()
 }
 
+/// 读取流前 n 字节的 SHA-256(断点续传一致性校验)
+async fn sha256_prefix<R: tokio::io::AsyncRead + Unpin>(r: &mut R, n: u64) -> Result<[u8; 32]> {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    let mut remaining = n;
+    let mut buf = vec![0u8; 64 * 1024];
+    while remaining > 0 {
+        let want = remaining.min(buf.len() as u64) as usize;
+        let got = r.read(&mut buf[..want]).await?;
+        if got == 0 {
+            break;
+        }
+        hasher.update(&buf[..got]);
+        remaining -= got as u64;
+    }
+    Ok(hasher.finalize().into())
+}
+
 fn emit_job(app: &AppHandle, job: &TransferJob) {
     let _ = app.emit("transfer://progress", job.clone());
 }
@@ -208,15 +226,27 @@ async fn run_job(
     if job.direction == "upload" {
         let mut src = tokio::fs::File::open(&job.local_path).await?;
         let total = src.metadata().await?.len().max(1);
-        // 断点续传:远端已有部分文件(0 < size < total)则从该偏移续写
-        // 简化:仅按大小判断;文档 3.2 的「大小 + mtime + 前 1MB 哈希」校验后续补
-        let offset = sftp
+        // 断点续传:远端已有部分文件(0 < size < total)则从该偏移续写;
+        // 续传前比对两端前 1MB 哈希(文档 3.2),不一致视为不同文件,从头重传
+        let mut offset = sftp
             .metadata(&job.remote_path)
             .await
             .ok()
             .and_then(|m| m.size)
             .filter(|s| *s > 0 && *s < total)
             .unwrap_or(0);
+        if offset > 0 {
+            let check = offset.min(1024 * 1024);
+            let mut lf = tokio::fs::File::open(&job.local_path).await?;
+            let local_hash = sha256_prefix(&mut lf, check).await?;
+            let remote_hash = match sftp.open(&job.remote_path).await {
+                Ok(mut rf) => sha256_prefix(&mut rf, check).await.ok(),
+                Err(_) => None,
+            };
+            if remote_hash != Some(local_hash) {
+                offset = 0;
+            }
+        }
         let mut dst = if offset > 0 {
             src.seek(SeekFrom::Start(offset)).await?;
             let mut f = sftp
@@ -255,13 +285,25 @@ async fn run_job(
             .and_then(|m| m.size)
             .unwrap_or(0)
             .max(1);
-        // 断点续传:本地已有部分文件则从该偏移续传
-        let offset = tokio::fs::metadata(&job.local_path)
+        // 断点续传:本地已有部分文件则从该偏移续传;先比对两端前 1MB 哈希
+        let mut offset = tokio::fs::metadata(&job.local_path)
             .await
             .ok()
             .map(|m| m.len())
             .filter(|s| *s > 0 && *s < total)
             .unwrap_or(0);
+        if offset > 0 {
+            let check = offset.min(1024 * 1024);
+            let mut lf = tokio::fs::File::open(&job.local_path).await?;
+            let local_hash = sha256_prefix(&mut lf, check).await?;
+            let remote_hash = match sftp.open(&job.remote_path).await {
+                Ok(mut rf) => sha256_prefix(&mut rf, check).await.ok(),
+                Err(_) => None,
+            };
+            if remote_hash != Some(local_hash) {
+                offset = 0;
+            }
+        }
         let mut dst = if offset > 0 {
             src.seek(SeekFrom::Start(offset))
                 .await

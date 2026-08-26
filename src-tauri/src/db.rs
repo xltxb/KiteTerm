@@ -616,6 +616,32 @@ impl Db {
         Ok(accept)
     }
 
+    /// 当前 lamport 时钟值
+    pub fn lamport_now(&self) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn
+            .query_row("SELECT value FROM kv WHERE key = 'lamport'", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .optional()?
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0))
+    }
+
+    /// 全量实体版本(压实快照用):entity, entity_id, lamport, device_id, op
+    pub fn list_sync_versions(&self) -> Result<Vec<(String, String, i64, String, String)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT entity, entity_id, lamport, device_id, op FROM sync_versions ORDER BY entity, entity_id",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     /// 首次同步:为存量实体合成 put 条目,保证老数据也能进入 oplog 流
     pub fn bootstrap_oplog(&self) -> Result<()> {
         if self.kv_get("oplog_bootstrapped")?.is_some() {

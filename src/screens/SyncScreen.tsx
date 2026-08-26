@@ -162,8 +162,88 @@ function AccountCard() {
   );
 }
 
+function PhraseModal({ onClose }: { onClose: () => void }) {
+  const [phrase, setPhrase] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    ipc.syncRecoveryPhrase().then(setPhrase).catch((e) => setError(String(e)));
+  }, []);
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ width: 560 }}>
+        <h3 style={{ fontSize: 17, marginBottom: 8 }}>恢复短语</h3>
+        <div style={{ fontSize: 12.5, color: "var(--warning-text)", lineHeight: 1.6, marginBottom: 14 }}>
+          这 24 个单词等价于你的主密钥:请抄写到纸上妥善保管,任何人拿到即可解密你的同步数据。
+          忘记主密码且无此短语 = 数据不可恢复。
+        </div>
+        {error && <div style={{ fontSize: 12.5, color: "var(--danger-text)" }}>{error}</div>}
+        {phrase && (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8 }}>
+            {phrase.split(" ").map((w, i) => (
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, background: "var(--surface-sunken)", border: "1px solid var(--border-subtle)", borderRadius: 8, padding: "6px 10px" }}>
+                <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--text-faint)", width: 16 }}>{i + 1}</span>
+                <span style={{ fontFamily: "var(--font-mono)", fontSize: 12.5, color: "var(--text-strong)" }}>{w}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 18 }}>
+          <Button variant="primary" onClick={onClose}>我已妥善保存</Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RestoreModal({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
+  const [phrase, setPhrase] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ width: 520 }}>
+        <h3 style={{ fontSize: 17, marginBottom: 8 }}>用恢复短语恢复主密钥</h3>
+        <div style={{ fontSize: 12.5, color: "var(--text-muted)", lineHeight: 1.6, marginBottom: 12 }}>
+          输入在旧设备上抄写的 24 个单词(空格分隔),即可在本机重建主密钥并解密同步数据。
+        </div>
+        <textarea
+          value={phrase}
+          onChange={(e) => setPhrase(e.target.value)}
+          placeholder="word1 word2 word3 …"
+          style={{ width: "100%", height: 90, resize: "vertical", background: "var(--surface-sunken)", border: "1px solid var(--border-default)", borderRadius: 10, padding: 10, fontFamily: "var(--font-mono)", fontSize: 12.5, color: "var(--text-strong)", outline: "none" }}
+        />
+        {error && <div style={{ fontSize: 12, color: "var(--danger-text)", marginTop: 8 }}>{error}</div>}
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+          <Button variant="ghost" onClick={onClose}>取消</Button>
+          <Button
+            variant="primary"
+            loading={busy}
+            disabled={phrase.trim().split(/\s+/).length !== 24}
+            onClick={async () => {
+              setBusy(true);
+              setError(null);
+              try {
+                await ipc.syncRestoreMaster(phrase);
+                onDone();
+              } catch (e) {
+                setError(String(e));
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
+            恢复
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function SyncScreen() {
   const { status, config, account, load, syncNow, setScope } = useSyncStore();
+  const [showPhrase, setShowPhrase] = useState(false);
+  const [showRestore, setShowRestore] = useState(false);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -237,11 +317,21 @@ export function SyncScreen() {
         <div className="card" style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 20px" }}>
           <Lock size={15} />
           <div style={{ flex: 1, fontSize: 12.5, color: "var(--text-muted)", lineHeight: 1.5 }}>
-            同步数据以主密码派生密钥在本地加密,Vela 无法读取你的私钥与主机凭据。
+            同步数据以主密码派生密钥在本地加密,Vela 与管理平台均无法读取你的私钥与主机凭据。
           </div>
-          <Button variant="outline">查看恢复短语</Button>
+          <Button variant="ghost" onClick={() => setShowRestore(true)}>用恢复短语恢复</Button>
+          <Button variant="outline" disabled={!config?.hasMasterKey} onClick={() => setShowPhrase(true)}>
+            查看恢复短语
+          </Button>
         </div>
       </div>
+      {showPhrase && <PhraseModal onClose={() => setShowPhrase(false)} />}
+      {showRestore && (
+        <RestoreModal
+          onClose={() => setShowRestore(false)}
+          onDone={() => { setShowRestore(false); void load(); }}
+        />
+      )}
     </div>
   );
 }

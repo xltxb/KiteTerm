@@ -23,6 +23,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+mod sts;
+
 struct PlatformConfig {
     admin_key: String,
     s3_endpoint: String,
@@ -30,6 +32,8 @@ struct PlatformConfig {
     s3_region: String,
     s3_access_key: String,
     s3_secret_key: String,
+    /// STS 模式:auto(默认,失败回退共享凭据)| require | off
+    sts_mode: String,
 }
 
 struct AppState {
@@ -199,8 +203,9 @@ async fn me(
     Ok(Json(UserOut { id: user.id, email: user.email, sync_enabled: user.sync_enabled }))
 }
 
-/// 平台管控的同步凭据:登录且账户同步已放开时,下发平台桶 + 该用户前缀。
-/// v1 为共享凭据 + 前缀约定;换 STS 临时凭据为后续硬化项。
+/// 平台管控的同步凭据:登录且账户同步已放开时下发。
+/// 优先经 STS 签发按 users/{id}/* 收敛的限权临时凭据(1h);
+/// STS 不可用时回退共享凭据 + 前缀约定(VELA_STS=require 则直接报错)。
 async fn sync_credentials(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -213,13 +218,44 @@ async fn sync_credentials(
             "该账户的云同步已被平台停用,请联系管理员",
         ));
     }
+    let prefix = format!("users/{}", user.id);
+    if state.cfg.sts_mode != "off" {
+        match sts::assume_role_for_user(
+            &state.cfg.s3_endpoint,
+            &state.cfg.s3_region,
+            &state.cfg.s3_access_key,
+            &state.cfg.s3_secret_key,
+            &state.cfg.s3_bucket,
+            &user.id,
+            3600,
+        )
+        .await
+        {
+            Ok(t) => {
+                return Ok(Json(json!({
+                    "endpoint": state.cfg.s3_endpoint,
+                    "bucket": state.cfg.s3_bucket,
+                    "region": state.cfg.s3_region,
+                    "accessKey": t.access_key,
+                    "secretKey": t.secret_key,
+                    "sessionToken": t.session_token,
+                    "expiration": t.expiration,
+                    "prefix": prefix,
+                })));
+            }
+            Err(e) if state.cfg.sts_mode == "require" => {
+                return Err(err(StatusCode::BAD_GATEWAY, "sts_error", &e));
+            }
+            Err(e) => eprintln!("[server] STS 失败,回退共享凭据: {e}"),
+        }
+    }
     Ok(Json(json!({
         "endpoint": state.cfg.s3_endpoint,
         "bucket": state.cfg.s3_bucket,
         "region": state.cfg.s3_region,
         "accessKey": state.cfg.s3_access_key,
         "secretKey": state.cfg.s3_secret_key,
-        "prefix": format!("users/{}", user.id),
+        "prefix": prefix,
     })))
 }
 
@@ -392,6 +428,7 @@ async fn main() {
         s3_region: env_or("S3_REGION", "us-east-1"),
         s3_access_key: std::env::var("S3_ACCESS_KEY").expect("必须设置 S3_ACCESS_KEY"),
         s3_secret_key: std::env::var("S3_SECRET_KEY").expect("必须设置 S3_SECRET_KEY"),
+        sts_mode: env_or("VELA_STS", "auto"),
     };
 
     // 平台负责保证桶存在
