@@ -117,7 +117,12 @@ pub fn spawn_monitor_loop(app: AppHandle, sessions: Arc<SessionManager>, state: 
                 let s = sessions.sessions.lock().unwrap();
                 s.values()
                     .filter(|e| e.info.state == "connected")
-                    .map(|e| (e.info.host_id.clone(), (e.info.host_name.clone(), e.handle.clone())))
+                    .map(|e| {
+                        (
+                            e.info.host_id.clone(),
+                            (e.info.host_name.clone(), e.handle.lock().unwrap().clone()),
+                        )
+                    })
                     .collect()
             };
             let mut samples = Vec::new();

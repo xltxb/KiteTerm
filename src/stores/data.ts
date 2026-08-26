@@ -45,6 +45,13 @@ export const useDataStore = create<DataState>((set, get) => ({
     ]);
     set({ groups, hosts, keys, snippets, forwards, recordings, loaded: true });
     ipc.onForwardStats((forwards) => set({ forwards }));
+    ipc.onHostLatency((latency) =>
+      set((s) => ({
+        hosts: s.hosts.map((h) =>
+          h.id in latency ? { ...h, latencyMs: latency[h.id] } : h,
+        ),
+      })),
+    );
   },
   saveHost: async (h) => {
     await ipc.saveHost(h);

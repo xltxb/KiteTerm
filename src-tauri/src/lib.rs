@@ -32,6 +32,14 @@ pub fn run() {
             let monitor_state = Arc::new(monitor::MonitorState::default());
 
             monitor::spawn_monitor_loop(app.handle().clone(), sessions.clone(), monitor_state.clone());
+            ssh::spawn_latency_loop(app.handle().clone(), db.clone());
+            forward::spawn_restore_enabled(
+                app.handle().clone(),
+                db.clone(),
+                vault.clone(),
+                sessions.clone(),
+                forwards.clone(),
+            );
 
             app.manage(AppState {
                 db,
@@ -63,6 +71,7 @@ pub fn run() {
             commands::toggle_forward,
             commands::delete_forward,
             commands::session_open,
+            commands::trust_host_key,
             commands::session_write,
             commands::session_resize,
             commands::session_close,
@@ -75,6 +84,7 @@ pub fn run() {
             commands::recording_start,
             commands::recording_stop,
             commands::recording_list,
+            commands::recording_read,
             commands::monitor_samples,
             commands::sync_status,
             commands::sync_get_config,

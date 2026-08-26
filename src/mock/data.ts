@@ -37,7 +37,7 @@ export const mockSnippets: Snippet[] = [
   { id: "s3", name: "数据库备份", command: "pg_dump -Fc vela > ~/backup/vela_$(date +%F).dump", tags: ["postgres", "备份"], useCount: 11, updatedAt: "2026-08-11" },
   { id: "s4", name: "清理 Docker", command: "docker system prune -af --volumes", tags: ["docker"], useCount: 7, updatedAt: "2026-07-29" },
   { id: "s5", name: "证书续期", command: "certbot renew --nginx --quiet", tags: ["nginx", "tls"], useCount: 4, updatedAt: "2026-07-12" },
-  { id: "s6", name: "端口占用", command: "lsof -i :8080 | head", tags: ["排查"], useCount: 21, updatedAt: "2026-08-25" },
+  { id: "s6", name: "端口占用", command: "lsof -i :{{cursor}} | head", tags: ["排查"], useCount: 21, updatedAt: "2026-08-25" },
 ];
 
 export const mockForwards: ForwardRule[] = [

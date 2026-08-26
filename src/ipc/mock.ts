@@ -41,9 +41,11 @@ class Emitter<T extends unknown[]> {
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 
-/** 极简假 shell:回显输入,回车后输出演示内容 */
+/** 极简假 shell:带行内光标(左右移动、中间插入/删除),回车后输出演示内容 */
 class FakeShell {
   private line = "";
+  private pos = 0;
+  private esc = ""; // 正在累积的转义序列
   constructor(
     private id: string,
     private host: { name: string; user: string },
@@ -59,19 +61,45 @@ class FakeShell {
   private prompt() {
     return `\x1b[96m${this.host.user}@${this.host.name}\x1b[0m\x1b[90m:\x1b[0m\x1b[94m~\x1b[0m\x1b[90m$\x1b[0m `;
   }
+  /** 重绘当前行并把光标放回 pos 处 */
+  private redraw() {
+    const back = "\x1b[D".repeat(this.line.length - this.pos);
+    this.emit(this.id, "\r\x1b[K" + this.prompt() + this.line + back);
+  }
   write(data: string) {
     for (const ch of data) {
-      if (ch === "\r") {
+      if (this.esc) {
+        this.esc += ch;
+        // CSI 序列以 @-~ 范围的终结字节结束
+        if (this.esc.length >= 3 && ch >= "@" && ch <= "~") {
+          if (this.esc === "\x1b[D" && this.pos > 0) {
+            this.pos -= 1;
+            this.emit(this.id, "\x1b[D");
+          } else if (this.esc === "\x1b[C" && this.pos < this.line.length) {
+            this.pos += 1;
+            this.emit(this.id, "\x1b[C");
+          }
+          this.esc = "";
+        }
+        continue;
+      }
+      if (ch === "\x1b") {
+        this.esc = ch;
+      } else if (ch === "\r") {
         this.emit(this.id, "\r\n" + this.run(this.line.trim()) + this.prompt());
         this.line = "";
+        this.pos = 0;
       } else if (ch === "\x7f") {
-        if (this.line.length > 0) {
-          this.line = this.line.slice(0, -1);
-          this.emit(this.id, "\b \b");
+        if (this.pos > 0) {
+          this.line = this.line.slice(0, this.pos - 1) + this.line.slice(this.pos);
+          this.pos -= 1;
+          this.redraw();
         }
       } else if (ch >= " ") {
-        this.line += ch;
-        this.emit(this.id, ch);
+        this.line = this.line.slice(0, this.pos) + ch + this.line.slice(this.pos);
+        this.pos += 1;
+        if (this.pos === this.line.length) this.emit(this.id, ch);
+        else this.redraw();
       }
     }
   }
@@ -115,6 +143,16 @@ export function createMockIpc(): VelaIpc {
   const evMonitor = new Emitter<[typeof mockMonitor]>();
   const evSync = new Emitter<[SyncStatus]>();
   const evForward = new Emitter<[ForwardRule[]]>();
+  const evLatency = new Emitter<[Record<string, number | null>]>();
+
+  // 模拟主机延迟探测
+  setInterval(() => {
+    const m: Record<string, number | null> = {};
+    hosts.forEach((h) => {
+      m[h.id] = h.latencyMs == null ? null : Math.max(3, h.latencyMs + Math.round(Math.random() * 8 - 4));
+    });
+    evLatency.emit(m);
+  }, 8000);
 
   // 模拟传输进度
   setInterval(() => {
@@ -213,7 +251,7 @@ export function createMockIpc(): VelaIpc {
     async deleteForward(id) { forwards = forwards.filter((f) => f.id !== id); },
     onForwardStats: (cb) => evForward.on(cb),
 
-    async openSession(hostId) {
+    async openSession(hostId, _password) {
       const host = hosts.find((h) => h.id === hostId);
       if (!host) throw new Error("host not found: " + hostId);
       const info: SessionInfo = {
@@ -279,6 +317,26 @@ export function createMockIpc(): VelaIpc {
       return rec;
     },
     async listRecordings() { return recordings; },
+    async readRecording(id) {
+      const rec = recordings.find((r) => r.id === id);
+      const name = rec?.sessionHost ?? "demo";
+      // 演示用的迷你 asciicast v2
+      const lines = [
+        JSON.stringify({ version: 2, width: 100, height: 28, timestamp: 1756171200 }),
+        JSON.stringify([0.3, "o", `\u001b[96mlin@${name}\u001b[0m\u001b[90m:\u001b[0m\u001b[94m~\u001b[0m\u001b[90m$\u001b[0m `]),
+        JSON.stringify([1.1, "o", "p"]), JSON.stringify([1.2, "o", "m"]), JSON.stringify([1.3, "o", "2"]),
+        JSON.stringify([1.5, "o", " restart gateway\r\n"]),
+        JSON.stringify([2.4, "o", "\u001b[92m[PM2] ✓ gateway 已重启 · pid 21840\u001b[0m\r\n"]),
+        JSON.stringify([3.0, "o", `\u001b[96mlin@${name}\u001b[0m\u001b[90m:\u001b[0m\u001b[94m~\u001b[0m\u001b[90m$\u001b[0m tail -f logs/realtime.log\r\n`]),
+        JSON.stringify([3.8, "o", "\u001b[90m09:14:02\u001b[0m \u001b[92mINFO\u001b[0m  ws    connected clients=1,204\r\n"]),
+        JSON.stringify([4.9, "o", "\u001b[90m09:14:05\u001b[0m \u001b[92mINFO\u001b[0m  sync  p50=12ms p99=48ms\r\n"]),
+        JSON.stringify([6.2, "o", "\u001b[90m09:14:11\u001b[0m \u001b[93mWARN\u001b[0m  quota project=aurora usage=60%\r\n"]),
+      ];
+      return lines.join("\n");
+    },
+
+    async trustHostKey() {},
+    onHostLatency: (cb) => evLatency.on(cb),
 
     async monitorSamples() { return mockMonitor; },
     onMonitor: (cb) => evMonitor.on(cb),

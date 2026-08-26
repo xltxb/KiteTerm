@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
-import { Cpu, Database, Globe, KeyRound, Server, Trash2 } from "lucide-react";
+import { Cpu, Database, Globe, KeyRound, Lock, Server, Trash2 } from "lucide-react";
 import { Badge, Button, ScreenHeader, TextInput } from "@/components/ui";
+import { ipc } from "@/ipc";
 import { useDataStore } from "@/stores/data";
 import { useSessionStore } from "@/stores/session";
 import { useUiStore } from "@/stores/ui";
@@ -96,13 +97,33 @@ export function HostsScreen() {
 
   const keyName = (id: string | null) => keys.find((k) => k.id === id)?.name ?? "密码认证";
 
-  const connect = async (h: Host) => {
+  const [pwHost, setPwHost] = useState<Host | null>(null);
+  const [pwError, setPwError] = useState<string | null>(null);
+
+  const connect = async (h: Host, password?: string) => {
     setConnecting(h.id);
     try {
-      await open(h.id);
+      await open(h.id, password);
+      setPwHost(null);
+      setPwError(null);
       go("terminal");
     } catch (err) {
-      alert("连接失败: " + String(err));
+      const msg = String(err);
+      if (msg.includes("PASSWORD_REQUIRED")) {
+        setPwHost(h);
+        setPwError(null);
+      } else if (msg.includes("HOSTKEY_CHANGED")) {
+        const detail = msg.replace(/^.*HOSTKEY_CHANGED:\s*/, "");
+        if (window.confirm(detail + "\n\n信任新指纹并重试连接?")) {
+          await ipc.trustHostKey(h.id);
+          setConnecting(null);
+          return connect(h, password);
+        }
+      } else if (password !== undefined) {
+        setPwError(msg);
+      } else {
+        alert("连接失败: " + msg);
+      }
     } finally {
       setConnecting(null);
     }
@@ -165,6 +186,62 @@ export function HostsScreen() {
         )}
       </div>
       {showNew && <NewHostModal onClose={() => setShowNew(false)} />}
+      {pwHost && (
+        <PasswordModal
+          host={pwHost}
+          error={pwError}
+          busy={connecting === pwHost.id}
+          onSubmit={(pw) => void connect(pwHost, pw)}
+          onClose={() => { setPwHost(null); setPwError(null); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function PasswordModal({
+  host,
+  error,
+  busy,
+  onSubmit,
+  onClose,
+}: {
+  host: Host;
+  error: string | null;
+  busy: boolean;
+  onSubmit: (password: string) => void;
+  onClose: () => void;
+}) {
+  const [pw, setPw] = useState("");
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ width: 380 }}>
+        <h3 style={{ fontSize: 16, marginBottom: 6, display: "flex", alignItems: "center", gap: 8 }}>
+          <Lock size={15} />密码认证
+        </h3>
+        <div style={{ fontSize: 12.5, color: "var(--text-muted)", marginBottom: 14 }}>
+          {host.user}@{host.addr}:{host.port} 未配置密钥,请输入登录密码。
+        </div>
+        <input
+          className="input"
+          type="password"
+          autoFocus
+          value={pw}
+          onChange={(e) => setPw(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && pw && onSubmit(pw)}
+          placeholder="密码"
+          style={{ width: "100%" }}
+        />
+        {error && (
+          <div style={{ fontSize: 12, color: "var(--danger-text)", marginTop: 10, lineHeight: 1.5 }}>{error}</div>
+        )}
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
+          <Button variant="ghost" onClick={onClose}>取消</Button>
+          <Button variant="primary" disabled={!pw} loading={busy} onClick={() => onSubmit(pw)}>
+            连接
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }

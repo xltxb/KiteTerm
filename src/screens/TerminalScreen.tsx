@@ -15,9 +15,11 @@ import {
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui";
+import { CastPlayer } from "@/components/CastPlayer";
 import { useDataStore } from "@/stores/data";
 import { getTerminal, useSessionStore } from "@/stores/session";
 import { useUiStore } from "@/stores/ui";
+import type { Recording } from "@/types";
 
 interface Addons {
   fit: FitAddon;
@@ -114,6 +116,7 @@ function RightDock() {
   const bump = useDataStore((s) => s.bumpSnippet);
   const [aiMsgs, setAiMsgs] = useState<{ role: "user" | "ai"; text: string }[]>([]);
   const [aiInput, setAiInput] = useState("");
+  const [playRec, setPlayRec] = useState<Recording | null>(null);
 
   const quick = useMemo(
     () => [...snippets].sort((a, b) => b.useCount - a.useCount).slice(0, 4),
@@ -183,7 +186,11 @@ function RightDock() {
         <div className="vscroll" style={{ flex: 1, overflow: "auto", padding: "4px 12px 12px 12px", display: "flex", flexDirection: "column", gap: 8 }}>
           {recordings.map((r) => (
             <div key={r.id} className="hover-card" style={{ border: "1px solid var(--border-subtle)", borderRadius: 10, padding: "10px 12px", display: "flex", alignItems: "center", gap: 10 }}>
-              <div style={{ width: 30, height: 30, flex: "none", borderRadius: 99, background: "var(--accent-subtle)", color: "var(--accent-text)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
+              <div
+                onClick={() => setPlayRec(r)}
+                title="回放"
+                style={{ width: 30, height: 30, flex: "none", borderRadius: 99, background: "var(--accent-subtle)", color: "var(--accent-text)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}
+              >
                 <Play size={14} />
               </div>
               <div style={{ flex: 1, minWidth: 0, lineHeight: 1.3 }}>
@@ -236,6 +243,7 @@ function RightDock() {
           </div>
         </div>
       )}
+      {playRec && <CastPlayer recording={playRec} onClose={() => setPlayRec(null)} />}
     </div>
   );
 }

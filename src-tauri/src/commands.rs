@@ -191,8 +191,23 @@ pub async fn session_open(
     app: AppHandle,
     state: State<'_, AppState>,
     host_id: String,
+    password: Option<String>,
 ) -> Result<SessionInfo> {
-    ssh::open_shell_session(app, &state.db, &state.vault, &state.sessions, &host_id).await
+    ssh::open_shell_session(
+        app,
+        state.db.clone(),
+        state.vault.clone(),
+        state.sessions.clone(),
+        &host_id,
+        password,
+    )
+    .await
+}
+
+/// 主机密钥指纹变更后,用户确认信任:清除旧记录,下次连接 TOFU 重新记录
+#[tauri::command]
+pub fn trust_host_key(state: State<AppState>, host_id: String) -> Result<()> {
+    state.db.forget_known_host(&host_id)
 }
 
 #[tauri::command]
@@ -304,6 +319,13 @@ pub fn recording_stop(app: AppHandle, state: State<AppState>, session_id: String
 #[tauri::command]
 pub fn recording_list(state: State<AppState>) -> Result<Vec<Recording>> {
     state.db.list_recordings()
+}
+
+/// 读取 asciicast v2 原文供前端回放
+#[tauri::command]
+pub fn recording_read(state: State<AppState>, id: String) -> Result<String> {
+    let path = state.db.get_recording_path(&id)?;
+    Ok(std::fs::read_to_string(path)?)
 }
 
 // ---- monitor ----

@@ -52,7 +52,10 @@ export interface VelaIpc {
   onForwardStats(cb: (rules: ForwardRule[]) => void): Unsubscribe;
 
   // ---- sessions / terminal ----
-  openSession(hostId: string): Promise<SessionInfo>;
+  /** password 仅在主机未配置密钥时需要;错误消息含 PASSWORD_REQUIRED / HOSTKEY_CHANGED 标记 */
+  openSession(hostId: string, password?: string): Promise<SessionInfo>;
+  /** 主机密钥指纹变更后用户确认信任(清除旧记录,下次连接重新 TOFU) */
+  trustHostKey(hostId: string): Promise<void>;
   writeSession(id: string, data: string): Promise<void>;
   resizeSession(id: string, cols: number, rows: number): Promise<void>;
   closeSession(id: string): Promise<void>;
@@ -78,6 +81,11 @@ export interface VelaIpc {
   startRecording(sessionId: string): Promise<void>;
   stopRecording(sessionId: string): Promise<Recording>;
   listRecordings(): Promise<Recording[]>;
+  /** 返回 asciicast v2 原文(首行 header,随后事件行) */
+  readRecording(id: string): Promise<string>;
+
+  // ---- host latency ----
+  onHostLatency(cb: (latency: Record<string, number | null>) => void): Unsubscribe;
 
   // ---- monitor ----
   monitorSamples(): Promise<MonitorSample[]>;

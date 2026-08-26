@@ -13,6 +13,7 @@ import {
   Upload,
 } from "lucide-react";
 import { Badge, Progress } from "@/components/ui";
+import { ipc } from "@/ipc";
 import { useSessionStore } from "@/stores/session";
 import { useTransferStore } from "@/stores/transfer";
 import type { FileEntry, TransferJob } from "@/types";
@@ -212,7 +213,15 @@ export function TransferScreen() {
                 <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--text-muted)", width: 48, textAlign: "right" }}>
                   {j.state === "queued" ? "—" : `${Math.round(j.progress)}%`}
                 </span>
-                <span style={{ fontSize: 11, color: meta.color, width: 110, textAlign: "right" }}>{meta.text}</span>
+                <span style={{ fontSize: 11, color: meta.color, width: 110, textAlign: "right", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={j.error ?? undefined}>{meta.text}</span>
+                {j.state === "failed" && (
+                  <span
+                    onClick={() => void ipc.retryTransfer(j.id)}
+                    style={{ fontSize: 11.5, color: "var(--accent-text)", cursor: "pointer", whiteSpace: "nowrap" }}
+                  >
+                    重试
+                  </span>
+                )}
               </div>
             );
           })}

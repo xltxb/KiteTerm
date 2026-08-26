@@ -63,6 +63,9 @@ impl Db {
             CREATE TABLE IF NOT EXISTS kv (
                 key TEXT PRIMARY KEY, value TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS known_hosts (
+                host_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, first_seen TEXT NOT NULL
+            );
             "#,
         )?;
         let db = Self { conn: Mutex::new(conn), data_dir };
@@ -403,6 +406,34 @@ impl Db {
         Ok(())
     }
 
+    // ---- known_hosts(TOFU 指纹)----
+    pub fn known_host_fingerprint(&self, host_id: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn
+            .query_row(
+                "SELECT fingerprint FROM known_hosts WHERE host_id = ?1",
+                [host_id],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    pub fn record_known_host(&self, host_id: &str, fingerprint: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO known_hosts (host_id, fingerprint, first_seen) VALUES (?1, ?2, ?3)
+             ON CONFLICT(host_id) DO UPDATE SET fingerprint = ?2, first_seen = ?3",
+            params![host_id, fingerprint, now()],
+        )?;
+        Ok(())
+    }
+
+    pub fn forget_known_host(&self, host_id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM known_hosts WHERE host_id = ?1", [host_id])?;
+        Ok(())
+    }
+
     // ---- recordings ----
     pub fn list_recordings(&self) -> Result<Vec<Recording>> {
         let conn = self.conn.lock().unwrap();
@@ -423,6 +454,11 @@ impl Db {
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
+    }
+
+    pub fn get_recording_path(&self, id: &str) -> Result<String> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn.query_row("SELECT path FROM recordings WHERE id = ?1", [id], |r| r.get(0))?)
     }
 
     pub fn insert_recording(&self, session_host: &str, name: &str, path: &str, duration_ms: u64) -> Result<String> {

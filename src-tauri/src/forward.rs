@@ -36,7 +36,7 @@ impl ForwardManager {
 
 /// 找到可用的 SSH 连接:优先复用该主机的活跃会话,否则新建专用连接
 async fn handle_for_host(
-    db: &Db,
+    db: &Arc<Db>,
     vault: &Vault,
     sessions: &SessionManager,
     host_id: &str,
@@ -45,13 +45,44 @@ async fn handle_for_host(
         let s = sessions.sessions.lock().unwrap();
         s.values()
             .find(|e| e.info.host_id == host_id && e.info.state == "connected")
-            .map(|e| e.handle.clone())
+            .map(|e| e.handle.lock().unwrap().clone())
     };
     if let Some(h) = existing {
         return Ok(h);
     }
-    let (h, _, _) = ssh::connect_host(db, vault, host_id).await?;
+    let (h, _, _) = ssh::connect_host(db.clone(), vault, host_id, None).await?;
     Ok(h)
+}
+
+/// 应用启动时恢复所有启用中的转发规则;起不来的规则自动置为停用
+pub fn spawn_restore_enabled(
+    app: AppHandle,
+    db: Arc<Db>,
+    vault: Arc<Vault>,
+    sessions: Arc<SessionManager>,
+    forwards: Arc<ForwardManager>,
+) {
+    tokio::spawn(async move {
+        let rules = db.list_forwards().unwrap_or_default();
+        for rule in rules.into_iter().filter(|r| r.enabled && r.kind != "R") {
+            if let Err(e) = start_forward(
+                app.clone(),
+                db.clone(),
+                vault.clone(),
+                sessions.clone(),
+                forwards.clone(),
+                rule.clone(),
+            )
+            .await
+            {
+                eprintln!("[forward] 启动恢复规则 {} 失败: {e}", rule.id);
+                let _ = db.set_forward_enabled(&rule.id, false);
+            }
+        }
+        if let Ok(list) = db.list_forwards() {
+            let _ = app.emit("forward://stats", list);
+        }
+    });
 }
 
 pub async fn start_forward(

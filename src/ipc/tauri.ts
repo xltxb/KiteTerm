@@ -34,7 +34,8 @@ export function createTauriIpc(): VelaIpc {
     deleteForward: (id) => invoke("delete_forward", { id }),
     onForwardStats: (cb) => sub<ForwardRule[]>("forward://stats", cb),
 
-    openSession: (hostId) => invoke("session_open", { hostId }),
+    openSession: (hostId, password) => invoke("session_open", { hostId, password }),
+    trustHostKey: (hostId) => invoke("trust_host_key", { hostId }),
     writeSession: (id, data) => invoke("session_write", { id, data }),
     resizeSession: (id, cols, rows) => invoke("session_resize", { id, cols, rows }),
     closeSession: (id) => invoke("session_close", { id }),
@@ -58,6 +59,9 @@ export function createTauriIpc(): VelaIpc {
     startRecording: (sessionId) => invoke("recording_start", { sessionId }),
     stopRecording: (sessionId) => invoke("recording_stop", { sessionId }),
     listRecordings: () => invoke("recording_list"),
+    readRecording: (id) => invoke("recording_read", { id }),
+
+    onHostLatency: (cb) => sub<Record<string, number | null>>("hosts://latency", cb),
 
     monitorSamples: () => invoke("monitor_samples"),
     onMonitor: (cb) => sub<MonitorSample[]>("monitor://samples", cb),
