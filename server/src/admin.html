@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vela 管理平台</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Manrope:wght@400;600;700&family=JetBrains+Mono:wght@400;600&family=Noto+Sans+SC:wght@400;500;700&display=swap');
+  :root{
+    --page:#0d0d0f; --card:#151517; --sunken:#0a0a0c; --raised:#1d1d20;
+    --border:rgba(255,255,255,.06); --border-md:rgba(255,255,255,.12);
+    --text-strong:#f4f7fc; --text:#c4ccda; --muted:#8893a8; --faint:#5b6478;
+    --azure:#3b6ef6; --azure-4:#5e83fb; --azure-3:#8facff; --cyan:#2dcde6;
+    --accent-subtle:rgba(59,110,246,.16); --accent-border:rgba(94,131,251,.36);
+    --success:#2ad07e; --success-t:#7be8b3; --success-s:rgba(24,179,104,.16);
+    --danger:#ff6259; --danger-t:#ff9d97; --danger-s:rgba(240,71,62,.18);
+    --sans:"Manrope","Noto Sans SC",-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+    --display:"Space Grotesk","Noto Sans SC",sans-serif;
+    --mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;min-height:100vh}
+  body{background:var(--page);color:var(--text);font-family:var(--sans);font-size:14px}
+  .wrap{max-width:1080px;margin:0 auto;padding:36px 28px}
+  .eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.12em;color:var(--azure-3);text-transform:uppercase;margin-bottom:8px}
+  h1{margin:0;font-family:var(--display);font-size:26px;font-weight:700;letter-spacing:-.02em;color:var(--text-strong)}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:14px}
+  .btn{display:inline-flex;align-items:center;gap:6px;height:34px;padding:0 15px;border:none;border-radius:10px;
+       font:600 12.5px var(--sans);cursor:pointer;color:var(--text-strong);background:var(--sunken);
+       border:1px solid var(--border-md);transition:all .14s cubic-bezier(.16,1,.3,1);white-space:nowrap}
+  .btn:hover{background:var(--raised)}
+  .btn:active{transform:translateY(1px)}
+  .btn:disabled{opacity:.5;cursor:not-allowed}
+  .btn.primary{background:var(--azure);border-color:transparent;color:#fff}
+  .btn.primary:hover{background:var(--azure-4);box-shadow:0 0 0 1px rgba(59,110,246,.3),0 6px 18px rgba(59,110,246,.3)}
+  .btn.ghost{background:transparent;border-color:transparent;color:var(--muted)}
+  .btn.ghost:hover{background:var(--sunken);color:var(--text-strong)}
+  .btn.danger-ghost{background:transparent;border-color:transparent;color:var(--danger-t)}
+  .btn.danger-ghost:hover{background:var(--danger-s)}
+  .input{height:36px;background:var(--sunken);border:1px solid var(--border-md);border-radius:10px;
+         padding:0 12px;font:13px var(--sans);color:var(--text-strong);outline:none;transition:all .14s}
+  .input:focus{border-color:var(--azure);box-shadow:0 0 0 3px rgba(59,110,246,.28)}
+  .input::placeholder{color:var(--faint)}
+  .badge{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 9px;border-radius:99px;font-size:11px;font-weight:600;white-space:nowrap}
+  .badge .dot{width:6px;height:6px;border-radius:99px;background:currentColor}
+  .badge.ok{background:var(--success-s);color:var(--success-t)}
+  .badge.off{background:var(--danger-s);color:var(--danger-t)}
+  .switch{position:relative;width:40px;height:24px;border-radius:99px;background:var(--sunken);
+          border:1px solid var(--border-md);cursor:pointer;transition:all .14s;flex:none;padding:0}
+  .switch[data-on="true"]{background:var(--azure);border-color:var(--azure)}
+  .switch .thumb{position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:99px;background:#fff;
+                 transition:transform .22s cubic-bezier(.34,1.56,.64,1)}
+  .switch[data-on="true"] .thumb{transform:translateX(16px)}
+  .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin:22px 0 16px}
+  .stat{padding:18px 20px}
+  .stat .label{font-family:var(--mono);font-size:10.5px;letter-spacing:.09em;color:var(--muted);text-transform:uppercase}
+  .stat .num{margin-top:6px;font-family:var(--display);font-size:34px;font-weight:700;letter-spacing:-.02em;
+             background:linear-gradient(90deg,var(--azure-4),var(--cyan));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .stat .sub{font-size:11.5px;color:var(--faint);margin-top:2px}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{text-align:left;font-size:11px;font-weight:700;letter-spacing:.04em;color:var(--muted);
+     padding:12px 16px;border-bottom:1px solid var(--border);white-space:nowrap}
+  td{padding:12px 16px;border-bottom:1px solid var(--border);vertical-align:middle}
+  tr:last-child td{border-bottom:none}
+  tr:hover td{background:var(--sunken)}
+  .mono{font-family:var(--mono);font-size:11.5px;color:var(--faint)}
+  .email{font-weight:600;color:var(--text-strong)}
+  .toolbar{display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--border)}
+  .muted-note{font-size:12px;color:var(--faint);margin-top:14px;line-height:1.6}
+  .toast{position:fixed;right:22px;bottom:22px;background:var(--raised);border:1px solid var(--border-md);
+         border-radius:10px;padding:10px 16px;font-size:12.5px;color:var(--text-strong);
+         box-shadow:0 16px 40px rgba(0,0,0,.55);opacity:0;transition:opacity .2s;pointer-events:none;max-width:420px}
+  .toast.show{opacity:1}
+  .toast.err{border-color:var(--danger);color:var(--danger-t)}
+  .logo{width:34px;height:34px;border-radius:10px;background:linear-gradient(135deg,var(--azure),var(--cyan));
+        display:flex;align-items:center;justify-content:center;box-shadow:0 0 0 1px rgba(94,131,251,.45),0 8px 26px rgba(59,110,246,.45)}
+  .hidden{display:none !important}
+  #login-box{max-width:420px;margin:14vh auto 0;padding:28px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <!-- 登录 -->
+  <div id="login-view">
+    <div class="card" id="login-box">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:18px">
+        <div class="logo"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 18H2a4 4 0 0 0 4 4h12a4 4 0 0 0 4-4Z"/><path d="M21 14 10 2 3 14h18Z"/><path d="M10 2v16"/></svg></div>
+        <div>
+          <div style="font-family:var(--display);font-weight:700;font-size:16px;color:var(--text-strong)">Vela 管理平台</div>
+          <div class="mono" style="letter-spacing:.09em">ADMIN CONSOLE</div>
+        </div>
+      </div>
+      <label style="display:block;font-size:11.5px;font-weight:600;color:var(--muted);margin-bottom:6px">管理密钥(X-Admin-Key)</label>
+      <input id="key-input" class="input" type="password" style="width:100%" placeholder="输入管理密钥">
+      <div id="login-err" style="font-size:12px;color:var(--danger-t);margin-top:10px;min-height:16px"></div>
+      <button class="btn primary" style="width:100%;margin-top:8px;height:38px" onclick="doLogin()">进入控制台</button>
+    </div>
+  </div>
+
+  <!-- 主界面 -->
+  <div id="main-view" class="hidden">
+    <div style="display:flex;align-items:flex-end;gap:14px">
+      <div style="flex:1">
+        <div class="eyebrow">Vela Platform · Admin</div>
+        <h1>用户与同步管控</h1>
+      </div>
+      <button class="btn" onclick="refresh()">刷新</button>
+      <button class="btn ghost" onclick="logout()">退出</button>
+    </div>
+
+    <div class="stats">
+      <div class="card stat"><div class="label">Users 总用户</div><div class="num" id="st-users">—</div><div class="sub" id="st-endpoint"></div></div>
+      <div class="card stat"><div class="label">Sync Enabled 同步放开</div><div class="num" id="st-enabled">—</div><div class="sub">停用账户将无法获取存储凭据</div></div>
+      <div class="card stat"><div class="label">Active Tokens 活跃令牌</div><div class="num" id="st-tokens">—</div><div class="sub">强制下线会吊销该用户全部令牌</div></div>
+    </div>
+
+    <div class="card">
+      <div class="toolbar">
+        <input id="search" class="input" style="width:260px" placeholder="搜索邮箱 / 用户 ID…" oninput="render()">
+        <span style="flex:1"></span>
+        <span class="mono" id="bucket-info"></span>
+      </div>
+      <div style="overflow-x:auto">
+        <table>
+          <thead><tr>
+            <th>用户</th><th>注册时间</th><th>存储用量</th><th>同步</th><th style="text-align:right">操作</th>
+          </tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="muted-note">
+      同步开关即时生效:停用后该账户下一次同步请求将被拒绝(SYNC_DISABLED),客户端会提示联系管理员。
+      桶内均为用户主密码加密的密文,平台与管理员均无法解读。
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+let KEY = localStorage.getItem("vela_admin_key") || "";
+let USERS = [];
+const $ = (id) => document.getElementById(id);
+
+function toast(msg, isErr) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.className = "toast show" + (isErr ? " err" : "");
+  clearTimeout(t._h);
+  t._h = setTimeout(() => (t.className = "toast"), 2600);
+}
+
+async function api(path, opts = {}) {
+  const resp = await fetch(path, {
+    ...opts,
+    headers: { "content-type": "application/json", "x-admin-key": KEY, ...(opts.headers || {}) },
+  });
+  const body = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(body?.error?.message || ("HTTP " + resp.status));
+  return body;
+}
+
+function fmtBytes(n) {
+  if (n < 1024) return n + " B";
+  if (n < 1024 ** 2) return (n / 1024).toFixed(1) + " KB";
+  if (n < 1024 ** 3) return (n / 1024 ** 2).toFixed(1) + " MB";
+  return (n / 1024 ** 3).toFixed(2) + " GB";
+}
+
+function fmtTime(ts) {
+  const d = new Date(ts * 1000);
+  const p = (x) => String(x).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+async function doLogin() {
+  const entered = $("key-input").value.trim();
+  if (entered) KEY = entered; // 空输入时沿用已保存的密钥(自动登录路径)
+  $("login-err").textContent = "";
+  try {
+    await api("/api/admin/stats");
+    localStorage.setItem("vela_admin_key", KEY);
+    $("login-view").classList.add("hidden");
+    $("main-view").classList.remove("hidden");
+    refresh();
+  } catch (e) {
+    $("login-err").textContent = "验证失败:" + e.message;
+  }
+}
+
+function logout() {
+  localStorage.removeItem("vela_admin_key");
+  location.reload();
+}
+
+async function refresh() {
+  try {
+    const [stats, users] = await Promise.all([api("/api/admin/stats"), api("/api/admin/users")]);
+    $("st-users").textContent = stats.users;
+    $("st-enabled").textContent = stats.syncEnabled;
+    $("st-tokens").textContent = stats.activeTokens;
+    $("st-endpoint").textContent = stats.endpoint;
+    $("bucket-info").textContent = "bucket: " + stats.bucket;
+    USERS = users.users;
+    render();
+  } catch (e) {
+    toast("加载失败:" + e.message, true);
+  }
+}
+
+function render() {
+  const q = $("search").value.trim().toLowerCase();
+  const rows = USERS.filter((u) => !q || u.email.includes(q) || u.id.includes(q));
+  $("rows").innerHTML = rows
+    .map(
+      (u) => `
+    <tr data-email="${u.email}">
+      <td>
+        <div class="email">${u.email}</div>
+        <div class="mono">${u.id}</div>
+      </td>
+      <td style="color:var(--muted);white-space:nowrap">${fmtTime(u.createdAt)}</td>
+      <td class="usage-cell">
+        <button class="btn ghost" style="height:26px;padding:0 10px;font-size:11.5px" onclick="loadUsage('${u.email}', this)">查看</button>
+      </td>
+      <td>
+        <div style="display:flex;align-items:center;gap:10px">
+          <button class="switch" data-on="${u.syncEnabled}" onclick="toggleSync('${u.email}', ${!u.syncEnabled})"><span class="thumb"></span></button>
+          <span class="badge ${u.syncEnabled ? "ok" : "off"}"><span class="dot"></span>${u.syncEnabled ? "已放开" : "已停用"}</span>
+        </div>
+      </td>
+      <td style="text-align:right">
+        <button class="btn danger-ghost" style="height:28px" onclick="revoke('${u.email}')">强制下线</button>
+      </td>
+    </tr>`
+    )
+    .join("");
+  if (rows.length === 0) {
+    $("rows").innerHTML = `<tr><td colspan="5" style="text-align:center;color:var(--faint);padding:28px">没有匹配的用户</td></tr>`;
+  }
+}
+
+async function toggleSync(email, enabled) {
+  try {
+    await api(`/api/admin/users/${encodeURIComponent(email)}/sync`, {
+      method: "POST",
+      body: JSON.stringify({ enabled }),
+    });
+    toast(`${email} 同步${enabled ? "已放开" : "已停用"}`);
+    refresh();
+  } catch (e) {
+    toast("操作失败:" + e.message, true);
+  }
+}
+
+async function revoke(email) {
+  if (!confirm(`吊销 ${email} 的全部登录令牌?该用户所有设备将被强制下线。`)) return;
+  try {
+    const r = await api(`/api/admin/users/${encodeURIComponent(email)}/revoke`, { method: "POST" });
+    toast(`已吊销 ${r.revoked} 个令牌`);
+    refresh();
+  } catch (e) {
+    toast("操作失败:" + e.message, true);
+  }
+}
+
+async function loadUsage(email, btn) {
+  btn.textContent = "…";
+  try {
+    const u = await api(`/api/admin/users/${encodeURIComponent(email)}/usage`);
+    btn.closest(".usage-cell").innerHTML =
+      `<span style="font-family:var(--mono);font-size:12px;color:var(--text)">${fmtBytes(u.bytes)}</span>` +
+      `<span class="mono" style="margin-left:8px">${u.objects} objs</span>`;
+  } catch (e) {
+    btn.textContent = "查看";
+    toast("用量获取失败:" + e.message, true);
+  }
+}
+
+$("key-input").addEventListener("keydown", (e) => e.key === "Enter" && doLogin());
+if (KEY) doLogin();
+</script>
+</body>
+</html>

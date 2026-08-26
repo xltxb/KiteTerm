@@ -223,6 +223,107 @@ async fn sync_credentials(
     })))
 }
 
+fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {
+    let key = headers.get("x-admin-key").and_then(|v| v.to_str().ok()).unwrap_or("");
+    if key.is_empty() || key != state.cfg.admin_key {
+        return Err(err(StatusCode::UNAUTHORIZED, "unauthorized", "管理密钥错误"));
+    }
+    Ok(())
+}
+
+async fn admin_stats(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    require_admin(&state, &headers)?;
+    let conn = state.db.lock().unwrap();
+    let total: i64 = conn.query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0)).map_err(internal)?;
+    let enabled: i64 = conn
+        .query_row("SELECT COUNT(*) FROM users WHERE sync_enabled = 1", [], |r| r.get(0))
+        .map_err(internal)?;
+    let tokens: i64 = conn
+        .query_row("SELECT COUNT(*) FROM tokens WHERE expires_at > ?1", [now_ts()], |r| r.get(0))
+        .map_err(internal)?;
+    Ok(Json(json!({
+        "users": total,
+        "syncEnabled": enabled,
+        "activeTokens": tokens,
+        "bucket": state.cfg.s3_bucket,
+        "endpoint": state.cfg.s3_endpoint,
+    })))
+}
+
+/// 强制下线:吊销该用户全部令牌
+async fn admin_revoke(
+    State(state): State<Arc<AppState>>,
+    Path(email): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    require_admin(&state, &headers)?;
+    let conn = state.db.lock().unwrap();
+    let n = conn
+        .execute(
+            "DELETE FROM tokens WHERE user_id IN (SELECT id FROM users WHERE email = ?1)",
+            [email.trim().to_lowercase()],
+        )
+        .map_err(internal)?;
+    Ok(Json(json!({ "ok": true, "revoked": n })))
+}
+
+fn platform_bucket(cfg: &PlatformConfig) -> Result<Box<s3::Bucket>, ApiError> {
+    let region = s3::Region::Custom { region: cfg.s3_region.clone(), endpoint: cfg.s3_endpoint.clone() };
+    let creds = s3::creds::Credentials::new(
+        Some(&cfg.s3_access_key),
+        Some(&cfg.s3_secret_key),
+        None,
+        None,
+        None,
+    )
+    .map_err(internal)?;
+    Ok(s3::Bucket::new(&cfg.s3_bucket, region, creds)
+        .map_err(internal)?
+        .with_path_style())
+}
+
+/// 该用户前缀下的对象数与字节数
+async fn admin_usage(
+    State(state): State<Arc<AppState>>,
+    Path(email): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    require_admin(&state, &headers)?;
+    let user_id: Option<String> = {
+        let conn = state.db.lock().unwrap();
+        conn.query_row(
+            "SELECT id FROM users WHERE email = ?1",
+            [email.trim().to_lowercase()],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(internal)?
+    };
+    let Some(user_id) = user_id else {
+        return Err(err(StatusCode::NOT_FOUND, "not_found", "用户不存在"));
+    };
+    let bucket = platform_bucket(&state.cfg)?;
+    let pages = bucket
+        .list(format!("users/{user_id}/"), None)
+        .await
+        .map_err(|e| err(StatusCode::BAD_GATEWAY, "s3_error", &e.to_string()))?;
+    let (mut objects, mut bytes) = (0u64, 0u64);
+    for page in pages {
+        for obj in page.contents {
+            objects += 1;
+            bytes += obj.size;
+        }
+    }
+    Ok(Json(json!({ "objects": objects, "bytes": bytes })))
+}
+
+async fn admin_ui() -> axum::response::Html<&'static str> {
+    axum::response::Html(include_str!("admin.html"))
+}
+
 #[derive(Deserialize)]
 struct AdminSyncBody {
     enabled: bool,
@@ -331,14 +432,19 @@ async fn main() {
 
     let state = Arc::new(AppState { db: Mutex::new(conn), cfg });
     let app = Router::new()
+        .route("/", get(admin_ui))
+        .route("/admin", get(admin_ui))
         .route("/api/health", get(health))
         .route("/api/register", post(register))
         .route("/api/login", post(login))
         .route("/api/logout", post(logout))
         .route("/api/me", get(me))
         .route("/api/sync/credentials", get(sync_credentials))
+        .route("/api/admin/stats", get(admin_stats))
         .route("/api/admin/users", get(admin_list_users))
         .route("/api/admin/users/{email}/sync", post(admin_set_sync))
+        .route("/api/admin/users/{email}/revoke", post(admin_revoke))
+        .route("/api/admin/users/{email}/usage", get(admin_usage))
         .with_state(state);
 
     let listen = env_or("VELA_LISTEN", "127.0.0.1:8787");

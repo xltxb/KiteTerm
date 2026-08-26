@@ -16,7 +16,7 @@
 | 存储 | SQLite(rusqlite,配置/片段/密钥/录制索引) |
 | 加密 | XChaCha20-Poly1305 + Argon2id(密钥落库、同步 E2E) |
 | 同步 | **管理平台管控**:注册/登录后由平台下发 S3 凭据(平台持桶,按用户前缀隔离);桶内仅密文,平台零知识 |
-| 管理平台 | `server/`(Rust axum + SQLite):账户、令牌、同步授权开关、凭据下发、管理接口 |
+| 管理平台 | `server/`(Rust axum + SQLite):账户、令牌、同步授权开关、凭据下发、管理接口 + 内嵌 Web 管理控制台(`/admin`) |
 
 ## 开发
 
@@ -38,7 +38,11 @@ S3_ENDPOINT=http://127.0.0.1:19000 S3_BUCKET=vela-sync \
 S3_ACCESS_KEY=<ak> S3_SECRET_KEY=<sk> \
 cargo run --manifest-path server/Cargo.toml
 # 应用内「同步」页默认平台地址 http://127.0.0.1:8787,可在“平台设置”修改
-# 管理接口:GET /api/admin/users、POST /api/admin/users/{email}/sync {enabled}(X-Admin-Key)
+# Web 管理控制台:http://127.0.0.1:8787/admin(输入管理密钥)——
+#   用户列表/搜索、同步启停开关、强制下线(吊销令牌)、按用户查看存储用量、平台统计
+# 管理 API(X-Admin-Key):GET /api/admin/stats、GET /api/admin/users、
+#   POST /api/admin/users/{email}/sync {enabled}、POST /api/admin/users/{email}/revoke、
+#   GET /api/admin/users/{email}/usage
 ```
 
 ## 目录结构
