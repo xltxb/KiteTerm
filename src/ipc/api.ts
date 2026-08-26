@@ -1,4 +1,5 @@
 import type {
+  AccountInfo,
   AppSettings,
   FileEntry,
   ForwardRule,
@@ -91,12 +92,20 @@ export interface VelaIpc {
   monitorSamples(): Promise<MonitorSample[]>;
   onMonitor(cb: (samples: MonitorSample[]) => void): Unsubscribe;
 
-  // ---- sync ----
+  // ---- sync(S3 凭据由管理平台下发,本地仅配置分项开关与主密码)----
   getSyncStatus(): Promise<SyncStatus>;
   getSyncConfig(): Promise<SyncConfig>;
   saveSyncConfig(cfg: SyncConfig & { secretKey?: string; masterPassword?: string }): Promise<void>;
   syncNow(): Promise<void>;
   onSyncState(cb: (s: SyncStatus) => void): Unsubscribe;
+
+  // ---- 账户(管理平台)----
+  accountRegister(email: string, password: string): Promise<void>;
+  accountLogin(email: string, password: string): Promise<AccountInfo>;
+  accountLogout(): Promise<void>;
+  accountCurrent(): Promise<AccountInfo | null>;
+  platformUrlGet(): Promise<string>;
+  platformUrlSet(url: string): Promise<void>;
 
   // ---- settings ----
   getSettings(): Promise<AppSettings>;

@@ -136,7 +136,17 @@ export interface SyncConfig {
   accessKey: string;
   /** 是否已配置 secret(secret 本身不回传前端) */
   hasSecret: boolean;
+  /** 是否已设置主密码(派生密钥已缓存) */
+  hasMasterKey: boolean;
   scopes: { hosts: boolean; keys: boolean; snippets: boolean; settings: boolean };
+}
+
+/** 管理平台账户 */
+export interface AccountInfo {
+  id: string;
+  email: string;
+  /** 平台是否放开该账户的云同步 */
+  syncEnabled: boolean;
 }
 
 export interface SyncStatus {

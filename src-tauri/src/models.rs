@@ -181,14 +181,24 @@ pub struct SyncScopes {
     pub settings: bool,
 }
 
+/// 同步配置:S3 端点与凭据由管理平台下发,本地只保留分项开关与主密码派生密钥。
+/// endpoint 等字段保留用于展示平台下发信息(只读)。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncConfig {
+    #[serde(default)]
     pub endpoint: String,
+    #[serde(default)]
     pub bucket: String,
+    #[serde(default)]
     pub region: String,
+    #[serde(default)]
     pub access_key: String,
+    #[serde(default)]
     pub has_secret: bool,
+    /// 是否已设置主密码(派生密钥已缓存)
+    #[serde(default)]
+    pub has_master_key: bool,
     pub scopes: SyncScopes,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub secret_key: Option<String>,

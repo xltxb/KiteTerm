@@ -1,19 +1,16 @@
-//! oplog 增量同步端到端自检:两个"设备"(独立数据目录)经本地 MinIO 互同步。
-//! 覆盖:变更捕获 → 加密推送 → 游标增量拉取 → LWW 合并 → 墓碑删除 → 密钥 E2E。
-//! 前置:MinIO 运行于 127.0.0.1:19000(velatest / velatest-secret-1)。
+//! oplog 增量同步端到端自检(平台管控版):
+//! 两个"设备"(独立数据目录)以同一平台账户登录,凭据由管理平台下发,经 MinIO 互同步。
+//! 覆盖:注册/登录 → 凭据下发 → 变更捕获 → 加密推送 → 游标增量拉取 → LWW → 墓碑 → 密钥 E2E。
+//! 前置:MinIO 运行于 127.0.0.1:19000;vela-server 运行于 127.0.0.1:8787。
 //! 期望输出 SYNC_CHECK_PASS。
 
-use s3::creds::Credentials;
-use s3::{Bucket, Region};
+use vela_term_lib::account;
 use vela_term_lib::db::Db;
 use vela_term_lib::models::{HostInput, SyncConfig, SyncScopes};
 use vela_term_lib::sync;
 use vela_term_lib::vault::{self, Vault};
 
-const ENDPOINT: &str = "http://127.0.0.1:19000";
-const BUCKET: &str = "vela-sync-test";
-const AK: &str = "velatest";
-const SK: &str = "velatest-secret-1";
+const PLATFORM: &str = "http://127.0.0.1:8787";
 
 fn scratch(name: &str) -> std::path::PathBuf {
     let base = std::env::temp_dir().join("vela-sync-check");
@@ -24,17 +21,19 @@ fn scratch(name: &str) -> std::path::PathBuf {
 }
 
 fn configure(db: &Db, v: &Vault) {
+    // 平台模式下本地只配置分项开关与主密码
     sync::save_config(
         db,
         v,
         SyncConfig {
-            endpoint: ENDPOINT.into(),
-            bucket: BUCKET.into(),
-            region: "us-east-1".into(),
-            access_key: AK.into(),
+            endpoint: String::new(),
+            bucket: String::new(),
+            region: String::new(),
+            access_key: String::new(),
             has_secret: false,
+            has_master_key: false,
             scopes: SyncScopes { hosts: true, keys: true, snippets: true, settings: false },
-            secret_key: Some(SK.into()),
+            secret_key: None,
             master_password: Some("test-master-密码".into()),
         },
     )
@@ -43,16 +42,22 @@ fn configure(db: &Db, v: &Vault) {
 
 #[tokio::main]
 async fn main() {
-    // 0) 建桶(已存在则忽略)
-    let region = Region::Custom { region: "us-east-1".into(), endpoint: ENDPOINT.into() };
-    let creds = Credentials::new(Some(AK), Some(SK), None, None, None).unwrap();
-    let _ = Bucket::create_with_path_style(BUCKET, region, creds, Default::default()).await;
-
-    // 两台"设备"
+    // 两台"设备",同一平台账户
     let db_a = Db::open(scratch("dev-a")).unwrap();
     let db_b = Db::open(scratch("dev-b")).unwrap();
     let v_a = Vault::open(&db_a.data_dir).unwrap();
     let v_b = Vault::open(&db_b.data_dir).unwrap();
+    account::set_platform_url(&db_a, PLATFORM).unwrap();
+    account::set_platform_url(&db_b, PLATFORM).unwrap();
+
+    let email = format!("sync-check-{}@test.local", db_a.device_id());
+    account::register(&db_a, &email, "check-password-123").await.expect("注册");
+    let info_a = account::login(&db_a, &v_a, &email, "check-password-123").await.expect("A 登录");
+    let info_b = account::login(&db_b, &v_b, &email, "check-password-123").await.expect("B 登录");
+    assert_eq!(info_a.id, info_b.id, "同一账户");
+    assert!(info_a.sync_enabled, "新账户默认放开同步");
+    println!("step0 注册/登录/凭据 OK(user={})", info_a.id);
+
     configure(&db_a, &v_a);
     configure(&db_b, &v_b);
     assert_ne!(db_a.device_id(), db_b.device_id(), "设备 ID 必须不同");
@@ -150,6 +155,31 @@ async fn main() {
     assert_eq!(name_a, name_b, "冲突后两端必须收敛一致(A={name_a} B={name_b})");
     assert!(name_a.starts_with("conflict-"), "收敛结果应为冲突双方之一");
     println!("step5 并发冲突收敛 OK({name_a})");
+
+    // 6) 平台管控:管理员停用该账户同步 → 客户端同步被拒;重新放开 → 恢复
+    let client = reqwest::Client::new();
+    let admin_url = format!("{PLATFORM}/api/admin/users/{email}/sync");
+    let r = client
+        .post(&admin_url)
+        .header("x-admin-key", "test-admin-key")
+        .json(&serde_json::json!({ "enabled": false }))
+        .send()
+        .await
+        .expect("admin disable");
+    assert!(r.status().is_success(), "管理员停用失败: {}", r.status());
+    let denied = sync::sync_once(&db_a, &v_a).await;
+    let msg = denied.expect_err("停用后同步必须被拒").to_string();
+    assert!(msg.contains("SYNC_DISABLED"), "错误应标记 SYNC_DISABLED,实际: {msg}");
+    let r = client
+        .post(&admin_url)
+        .header("x-admin-key", "test-admin-key")
+        .json(&serde_json::json!({ "enabled": true }))
+        .send()
+        .await
+        .expect("admin enable");
+    assert!(r.status().is_success());
+    sync::sync_once(&db_a, &v_a).await.expect("恢复后同步应成功");
+    println!("step6 平台管控停用/恢复 OK");
 
     println!("SYNC_CHECK_PASS");
 }
