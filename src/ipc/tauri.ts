@@ -12,6 +12,9 @@ function sub<T>(event: string, cb: (payload: T) => void): Unsubscribe {
 export function createTauriIpc(): VelaIpc {
   return {
     listGroups: () => invoke("list_groups"),
+    createGroup: (name) => invoke("create_group", { name }),
+    renameGroup: (id, name) => invoke("rename_group", { id, name }),
+    deleteGroup: (id) => invoke("delete_group", { id }),
     listHosts: () => invoke("list_hosts"),
     saveHost: (host) => invoke("save_host", { host }),
     deleteHost: (id) => invoke("delete_host", { id }),

@@ -22,6 +22,11 @@ export type Unsubscribe = () => void;
 export interface VelaIpc {
   // ---- hosts ----
   listGroups(): Promise<HostGroup[]>;
+  /** 新建分组(同名幂等) */
+  createGroup(name: string): Promise<HostGroup>;
+  renameGroup(id: string, name: string): Promise<void>;
+  /** 删除分组:组内主机迁到其他分组;至少保留一个分组 */
+  deleteGroup(id: string): Promise<void>;
   listHosts(): Promise<Host[]>;
   saveHost(host: Partial<Host> & { name: string }): Promise<Host>;
   deleteHost(id: string): Promise<void>;

@@ -2,6 +2,8 @@
 //! 两个"设备"(独立数据目录)以同一平台账户登录,凭据由管理平台下发,经 MinIO 互同步。
 //! 覆盖:注册/登录 → 凭据下发 → 变更捕获 → 加密推送 → 游标增量拉取 → LWW → 墓碑 → 密钥 E2E。
 //! 前置:MinIO 运行于 127.0.0.1:19000;vela-server 运行于 127.0.0.1:8787。
+//! 运行:`VELA_NO_KEYCHAIN=1 cargo run --example sync_check`
+//!   (跳过系统钥匙串 —— 每次重新编译都会让钥匙串把二进制当作新程序而弹授权框卡住)
 //! 期望输出 SYNC_CHECK_PASS。
 
 use vela_term_lib::account;
@@ -267,6 +269,60 @@ async fn main() {
         "D 凭恢复短语应能解密数据"
     );
     println!("step9 BIP39 恢复短语 OK");
+
+    // 10) 分组管理:新建 / 主机归组 / 重命名 / 删除迁移,并跨设备同步
+    let grp = db_a.create_group("测试分组").expect("建组");
+    assert_eq!(db_a.create_group("测试分组").unwrap().id, grp.id, "同名建组应幂等");
+    let gh = db_a
+        .save_host(HostInput {
+            id: None,
+            name: "grouped-host".into(),
+            addr: Some("10.1.2.3".into()),
+            port: Some(22),
+            user: Some("root".into()),
+            group_id: Some(grp.id.clone()),
+            tags: None,
+            key_id: None,
+        })
+        .unwrap();
+    sync::sync_once(&db_a, &v_a).await.unwrap();
+    sync::sync_once(&db_b, &v_b).await.unwrap();
+    let b_grp = db_b.list_groups().unwrap().into_iter().find(|g| g.name == "测试分组");
+    assert!(b_grp.is_some(), "B 应收到新分组");
+    let b_host = db_b.list_hosts().unwrap().into_iter().find(|h| h.name == "grouped-host").unwrap();
+    assert_eq!(b_host.group_id, b_grp.unwrap().id, "B 上主机应落在同名分组内");
+
+    db_a.rename_group(&grp.id, "改名分组").expect("重命名");
+    sync::sync_once(&db_a, &v_a).await.unwrap();
+    sync::sync_once(&db_b, &v_b).await.unwrap();
+    let b_renamed = db_b.list_groups().unwrap().into_iter().find(|g| g.name == "改名分组");
+    assert!(b_renamed.is_some(), "B 应收到分组新名字");
+    let b_host = db_b.list_hosts().unwrap().into_iter().find(|h| h.name == "grouped-host").unwrap();
+    assert_eq!(b_host.group_id, b_renamed.unwrap().id, "重命名后主机仍在该组");
+
+    let before = db_a.list_groups().unwrap().len();
+    db_a.delete_group(&grp.id).expect("删组");
+    assert_eq!(db_a.list_groups().unwrap().len(), before - 1, "分组应被删除");
+    let a_host = db_a.list_hosts().unwrap().into_iter().find(|h| h.id == gh.id);
+    assert!(a_host.is_some(), "删组不应删除主机");
+    assert_ne!(a_host.unwrap().group_id, grp.id, "主机应迁到其他分组");
+    sync::sync_once(&db_a, &v_a).await.unwrap();
+    sync::sync_once(&db_b, &v_b).await.unwrap();
+    assert!(
+        !db_b.list_groups().unwrap().iter().any(|g| g.name == "改名分组"),
+        "B 上该分组应随同步删除"
+    );
+    assert!(
+        db_b.list_hosts().unwrap().iter().any(|h| h.name == "grouped-host"),
+        "B 上主机应保留"
+    );
+    // 最后一个分组不可删
+    let all = db_a.list_groups().unwrap();
+    for g in all.iter().skip(1) {
+        db_a.delete_group(&g.id).unwrap();
+    }
+    assert!(db_a.delete_group(&all[0].id).is_err(), "最后一个分组不可删除");
+    println!("step10 分组增删改 + 跨设备同步 OK");
 
     println!("SYNC_CHECK_PASS");
 }
