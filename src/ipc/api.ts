@@ -19,7 +19,7 @@ import type {
 export type Unsubscribe = () => void;
 
 /** 前端 ↔ Rust 核心的 IPC 契约(《开发文档》2.5)。唯一实现为 Tauri(桌面端)。 */
-export interface VelaIpc {
+export interface KiteIpc {
   // ---- hosts ----
   listGroups(): Promise<HostGroup[]>;
   /** 新建分组(同名幂等) */

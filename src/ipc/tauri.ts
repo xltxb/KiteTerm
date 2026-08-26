@@ -2,14 +2,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { ForwardRule, MonitorSample, SessionInfo, SyncStatus, TransferJob } from "@/types";
-import type { Unsubscribe, VelaIpc } from "./api";
+import type { Unsubscribe, KiteIpc } from "./api";
 
 function sub<T>(event: string, cb: (payload: T) => void): Unsubscribe {
   const p = listen<T>(event, (e) => cb(e.payload));
   return () => { p.then((un) => un()); };
 }
 
-export function createTauriIpc(): VelaIpc {
+export function createTauriIpc(): KiteIpc {
   return {
     listGroups: () => invoke("list_groups"),
     createGroup: (name) => invoke("create_group", { name }),

@@ -1,13 +1,13 @@
-//! Vela Term 管理平台
+//! KiteTerm 管理平台
 //!
 //! 职责:账户注册/登录(Argon2id 口令哈希 + 不透明令牌)、同步授权开关、
 //! 平台持有的 S3 桶凭据下发(按用户前缀 users/{user_id} 隔离)。
 //! 平台不接触用户主密码 —— 桶内仍是客户端主密钥加密的密文,平台零知识。
 //!
 //! 配置(环境变量):
-//!   VELA_LISTEN       默认 127.0.0.1:8787
-//!   VELA_DB           默认 ./vela-server.db
-//!   VELA_ADMIN_KEY    管理接口密钥(必填)
+//!   KITE_LISTEN       默认 127.0.0.1:8787
+//!   KITE_DB           默认 ./kite-server.db
+//!   KITE_ADMIN_KEY    管理接口密钥(必填)
 //!   S3_ENDPOINT / S3_BUCKET / S3_REGION / S3_ACCESS_KEY / S3_SECRET_KEY
 
 use std::sync::{Arc, Mutex};
@@ -107,7 +107,7 @@ fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<AuthedUser, Api
 // ---- handlers ----
 
 async fn health() -> Json<serde_json::Value> {
-    Json(json!({ "ok": true, "service": "vela-server" }))
+    Json(json!({ "ok": true, "service": "kite-server" }))
 }
 
 async fn register(
@@ -205,7 +205,7 @@ async fn me(
 
 /// 平台管控的同步凭据:登录且账户同步已放开时下发。
 /// 优先经 STS 签发按 users/{id}/* 收敛的限权临时凭据(1h);
-/// STS 不可用时回退共享凭据 + 前缀约定(VELA_STS=require 则直接报错)。
+/// STS 不可用时回退共享凭据 + 前缀约定(KITE_STS=require 则直接报错)。
 async fn sync_credentials(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -422,13 +422,13 @@ fn env_or(key: &str, default: &str) -> String {
 #[tokio::main]
 async fn main() {
     let cfg = PlatformConfig {
-        admin_key: std::env::var("VELA_ADMIN_KEY").expect("必须设置 VELA_ADMIN_KEY"),
+        admin_key: std::env::var("KITE_ADMIN_KEY").expect("必须设置 KITE_ADMIN_KEY"),
         s3_endpoint: std::env::var("S3_ENDPOINT").expect("必须设置 S3_ENDPOINT"),
         s3_bucket: env_or("S3_BUCKET", "vela-sync"),
         s3_region: env_or("S3_REGION", "us-east-1"),
         s3_access_key: std::env::var("S3_ACCESS_KEY").expect("必须设置 S3_ACCESS_KEY"),
         s3_secret_key: std::env::var("S3_SECRET_KEY").expect("必须设置 S3_SECRET_KEY"),
-        sts_mode: env_or("VELA_STS", "auto"),
+        sts_mode: env_or("KITE_STS", "auto"),
     };
 
     // 平台负责保证桶存在
@@ -448,7 +448,7 @@ async fn main() {
         }
     }
 
-    let conn = Connection::open(env_or("VELA_DB", "vela-server.db")).expect("打开数据库失败");
+    let conn = Connection::open(env_or("KITE_DB", "kite-server.db")).expect("打开数据库失败");
     conn.execute_batch(
         r#"
         CREATE TABLE IF NOT EXISTS users (
@@ -484,7 +484,7 @@ async fn main() {
         .route("/api/admin/users/{email}/usage", get(admin_usage))
         .with_state(state);
 
-    let listen = env_or("VELA_LISTEN", "127.0.0.1:8787");
+    let listen = env_or("KITE_LISTEN", "127.0.0.1:8787");
     println!("[server] listening on {listen}");
     let listener = tokio::net::TcpListener::bind(&listen).await.expect("bind 失败");
     axum::serve(listener, app).await.expect("serve 失败");

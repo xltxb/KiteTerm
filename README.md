@@ -1,13 +1,13 @@
-# Vela Term
+# KiteTerm
 
 自用优先的桌面 SSH 终端:远程连接、SFTP 传输、密钥管理、端口转发、服务器监控与端到端加密云同步。
-本仓库为《Vela Term 产品需求与开发文档》与原型 `design/Vela Term.dc.html` 的实现(设计系统:Vela Design System)。
+本仓库为《KiteTerm 产品需求与开发文档》与原型 `design/Vela Term.dc.html` 的实现(设计系统:Vela Design System)。
 
 ## 形态
 
 | 组件 | 形态 | 说明 |
 |---|---|---|
-| **Vela Term(APP)** | **macOS / Windows 桌面端** | 无 Web 版本 —— SSH/SFTP/密钥/同步能力均由本地 Rust 核心提供,前端只在 Tauri WebView 内运行;直接用浏览器打开开发服务器会显示提示页而非应用 |
+| **KiteTerm(APP)** | **macOS / Windows 桌面端** | 无 Web 版本 —— SSH/SFTP/密钥/同步能力均由本地 Rust 核心提供,前端只在 Tauri WebView 内运行;直接用浏览器打开开发服务器会显示提示页而非应用 |
 | **管理平台** | **Web** | `server/` 提供管理控制台(`/admin`)与账户、授权、凭据下发接口 |
 
 ## 技术栈
@@ -37,7 +37,7 @@ pnpm tauri dev
 pnpm tauri build
 
 # 管理平台(账户/同步授权/凭据下发;S3 指向任意兼容存储,如本地 MinIO)
-VELA_ADMIN_KEY=<管理密钥> \
+KITE_ADMIN_KEY=<管理密钥> \
 S3_ENDPOINT=http://127.0.0.1:19000 S3_BUCKET=vela-sync \
 S3_ACCESS_KEY=<ak> S3_SECRET_KEY=<sk> \
 cargo run --manifest-path server/Cargo.toml
@@ -79,7 +79,7 @@ src-tauri/src/
 - **F4 密钥管理**:生成 Ed25519 / RSA4096、导入、指纹、复制公钥、使用统计;密码认证兜底;设备密钥存系统 Keychain(旧文件自动迁移)✅(Touch ID/agent:后续)
 - **F5 端口转发**:L / R / D 三类实转发 + 流量统计 + 应用启动自动恢复启用规则 ✅
 - **F6 命令片段**:片段库 + 终端右栏快捷面板一键运行 + `{{cursor}}` 占位符停留待编辑 ✅
-- **F7 云同步**:**管理平台管控** — 注册/登录后平台下发 **STS 限权临时凭据**(session policy 收敛到 `users/{id}/*`,1h 有效;不支持 STS 的存储自动回退共享凭据,`VELA_STS=require` 可强制);分项开关、设备列表;**oplog 增量同步**(逐条 E2E 加密 + AAD 绑定对象路径、每设备游标增量拉取、实体级 LWW + lamport、删除墓碑、开关重开补发存量);**30 天压实**(旧条目并入加密快照后删除,新设备纯快照秒级引导,阈值可调);**manifest 主密钥加密 + If-Match/If-None-Match 乐观锁**(冲突重读重算,不支持条件写的存储自动降级);**BIP39 恢复短语**(24 词 = 主密钥,忘记主密码时凭短语恢复);主密码仅本地派生密钥,平台零知识 ✅
+- **F7 云同步**:**管理平台管控** — 注册/登录后平台下发 **STS 限权临时凭据**(session policy 收敛到 `users/{id}/*`,1h 有效;不支持 STS 的存储自动回退共享凭据,`KITE_STS=require` 可强制);分项开关、设备列表;**oplog 增量同步**(逐条 E2E 加密 + AAD 绑定对象路径、每设备游标增量拉取、实体级 LWW + lamport、删除墓碑、开关重开补发存量);**30 天压实**(旧条目并入加密快照后删除,新设备纯快照秒级引导,阈值可调);**manifest 主密钥加密 + If-Match/If-None-Match 乐观锁**(冲突重读重算,不支持条件写的存储自动降级);**BIP39 恢复短语**(24 词 = 主密钥,忘记主密码时凭短语恢复);主密码仅本地派生密钥,平台零知识 ✅
 - **F8 会话录制**:asciicast v2 录制(状态栏 REC 计时)+ 内建回放器(播放/暂停/进度/1–4× 倍速)✅
 - **F9 命令面板**:⌘K,统一搜索主机/片段/动作 ✅
 - **F10 设置**:深/浅主题、终端字号、光标闪烁、行为开关(启动恢复会话 / 断线自动重连 / 退出前确认均已生效)、快捷键表 ✅
@@ -92,7 +92,7 @@ src-tauri/src/
 - Keychain 不可用的平台回退应用数据目录 0600 文件
 - MinIO 的 STS AssumeRole 需以非 root 服务账号运行平台(root 不可 AssumeRole)
 
-集成自检(`src-tauri/examples/`,均需 `VELA_NO_KEYCHAIN=1` 以跳过系统钥匙串授权框):
+集成自检(`src-tauri/examples/`,均需 `KITE_NO_KEYCHAIN=1` 以跳过系统钥匙串授权框):
 `ssh_check`(真实 SSH 栈 + TOFU)、`sync_check`(四台设备同账户,
 经管理平台 + 本地 MinIO 十一步全链路:注册登录/STS 凭据下发 → 初始同步 → LWW → 墓碑 → 幂等重放 →
 并发冲突收敛 → 平台停用/恢复管控 → STS 限权(跨前缀访问被拒)→ 压实(oplog 清空、仅存加密快照、

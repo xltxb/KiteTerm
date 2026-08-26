@@ -1,21 +1,21 @@
 //! oplog 增量同步端到端自检(平台管控版):
 //! 两个"设备"(独立数据目录)以同一平台账户登录,凭据由管理平台下发,经 MinIO 互同步。
 //! 覆盖:注册/登录 → 凭据下发 → 变更捕获 → 加密推送 → 游标增量拉取 → LWW → 墓碑 → 密钥 E2E。
-//! 前置:MinIO 运行于 127.0.0.1:19000;vela-server 运行于 127.0.0.1:8787。
-//! 运行:`VELA_NO_KEYCHAIN=1 cargo run --example sync_check`
+//! 前置:MinIO 运行于 127.0.0.1:19000;kite-server 运行于 127.0.0.1:8787。
+//! 运行:`KITE_NO_KEYCHAIN=1 cargo run --example sync_check`
 //!   (跳过系统钥匙串 —— 每次重新编译都会让钥匙串把二进制当作新程序而弹授权框卡住)
 //! 期望输出 SYNC_CHECK_PASS。
 
-use vela_term_lib::account;
-use vela_term_lib::db::Db;
-use vela_term_lib::models::{HostInput, SyncConfig, SyncScopes};
-use vela_term_lib::sync;
-use vela_term_lib::vault::{self, Vault};
+use kite_term_lib::account;
+use kite_term_lib::db::Db;
+use kite_term_lib::models::{HostInput, SyncConfig, SyncScopes};
+use kite_term_lib::sync;
+use kite_term_lib::vault::{self, Vault};
 
 const PLATFORM: &str = "http://127.0.0.1:8787";
 
 fn scratch(name: &str) -> std::path::PathBuf {
-    let base = std::env::temp_dir().join("vela-sync-check");
+    let base = std::env::temp_dir().join("kite-sync-check");
     let dir = base.join(name);
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -78,7 +78,7 @@ async fn main() {
         })
         .unwrap();
     let snip = db_a
-        .save_snippet(vela_term_lib::models::SnippetInput {
+        .save_snippet(kite_term_lib::models::SnippetInput {
             id: None,
             name: "sync-snippet".into(),
             command: "echo synced".into(),
@@ -211,14 +211,14 @@ async fn main() {
 
     // 8) 压实:阈值收窄为 0 → 同步触发压实(旧 oplog 并入快照后删除);
     //    manifest 应为密文;新设备 C 仅凭快照完成引导
-    std::env::set_var("VELA_COMPACT_MAX_AGE_SECS", "0");
+    std::env::set_var("KITE_COMPACT_MAX_AGE_SECS", "0");
     sync::sync_once(&db_a, &v_a).await.expect("A 压实同步");
     {
         // 用 root 凭据直查桶:oplog 应已清空、快照存在、manifest 非明文 JSON
         use s3::creds::Credentials;
         use s3::{Bucket, Region};
         let region = Region::Custom { region: "us-east-1".into(), endpoint: "http://127.0.0.1:19000".into() };
-        let c = Credentials::new(Some("velatest"), Some("velatest-secret-1"), None, None, None).unwrap();
+        let c = Credentials::new(Some("kitetest"), Some("kitetest-secret-1"), None, None, None).unwrap();
         let root = Bucket::new(&creds_a.bucket, region, c).unwrap().with_path_style();
         let count = |pages: Vec<s3::serde_types::ListBucketResult>| {
             pages.into_iter().map(|p| p.contents.len()).sum::<usize>()

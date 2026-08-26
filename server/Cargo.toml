@@ -1,8 +1,8 @@
 [package]
-name = "vela-server"
+name = "kite-server"
 version = "0.1.0"
 edition = "2021"
-description = "Vela Term 管理平台:账户注册/登录、同步授权与 S3 凭据下发"
+description = "KiteTerm 管理平台:账户注册/登录、同步授权与 S3 凭据下发"
 
 [dependencies]
 axum = "0.8"

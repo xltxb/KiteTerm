@@ -67,7 +67,7 @@ pub async fn ask(
     let key = api_key(db, vault)?;
     let model = db.kv_get(KV_MODEL)?.unwrap_or_else(|| DEFAULT_MODEL.into());
 
-    let system = "你是 Vela Term(桌面 SSH 终端)内置的终端助手。用户在远程主机的终端会话中向你提问。\
+    let system = "你是 KiteTerm(桌面 SSH 终端)内置的终端助手。用户在远程主机的终端会话中向你提问。\
         回答保持简洁,用中文;命令或代码放进 markdown 代码块(```)以便一键运行;\
         危险操作(删除、重启、改动生产配置)先给出风险提示。";
 

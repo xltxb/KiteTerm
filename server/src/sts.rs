@@ -81,7 +81,7 @@ pub async fn assume_role_for_user(
         "Action=AssumeRole&Version=2011-06-15&DurationSeconds={duration_secs}\
          &RoleArn={}&RoleSessionName={}&Policy={}",
         urlencode("arn:aws:iam::000000000000:role/vela-sync"),
-        urlencode(&format!("vela-{user_id}")),
+        urlencode(&format!("kite-{user_id}")),
         urlencode(&policy),
     );
 

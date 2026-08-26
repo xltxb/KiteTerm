@@ -38,7 +38,7 @@ fn group_payload(name: &str) -> String {
 impl Db {
     pub fn open(data_dir: PathBuf) -> Result<Self> {
         std::fs::create_dir_all(&data_dir)?;
-        let conn = Connection::open(data_dir.join("vela.db"))?;
+        let conn = Connection::open(data_dir.join("kite.db"))?;
         conn.execute_batch(
             r#"
             PRAGMA journal_mode = WAL;

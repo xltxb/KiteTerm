@@ -5,5 +5,5 @@ src-tauri/gen/
 .DS_Store
 *.local
 server/target/
-vela-server.db
+kite-server.db
 design/

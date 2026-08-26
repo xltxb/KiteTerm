@@ -1,12 +1,12 @@
 [package]
-name = "vela-term"
+name = "kite-term"
 version = "0.1.0"
-description = "Vela Term — personal SSH terminal with SFTP, key management and E2E-encrypted sync"
+description = "KiteTerm — personal SSH terminal with SFTP, key management and E2E-encrypted sync"
 authors = ["Lin"]
 edition = "2021"
 
 [lib]
-name = "vela_term_lib"
+name = "kite_term_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

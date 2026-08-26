@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Vela 管理平台</title>
+<title>KiteTerm 管理平台</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Manrope:wght@400;600;700&family=JetBrains+Mono:wght@400;600&family=Noto+Sans+SC:wght@400;500;700&display=swap');
   :root{
@@ -86,7 +86,7 @@
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:18px">
         <div class="logo"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 18H2a4 4 0 0 0 4 4h12a4 4 0 0 0 4-4Z"/><path d="M21 14 10 2 3 14h18Z"/><path d="M10 2v16"/></svg></div>
         <div>
-          <div style="font-family:var(--display);font-weight:700;font-size:16px;color:var(--text-strong)">Vela 管理平台</div>
+          <div style="font-family:var(--display);font-weight:700;font-size:16px;color:var(--text-strong)">KiteTerm 管理平台</div>
           <div class="mono" style="letter-spacing:.09em">ADMIN CONSOLE</div>
         </div>
       </div>
@@ -101,7 +101,7 @@
   <div id="main-view" class="hidden">
     <div style="display:flex;align-items:flex-end;gap:14px">
       <div style="flex:1">
-        <div class="eyebrow">Vela Platform · Admin</div>
+        <div class="eyebrow">KiteTerm Platform · Admin</div>
         <h1>用户与同步管控</h1>
       </div>
       <button class="btn" onclick="refresh()">刷新</button>
@@ -138,7 +138,7 @@
 <div class="toast" id="toast"></div>
 
 <script>
-let KEY = localStorage.getItem("vela_admin_key") || "";
+let KEY = localStorage.getItem("kite_admin_key") || "";
 let USERS = [];
 const $ = (id) => document.getElementById(id);
 
@@ -179,7 +179,7 @@ async function doLogin() {
   $("login-err").textContent = "";
   try {
     await api("/api/admin/stats");
-    localStorage.setItem("vela_admin_key", KEY);
+    localStorage.setItem("kite_admin_key", KEY);
     $("login-view").classList.add("hidden");
     $("main-view").classList.remove("hidden");
     refresh();
@@ -189,7 +189,7 @@ async function doLogin() {
 }
 
 function logout() {
-  localStorage.removeItem("vela_admin_key");
+  localStorage.removeItem("kite_admin_key");
   location.reload();
 }
 

@@ -3,12 +3,12 @@
 
 use std::sync::Arc;
 
-use vela_term_lib::db::Db;
-use vela_term_lib::ssh;
-use vela_term_lib::vault::Vault;
+use kite_term_lib::db::Db;
+use kite_term_lib::ssh;
+use kite_term_lib::vault::Vault;
 
 fn data_dir() -> std::path::PathBuf {
-    dirs::data_dir().expect("no data dir").join("com.vela.term")
+    dirs::data_dir().expect("no data dir").join("com.kiteterm.app")
 }
 
 #[tokio::main]
@@ -25,11 +25,11 @@ async fn main() {
     match ssh::connect_host(db.clone(), &vault, &host.id, None).await {
         Ok((handle, host, latency)) => {
             println!("connected {}@{}:{} latency={}ms", host.user, host.addr, host.port, latency);
-            let out = ssh::exec_capture(&handle, "uname -a && echo VELA_OK")
+            let out = ssh::exec_capture(&handle, "uname -a && echo KITE_OK")
                 .await
                 .expect("exec");
             print!("{out}");
-            if out.contains("VELA_OK") {
+            if out.contains("KITE_OK") {
                 println!("SSH_CHECK_PASS");
             } else {
                 println!("SSH_CHECK_FAIL: exec 输出缺少标记");
