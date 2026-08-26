@@ -1,0 +1,375 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Terminal } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
+import { SearchAddon } from "@xterm/addon-search";
+import { WebglAddon } from "@xterm/addon-webgl";
+import {
+  ArrowUp,
+  Circle,
+  Lock,
+  PanelRight,
+  Play,
+  Plus,
+  Search,
+  SquareTerminal,
+  X,
+} from "lucide-react";
+import { Button } from "@/components/ui";
+import { useDataStore } from "@/stores/data";
+import { getTerminal, useSessionStore } from "@/stores/session";
+import { useUiStore } from "@/stores/ui";
+
+interface Addons {
+  fit: FitAddon;
+  search: SearchAddon;
+  opened: boolean;
+}
+const addonMap = new WeakMap<Terminal, Addons>();
+
+function ensureAddons(term: Terminal): Addons {
+  let a = addonMap.get(term);
+  if (!a) {
+    a = { fit: new FitAddon(), search: new SearchAddon(), opened: false };
+    term.loadAddon(a.fit);
+    term.loadAddon(a.search);
+    addonMap.set(term, a);
+  }
+  return a;
+}
+
+function fmtDuration(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  const m = Math.floor(s / 60);
+  return `${String(m).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+}
+
+function XtermPane({ sessionId }: { sessionId: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const { settings } = useUiStore();
+
+  useEffect(() => {
+    const el = ref.current;
+    const term = getTerminal(sessionId);
+    if (!el || !term) return;
+    const addons = ensureAddons(term);
+    if (!addons.opened) {
+      term.open(el);
+      addons.opened = true;
+      try {
+        term.loadAddon(new WebglAddon());
+      } catch {
+        // WebGL 不可用时回退 canvas 渲染
+      }
+    } else if (term.element && term.element.parentElement !== el) {
+      el.appendChild(term.element);
+    }
+    addons.fit.fit();
+    term.focus();
+    const ro = new ResizeObserver(() => addons.fit.fit());
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [sessionId]);
+
+  useEffect(() => {
+    const term = getTerminal(sessionId);
+    if (!term) return;
+    term.options.fontSize = settings.terminalFontSize;
+    term.options.cursorBlink = settings.cursorBlink;
+    addonMap.get(term)?.fit.fit();
+  }, [sessionId, settings.terminalFontSize, settings.cursorBlink]);
+
+  return <div ref={ref} className="vterm" style={{ position: "absolute", inset: 0, padding: "10px 4px 4px 14px", background: "#0a0a0b" }} />;
+}
+
+function SearchBar({ sessionId, onClose }: { sessionId: string; onClose: () => void }) {
+  const [q, setQ] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => inputRef.current?.focus(), []);
+  const term = getTerminal(sessionId);
+  const search = term ? ensureAddons(term).search : null;
+  return (
+    <div style={{ position: "absolute", top: 10, right: 14, zIndex: 10, display: "flex", alignItems: "center", gap: 6, background: "var(--surface-raised)", border: "1px solid var(--border-default)", borderRadius: 10, padding: "6px 10px", boxShadow: "var(--shadow-lg)" }}>
+      <Search size={14} />
+      <input
+        ref={inputRef}
+        value={q}
+        onChange={(e) => { setQ(e.target.value); search?.findNext(e.target.value); }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") search?.findNext(q);
+          if (e.key === "Escape") onClose();
+        }}
+        placeholder="搜索输出…"
+        style={{ background: "transparent", border: "none", outline: "none", fontSize: 12.5, color: "var(--text-strong)", width: 160 }}
+      />
+      <X size={14} style={{ cursor: "pointer" }} onClick={onClose} />
+    </div>
+  );
+}
+
+function RightDock() {
+  const { rightTab, setRightTab } = useUiStore();
+  const { snippets, recordings } = useDataStore();
+  const runCommand = useSessionStore((s) => s.runCommand);
+  const go = useUiStore((s) => s.go);
+  const bump = useDataStore((s) => s.bumpSnippet);
+  const [aiMsgs, setAiMsgs] = useState<{ role: "user" | "ai"; text: string }[]>([]);
+  const [aiInput, setAiInput] = useState("");
+
+  const quick = useMemo(
+    () => [...snippets].sort((a, b) => b.useCount - a.useCount).slice(0, 4),
+    [snippets],
+  );
+
+  const tabBtn = (key: "snip" | "rec" | "ai", label: string) => (
+    <div
+      onClick={() => setRightTab(key)}
+      style={{
+        flex: 1,
+        textAlign: "center",
+        padding: "6px 0",
+        borderRadius: 99,
+        fontSize: 12.5,
+        fontWeight: 600,
+        cursor: "pointer",
+        color: rightTab === key ? "var(--accent-text)" : "var(--text-muted)",
+        background: rightTab === key ? "var(--accent-subtle)" : "transparent",
+      }}
+    >
+      {label}
+    </div>
+  );
+
+  const sendAi = () => {
+    const text = aiInput.trim();
+    if (!text) return;
+    setAiMsgs((m) => [
+      ...m,
+      { role: "user", text },
+      { role: "ai", text: "AI 助手尚未接入模型后端 — 在设置中配置 API Key 后可分析会话输出、解释报错并生成命令。" },
+    ]);
+    setAiInput("");
+  };
+
+  return (
+    <div style={{ width: 284, flex: "none", borderLeft: "1px solid var(--border-subtle)", background: "var(--surface-card)", display: "flex", flexDirection: "column" }}>
+      <div style={{ display: "flex", gap: 4, padding: "12px 12px 8px 12px" }}>
+        {tabBtn("snip", "快捷片段")}
+        {tabBtn("rec", "录制")}
+        {tabBtn("ai", "AI 助手")}
+      </div>
+
+      {rightTab === "snip" && (
+        <div className="vscroll" style={{ flex: 1, overflow: "auto", padding: "4px 12px 12px 12px", display: "flex", flexDirection: "column", gap: 8 }}>
+          {quick.map((q) => (
+            <div
+              key={q.id}
+              className="hover-card"
+              onClick={() => { void runCommand(q.command); void bump(q.id); }}
+              style={{ border: "1px solid var(--border-subtle)", borderRadius: 10, padding: "10px 12px", cursor: "pointer" }}
+            >
+              <div style={{ fontSize: 12.5, fontWeight: 600, color: "var(--text-strong)", marginBottom: 4 }}>{q.name}</div>
+              <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--text-muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                {q.command}
+              </div>
+            </div>
+          ))}
+          <div onClick={() => go("snippets")} style={{ textAlign: "center", fontSize: 12, color: "var(--accent-text)", cursor: "pointer", padding: 6 }}>
+            管理全部片段 →
+          </div>
+        </div>
+      )}
+
+      {rightTab === "rec" && (
+        <div className="vscroll" style={{ flex: 1, overflow: "auto", padding: "4px 12px 12px 12px", display: "flex", flexDirection: "column", gap: 8 }}>
+          {recordings.map((r) => (
+            <div key={r.id} className="hover-card" style={{ border: "1px solid var(--border-subtle)", borderRadius: 10, padding: "10px 12px", display: "flex", alignItems: "center", gap: 10 }}>
+              <div style={{ width: 30, height: 30, flex: "none", borderRadius: 99, background: "var(--accent-subtle)", color: "var(--accent-text)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
+                <Play size={14} />
+              </div>
+              <div style={{ flex: 1, minWidth: 0, lineHeight: 1.3 }}>
+                <div style={{ fontSize: 12.5, fontWeight: 600, color: "var(--text-strong)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.name}</div>
+                <div style={{ fontSize: 11, color: "var(--text-faint)" }}>{r.sessionHost} · {r.startedAt}</div>
+              </div>
+              <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--text-muted)" }}>{fmtDuration(r.durationMs)}</span>
+            </div>
+          ))}
+          <div style={{ fontSize: 11.5, color: "var(--text-faint)", padding: "4px 2px", lineHeight: 1.5 }}>
+            录制以 asciicast 格式保存,可随会话云同步。
+          </div>
+        </div>
+      )}
+
+      {rightTab === "ai" && (
+        <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+          <div className="vscroll" style={{ flex: 1, overflow: "auto", padding: "6px 12px", display: "flex", flexDirection: "column", gap: 10 }}>
+            {aiMsgs.length === 0 && (
+              <div style={{ fontSize: 12, color: "var(--text-faint)", lineHeight: 1.6, padding: "8px 4px" }}>
+                向 AI 提问,或让它解释上一条输出。AI 可读取当前会话输出;命令执行前需你确认。
+              </div>
+            )}
+            {aiMsgs.map((m, i) =>
+              m.role === "user" ? (
+                <div key={i} style={{ alignSelf: "flex-end", maxWidth: "88%", background: "var(--accent-subtle)", color: "var(--text-strong)", borderRadius: "12px 12px 4px 12px", padding: "8px 12px", fontSize: 12.5, lineHeight: 1.5 }}>
+                  {m.text}
+                </div>
+              ) : (
+                <div key={i} style={{ alignSelf: "flex-start", maxWidth: "94%", background: "var(--surface-sunken)", border: "1px solid var(--border-subtle)", borderRadius: "12px 12px 12px 4px", padding: "9px 12px", fontSize: 12.5, lineHeight: 1.6, color: "var(--text-body)" }}>
+                  {m.text}
+                </div>
+              ),
+            )}
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", borderTop: "1px solid var(--border-subtle)" }}>
+            <input
+              value={aiInput}
+              onChange={(e) => setAiInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && sendAi()}
+              placeholder="询问 AI,或让它解释上一条输出…"
+              style={{ flex: 1, background: "var(--surface-sunken)", border: "1px solid var(--border-subtle)", borderRadius: 10, padding: "8px 12px", outline: "none", fontFamily: "var(--font-sans)", fontSize: 12.5, color: "var(--text-strong)" }}
+            />
+            <div onClick={sendAi} style={{ width: 32, height: 32, flex: "none", borderRadius: 10, background: "var(--accent)", color: "var(--text-on-accent)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
+              <ArrowUp size={15} />
+            </div>
+          </div>
+          <div style={{ fontSize: 10.5, color: "var(--text-faint)", padding: "0 12px 10px 12px" }}>
+            AI 可读取当前会话输出;命令执行前需你确认。
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function TerminalScreen() {
+  const { sessions, activeId, setActive, close, toggleRecording } = useSessionStore();
+  const { rightPanelOpen, toggleRightPanel, setPalette, go } = useUiStore();
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [, forceTick] = useState(0);
+  const active = sessions.find((s) => s.id === activeId) ?? null;
+
+  // REC 计时与延迟展示每秒刷新
+  useEffect(() => {
+    const t = setInterval(() => forceTick((x) => x + 1), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const mod = e.metaKey || e.ctrlKey;
+      if (mod && (e.key === "f" || e.key === "F") && active) {
+        e.preventDefault();
+        setSearchOpen((s) => !s);
+      } else if (mod && (e.key === "w" || e.key === "W") && active) {
+        e.preventDefault();
+        void close(active.id);
+      } else if (mod && (e.key === "t" || e.key === "T")) {
+        e.preventDefault();
+        setPalette(true);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [active, close, setPalette]);
+
+  const dotColor = (state: string, isActive: boolean) =>
+    state === "connected" ? (isActive ? "var(--success)" : "var(--success)") :
+    state === "connecting" ? "var(--warning)" : "var(--text-faint)";
+
+  return (
+    <>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 12px 0 12px", background: "var(--surface-card)", borderBottom: "1px solid var(--border-subtle)" }}>
+        {sessions.map((s) => (
+          <div
+            key={s.id}
+            onClick={() => setActive(s.id)}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "8px 14px",
+              borderRadius: "10px 10px 0 0",
+              cursor: "pointer",
+              fontSize: 13,
+              fontWeight: 600,
+              color: s.id === activeId ? "var(--text-strong)" : "var(--text-muted)",
+              background: s.id === activeId ? "var(--surface-sunken)" : "transparent",
+              boxShadow: s.id === activeId ? "inset 0 2px 0 var(--accent)" : "none",
+            }}
+          >
+            <span style={{ width: 7, height: 7, borderRadius: 99, background: dotColor(s.state, s.id === activeId) }} />
+            {s.hostName}
+            <X
+              size={12}
+              style={{ opacity: 0.6 }}
+              onClick={(e) => { e.stopPropagation(); void close(s.id); }}
+            />
+          </div>
+        ))}
+        <div onClick={() => setPalette(true)} className="hover-row" style={{ padding: "6px 8px", borderRadius: 8, cursor: "pointer", color: "var(--text-muted)" }}>
+          <Plus size={15} />
+        </div>
+        <div style={{ flex: 1 }} />
+        {active && (
+          <div
+            onClick={() => void toggleRecording(active.id)}
+            className="hover-row"
+            title={active.recording ? "停止录制" : "开始录制"}
+            style={{ padding: "6px 8px", marginBottom: 4, borderRadius: 8, cursor: "pointer", color: active.recording ? "var(--danger)" : "var(--text-muted)" }}
+          >
+            <Circle size={15} fill={active.recording ? "currentColor" : "none"} />
+          </div>
+        )}
+        <div onClick={toggleRightPanel} className="hover-row" style={{ padding: "6px 8px", marginBottom: 4, borderRadius: 8, cursor: "pointer", color: "var(--text-muted)" }}>
+          <PanelRight size={15} />
+        </div>
+      </div>
+
+      <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
+        <div style={{ flex: 1, minWidth: 0, position: "relative", background: "#0a0a0b" }}>
+          {active ? (
+            <>
+              <XtermPane sessionId={active.id} />
+              {searchOpen && <SearchBar sessionId={active.id} onClose={() => setSearchOpen(false)} />}
+            </>
+          ) : (
+            <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 14, color: "var(--text-faint)" }}>
+              <SquareTerminal size={40} strokeWidth={1.2} />
+              <div style={{ fontSize: 13.5 }}>没有活跃会话 — 从主机列表连接,或按 ⌘K 快速搜索</div>
+              <Button variant="primary" size="sm" onClick={() => go("hosts")}>
+                浏览主机
+              </Button>
+            </div>
+          )}
+        </div>
+        {rightPanelOpen && <RightDock />}
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 16, padding: "7px 16px", background: "var(--surface-card)", borderTop: "1px solid var(--border-subtle)", fontFamily: "var(--font-mono)", fontSize: 11.5, color: "var(--text-muted)" }}>
+        {active ? (
+          <>
+            <span style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--accent-text)" }}>
+              <Lock size={12} />SSH
+            </span>
+            <span>{active.user}@{active.addr}:{active.port}</span>
+            <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ width: 6, height: 6, borderRadius: 99, background: active.state === "connected" ? "var(--success)" : "var(--warning)" }} />
+              {active.latencyMs != null ? `${active.latencyMs}ms` : "—"}
+            </span>
+            <span>{active.cipher}</span>
+            <span style={{ flex: 1 }} />
+            {active.recording && active.recordingSince && (
+              <span style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--danger)" }}>
+                <span style={{ width: 7, height: 7, borderRadius: 99, background: "var(--danger)", animation: "vblink 1.4s steps(1) infinite" }} />
+                REC {fmtDuration(Date.now() - active.recordingSince)}
+              </span>
+            )}
+            <span>UTF-8</span>
+            <span>{active.cols}×{active.rows}</span>
+          </>
+        ) : (
+          <span style={{ color: "var(--text-faint)" }}>未连接</span>
+        )}
+      </div>
+    </>
+  );
+}
