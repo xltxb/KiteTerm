@@ -201,7 +201,7 @@ async fn run_job(
 ) -> Result<()> {
     let sftp = open_sftp(sessions, &job.session_id).await?;
     let start = Instant::now();
-    let mut moved: u64 = 0;
+    let mut moved: u64;
     let mut last_emit = Instant::now();
     let mut buf = vec![0u8; 64 * 1024];
 

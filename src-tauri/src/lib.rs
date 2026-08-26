@@ -8,7 +8,7 @@ mod monitor;
 mod recorder;
 mod sftp;
 pub mod ssh;
-mod sync;
+pub mod sync;
 pub mod vault;
 
 use std::sync::Arc;

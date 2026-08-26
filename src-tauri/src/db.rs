@@ -11,6 +11,18 @@ pub struct Db {
     pub data_dir: PathBuf,
 }
 
+/// 本地变更日志条目(增量同步用)
+#[derive(Debug, Clone)]
+pub struct OplogRow {
+    pub seq: i64,
+    pub entity: String,
+    pub entity_id: String,
+    pub op: String,
+    pub payload: Option<String>,
+    pub lamport: i64,
+    pub created_at: String,
+}
+
 fn now() -> String {
     chrono::Local::now().format("%Y-%m-%d %H:%M").to_string()
 }
@@ -66,11 +78,41 @@ impl Db {
             CREATE TABLE IF NOT EXISTS known_hosts (
                 host_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, first_seen TEXT NOT NULL
             );
+            -- 增量同步:本地变更日志(payload 本地存明文 — 本地库中实体表本就是明文,
+            -- 端到端加密发生在推送时;与文档 3.3 的 payload_enc 差异见 sync.rs 注释)
+            CREATE TABLE IF NOT EXISTS oplog (
+                seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                entity TEXT NOT NULL, entity_id TEXT NOT NULL,
+                op TEXT NOT NULL, payload TEXT,
+                lamport INTEGER NOT NULL, created_at TEXT NOT NULL
+            );
+            -- 每台远端设备已拉取到的 seq 游标
+            CREATE TABLE IF NOT EXISTS sync_cursors (
+                device_id TEXT PRIMARY KEY, last_seq INTEGER NOT NULL
+            );
+            -- 实体级版本(LWW 依据):最后一次变更的 lamport 与来源设备
+            CREATE TABLE IF NOT EXISTS sync_versions (
+                entity TEXT NOT NULL, entity_id TEXT NOT NULL,
+                lamport INTEGER NOT NULL, device_id TEXT NOT NULL, op TEXT NOT NULL,
+                PRIMARY KEY (entity, entity_id)
+            );
             "#,
         )?;
         let db = Self { conn: Mutex::new(conn), data_dir };
         db.seed_groups()?;
+        db.ensure_device_id()?;
         Ok(db)
+    }
+
+    fn ensure_device_id(&self) -> Result<()> {
+        if self.kv_get("device_id")?.is_none() {
+            self.kv_set("device_id", &uid())?;
+        }
+        Ok(())
+    }
+
+    pub fn device_id(&self) -> String {
+        self.kv_get("device_id").ok().flatten().unwrap_or_default()
     }
 
     fn seed_groups(&self) -> Result<()> {
@@ -194,12 +236,17 @@ impl Db {
             )?;
         }
         drop(conn);
-        self.get_host(&id)
+        let host = self.get_host(&id)?;
+        let payload = self.host_payload(&host)?;
+        self.oplog_append("host", &id, "put", Some(payload))?;
+        Ok(host)
     }
 
     pub fn delete_host(&self, id: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM hosts WHERE id = ?1", [id])?;
+        drop(conn);
+        self.oplog_append("host", id, "del", None)?;
         Ok(())
     }
 
@@ -275,13 +322,26 @@ impl Db {
             "UPDATE keys SET sync_enabled = ?2, updated_at = ?3 WHERE id = ?1",
             params![id, enabled as i64, now()],
         )?;
+        drop(conn);
+        // 加入同步集 → put;移出(仅本地)→ 墓碑,其他设备删除该密钥
+        if enabled {
+            let payload = self.key_payload(id)?;
+            self.oplog_append("key", id, "put", Some(payload))?;
+        } else {
+            self.oplog_append("key", id, "del", None)?;
+        }
         Ok(())
     }
 
     pub fn delete_key(&self, id: &str) -> Result<()> {
+        let was_synced = self.list_keys()?.iter().any(|k| k.id == id && k.sync_enabled);
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM keys WHERE id = ?1", [id])?;
         conn.execute("UPDATE hosts SET key_id = NULL WHERE key_id = ?1", [id])?;
+        drop(conn);
+        if was_synced {
+            self.oplog_append("key", id, "del", None)?;
+        }
         Ok(())
     }
 
@@ -323,22 +383,30 @@ impl Db {
             ],
         )?;
         drop(conn);
-        Ok(self
+        let saved = self
             .list_snippets()?
             .into_iter()
             .find(|s| s.id == id)
-            .expect("snippet just saved"))
+            .expect("snippet just saved");
+        self.oplog_append("snippet", &id, "put", Some(serde_json::to_string(&saved)?))?;
+        Ok(saved)
     }
 
     pub fn bump_snippet(&self, id: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute("UPDATE snippets SET use_count = use_count + 1 WHERE id = ?1", [id])?;
+        drop(conn);
+        if let Some(s) = self.list_snippets()?.into_iter().find(|s| s.id == id) {
+            self.oplog_append("snippet", id, "put", Some(serde_json::to_string(&s)?))?;
+        }
         Ok(())
     }
 
     pub fn delete_snippet(&self, id: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM snippets WHERE id = ?1", [id])?;
+        drop(conn);
+        self.oplog_append("snippet", id, "del", None)?;
         Ok(())
     }
 
@@ -375,11 +443,13 @@ impl Db {
             params![id, input.kind, input.local_port as i64, input.target, input.via_host_id, now()],
         )?;
         drop(conn);
-        Ok(self
+        let saved = self
             .list_forwards()?
             .into_iter()
             .find(|f| f.id == id)
-            .expect("forward just saved"))
+            .expect("forward just saved");
+        self.oplog_append("forward", &id, "put", Some(serde_json::to_string(&saved)?))?;
+        Ok(saved)
     }
 
     pub fn set_forward_enabled(&self, id: &str, enabled: bool) -> Result<()> {
@@ -388,6 +458,10 @@ impl Db {
             "UPDATE forwards SET enabled = ?2, updated_at = ?3 WHERE id = ?1",
             params![id, enabled as i64, now()],
         )?;
+        drop(conn);
+        if let Some(f) = self.list_forwards()?.into_iter().find(|f| f.id == id) {
+            self.oplog_append("forward", id, "put", Some(serde_json::to_string(&f)?))?;
+        }
         Ok(())
     }
 
@@ -403,6 +477,281 @@ impl Db {
     pub fn delete_forward(&self, id: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM forwards WHERE id = ?1", [id])?;
+        drop(conn);
+        self.oplog_append("forward", id, "del", None)?;
+        Ok(())
+    }
+
+    // ---- oplog(增量同步,文档 3.5)----
+
+    /// 记录一次本地变更:lamport 递增、写 oplog、更新实体版本
+    pub fn oplog_append(
+        &self,
+        entity: &str,
+        entity_id: &str,
+        op: &str,
+        payload: Option<String>,
+    ) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        let lamport: i64 = conn
+            .query_row("SELECT value FROM kv WHERE key = 'lamport'", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .optional()?
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0)
+            + 1;
+        conn.execute(
+            "INSERT INTO kv (key, value) VALUES ('lamport', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = ?1",
+            [lamport.to_string()],
+        )?;
+        let device: String = conn
+            .query_row("SELECT value FROM kv WHERE key = 'device_id'", [], |r| r.get(0))
+            .optional()?
+            .unwrap_or_default();
+        conn.execute(
+            "INSERT INTO oplog (entity, entity_id, op, payload, lamport, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![entity, entity_id, op, payload, lamport, now()],
+        )?;
+        conn.execute(
+            "INSERT INTO sync_versions (entity, entity_id, lamport, device_id, op)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(entity, entity_id) DO UPDATE SET lamport=?3, device_id=?4, op=?5",
+            params![entity, entity_id, lamport, device, op],
+        )?;
+        Ok(lamport)
+    }
+
+    pub fn oplog_after(&self, seq: i64) -> Result<Vec<OplogRow>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT seq, entity, entity_id, op, payload, lamport, created_at
+             FROM oplog WHERE seq > ?1 ORDER BY seq",
+        )?;
+        let rows = stmt
+            .query_map([seq], |r| {
+                Ok(OplogRow {
+                    seq: r.get(0)?,
+                    entity: r.get(1)?,
+                    entity_id: r.get(2)?,
+                    op: r.get(3)?,
+                    payload: r.get(4)?,
+                    lamport: r.get(5)?,
+                    created_at: r.get(6)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn cursor_get(&self, device_id: &str) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn
+            .query_row(
+                "SELECT last_seq FROM sync_cursors WHERE device_id = ?1",
+                [device_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or(0))
+    }
+
+    pub fn cursor_set(&self, device_id: &str, seq: i64) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO sync_cursors (device_id, last_seq) VALUES (?1, ?2)
+             ON CONFLICT(device_id) DO UPDATE SET last_seq = ?2",
+            params![device_id, seq],
+        )?;
+        Ok(())
+    }
+
+    /// LWW 判定:远端条目是否应当应用(lamport 更大,持平比 device_id);
+    /// 应用则同步记录新版本并推进本地 lamport 时钟
+    pub fn version_accept_remote(
+        &self,
+        entity: &str,
+        entity_id: &str,
+        lamport: i64,
+        device_id: &str,
+        op: &str,
+    ) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let cur: Option<(i64, String)> = conn
+            .query_row(
+                "SELECT lamport, device_id FROM sync_versions WHERE entity = ?1 AND entity_id = ?2",
+                params![entity, entity_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let accept = match cur {
+            None => true,
+            Some((l, d)) => (lamport, device_id) > (l, d.as_str()),
+        };
+        if accept {
+            conn.execute(
+                "INSERT INTO sync_versions (entity, entity_id, lamport, device_id, op)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(entity, entity_id) DO UPDATE SET lamport=?3, device_id=?4, op=?5",
+                params![entity, entity_id, lamport, device_id, op],
+            )?;
+            // lamport 时钟对齐:local = max(local, remote)
+            let local: i64 = conn
+                .query_row("SELECT value FROM kv WHERE key = 'lamport'", [], |r| {
+                    r.get::<_, String>(0)
+                })
+                .optional()?
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0);
+            if lamport > local {
+                conn.execute(
+                    "INSERT INTO kv (key, value) VALUES ('lamport', ?1)
+                     ON CONFLICT(key) DO UPDATE SET value = ?1",
+                    [lamport.to_string()],
+                )?;
+            }
+        }
+        Ok(accept)
+    }
+
+    /// 首次同步:为存量实体合成 put 条目,保证老数据也能进入 oplog 流
+    pub fn bootstrap_oplog(&self) -> Result<()> {
+        if self.kv_get("oplog_bootstrapped")?.is_some() {
+            return Ok(());
+        }
+        for h in self.list_hosts()? {
+            let payload = self.host_payload(&h)?;
+            self.oplog_append("host", &h.id.clone(), "put", Some(payload))?;
+        }
+        for s in self.list_snippets()? {
+            self.oplog_append("snippet", &s.id.clone(), "put", Some(serde_json::to_string(&s)?))?;
+        }
+        for f in self.list_forwards()? {
+            self.oplog_append("forward", &f.id.clone(), "put", Some(serde_json::to_string(&f)?))?;
+        }
+        for k in self.list_keys()? {
+            if k.sync_enabled {
+                let payload = self.key_payload(&k.id)?;
+                self.oplog_append("key", &k.id, "put", Some(payload))?;
+            }
+        }
+        self.kv_set("oplog_bootstrapped", "1")?;
+        Ok(())
+    }
+
+    /// host 实体的 oplog payload:实体 + 分组名(跨设备按名映射分组)
+    pub fn host_payload(&self, h: &Host) -> Result<String> {
+        let group_name = self
+            .list_groups()?
+            .into_iter()
+            .find(|g| g.id == h.group_id)
+            .map(|g| g.name)
+            .unwrap_or_default();
+        Ok(serde_json::to_string(&serde_json::json!({ "host": h, "groupName": group_name }))?)
+    }
+
+    /// key 实体的 oplog payload:元数据 + 设备密钥加密的私钥(推送时换主密钥加密)
+    pub fn key_payload(&self, key_id: &str) -> Result<String> {
+        use base64::Engine;
+        let meta = self
+            .list_keys()?
+            .into_iter()
+            .find(|k| k.id == key_id)
+            .ok_or_else(|| crate::error::AppError(format!("密钥不存在: {key_id}")))?;
+        let enc = self.get_key_private_enc(key_id)?;
+        Ok(serde_json::to_string(&serde_json::json!({
+            "meta": meta,
+            "privateDevEnc": base64::engine::general_purpose::STANDARD.encode(enc),
+        }))?)
+    }
+
+    /// 按名取或建分组(应用远端 host 时用)
+    pub fn group_by_name_or_create(&self, name: &str) -> Result<String> {
+        if name.is_empty() {
+            let conn = self.conn.lock().unwrap();
+            return Ok(conn.query_row("SELECT id FROM groups ORDER BY sort LIMIT 1", [], |r| r.get(0))?);
+        }
+        if let Some(g) = self.list_groups()?.into_iter().find(|g| g.name == name) {
+            return Ok(g.id);
+        }
+        let id = uid();
+        let conn = self.conn.lock().unwrap();
+        let max_sort: i64 = conn.query_row("SELECT COALESCE(MAX(sort),0) FROM groups", [], |r| r.get(0))?;
+        conn.execute(
+            "INSERT INTO groups (id, name, sort) VALUES (?1, ?2, ?3)",
+            params![id, name, max_sort + 1],
+        )?;
+        Ok(id)
+    }
+
+    // ---- 远端条目应用(不追加 oplog,不递增 lamport)----
+
+    pub fn upsert_host_raw(&self, h: &Host) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO hosts (id, name, addr, port, user, group_id, tags, key_id, last_connected_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT(id) DO UPDATE SET name=?2, addr=?3, port=?4, user=?5, group_id=?6, tags=?7, key_id=?8",
+            params![
+                h.id, h.name, h.addr, h.port as i64, h.user, h.group_id,
+                serde_json::to_string(&h.tags).unwrap(), h.key_id, h.last_connected_at, now()
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn upsert_snippet_raw(&self, s: &Snippet) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO snippets (id, name, command, tags, use_count, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(id) DO UPDATE SET name=?2, command=?3, tags=?4, use_count=?5, updated_at=?6",
+            params![s.id, s.name, s.command, serde_json::to_string(&s.tags).unwrap(), s.use_count, s.updated_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn upsert_forward_raw(&self, f: &ForwardRule) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO forwards (id, kind, local_port, target, via_host_id, enabled, bytes_up, bytes_down, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 0, ?7)
+             ON CONFLICT(id) DO UPDATE SET kind=?2, local_port=?3, target=?4, via_host_id=?5, enabled=?6, updated_at=?7",
+            params![f.id, f.kind, f.local_port as i64, f.target, f.via_host_id, f.enabled as i64, now()],
+        )?;
+        Ok(())
+    }
+
+    /// 应用远端密钥:同 id 覆盖;同指纹不同 id 视为已存在,跳过
+    pub fn upsert_key_raw(&self, meta: &SshKeyMeta, private_key_enc: &[u8]) -> Result<()> {
+        let existing = self.list_keys()?;
+        if existing.iter().any(|k| k.fingerprint == meta.fingerprint && k.id != meta.id) {
+            return Ok(());
+        }
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO keys (id, name, algo, fingerprint, public_key, private_key_enc, sync_enabled, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?8)
+             ON CONFLICT(id) DO UPDATE SET name=?2, algo=?3, fingerprint=?4, public_key=?5, private_key_enc=?6, sync_enabled=1, updated_at=?8",
+            params![meta.id, meta.name, meta.algo, meta.fingerprint, meta.public_key, private_key_enc, meta.created_at, now()],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_entity_raw(&self, entity: &str, entity_id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        match entity {
+            "host" => { conn.execute("DELETE FROM hosts WHERE id = ?1", [entity_id])?; }
+            "snippet" => { conn.execute("DELETE FROM snippets WHERE id = ?1", [entity_id])?; }
+            "forward" => { conn.execute("DELETE FROM forwards WHERE id = ?1", [entity_id])?; }
+            "key" => {
+                conn.execute("DELETE FROM keys WHERE id = ?1", [entity_id])?;
+                conn.execute("UPDATE hosts SET key_id = NULL WHERE key_id = ?1", [entity_id])?;
+            }
+            _ => {}
+        }
         Ok(())
     }
 

@@ -432,5 +432,8 @@ pub fn settings_get(state: State<AppState>) -> Result<AppSettings> {
 
 #[tauri::command]
 pub fn settings_save(state: State<AppState>, settings: AppSettings) -> Result<()> {
-    state.db.kv_set("settings", &serde_json::to_string(&settings)?)
+    let json = serde_json::to_string(&settings)?;
+    state.db.kv_set("settings", &json)?;
+    state.db.oplog_append("settings", "app", "put", Some(json))?;
+    Ok(())
 }

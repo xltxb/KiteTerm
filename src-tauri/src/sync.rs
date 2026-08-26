@@ -1,19 +1,26 @@
-//! 云同步 v1:S3 兼容桶 + 端到端加密快照。
-//! 每设备推送 snapshot/{device_id}.bin(XChaCha20-Poly1305,密钥由主密码 Argon2id 派生);
-//! 拉取其他设备快照按实体 LWW(updated_at)合并。oplog 增量与压实见开发文档 3.5,后续版本实现。
+//! 云同步 v2:oplog 增量同步(文档 3.5)。
+//!
+//! 桶内布局:
+//!   manifest.json                 设备清单(明文 JSON;文档要求密文+If-Match,标记为后续)
+//!   oplog/{device_id}/{seq}.bin   逐条 XChaCha20-Poly1305 密文,AAD 绑定对象路径防重放/错位;
+//!                                 seq 零填充保证 LIST 字典序 == 数值序;append-only
+//!
+//! 拉取:LIST 其他设备前缀,按本地游标(sync_cursors)增量下载;
+//! 合并:实体级 LWW —— lamport 时钟决胜,持平比 device_id;删除为墓碑条目。
+//! 压实(30 天前 oplog → snapshot)与墓碑清理:后续版本。
 
 use std::sync::Arc;
 
 use argon2::Argon2;
 use base64::Engine;
-use chacha20poly1305::aead::{Aead, KeyInit};
+use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::XChaCha20Poly1305;
 use s3::creds::Credentials;
 use s3::{Bucket, Region};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 
-use crate::db::Db;
+use crate::db::{Db, OplogRow};
 use crate::error::{AppError, Result};
 use crate::models::*;
 use crate::vault::Vault;
@@ -22,7 +29,7 @@ const KV_CONFIG: &str = "sync_config";
 const KV_SECRET: &str = "sync_secret_enc";
 const KV_MK: &str = "sync_mk_enc";
 const KV_LAST: &str = "sync_last_at";
-const KV_DEVICE: &str = "device_id";
+const KV_PUSHED: &str = "sync_pushed_seq";
 
 fn b64() -> base64::engine::general_purpose::GeneralPurpose {
     base64::engine::general_purpose::STANDARD
@@ -34,31 +41,17 @@ struct Manifest {
     updated_at: String,
 }
 
+/// 桶内 oplog 条目的明文结构(整体加密后落桶)
 #[derive(Serialize, Deserialize)]
-struct Snapshot {
+#[serde(rename_all = "camelCase")]
+struct WireOp {
+    entity: String,
+    entity_id: String,
+    op: String,
+    payload: Option<serde_json::Value>,
+    lamport: i64,
     device_id: String,
     created_at: String,
-    hosts: Option<Vec<Host>>,
-    groups: Option<Vec<HostGroup>>,
-    snippets: Option<Vec<Snippet>>,
-    keys: Option<Vec<SnapshotKey>>,
-    settings: Option<AppSettings>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct SnapshotKey {
-    meta: SshKeyMeta,
-    /// 主密码派生密钥加密后的私钥 PEM(base64)
-    private_pem_enc: String,
-}
-
-pub fn device_id(db: &Db) -> Result<String> {
-    if let Some(id) = db.kv_get(KV_DEVICE)? {
-        return Ok(id);
-    }
-    let id = uuid::Uuid::new_v4().to_string();
-    db.kv_set(KV_DEVICE, &id)?;
-    Ok(id)
 }
 
 pub fn get_config(db: &Db) -> Result<SyncConfig> {
@@ -78,6 +71,7 @@ pub fn get_config(db: &Db) -> Result<SyncConfig> {
 }
 
 pub fn save_config(db: &Db, vault: &Vault, mut cfg: SyncConfig) -> Result<()> {
+    let old = get_config(db)?;
     if let Some(secret) = cfg.secret_key.take() {
         if !secret.is_empty() {
             db.kv_set(KV_SECRET, &b64().encode(vault.encrypt(secret.as_bytes())?))?;
@@ -96,6 +90,35 @@ pub fn save_config(db: &Db, vault: &Vault, mut cfg: SyncConfig) -> Result<()> {
         }
     }
     db.kv_set(KV_CONFIG, &serde_json::to_string(&cfg)?)?;
+
+    // 分项开关 关→开:为该类存量实体补发 put 条目,否则老数据进不了增量流
+    if cfg.scopes.hosts && !old.scopes.hosts {
+        for h in db.list_hosts()? {
+            let p = db.host_payload(&h)?;
+            db.oplog_append("host", &h.id.clone(), "put", Some(p))?;
+        }
+        for f in db.list_forwards()? {
+            db.oplog_append("forward", &f.id.clone(), "put", Some(serde_json::to_string(&f)?))?;
+        }
+    }
+    if cfg.scopes.snippets && !old.scopes.snippets {
+        for s in db.list_snippets()? {
+            db.oplog_append("snippet", &s.id.clone(), "put", Some(serde_json::to_string(&s)?))?;
+        }
+    }
+    if cfg.scopes.keys && !old.scopes.keys {
+        for k in db.list_keys()? {
+            if k.sync_enabled {
+                let p = db.key_payload(&k.id)?;
+                db.oplog_append("key", &k.id, "put", Some(p))?;
+            }
+        }
+    }
+    if cfg.scopes.settings && !old.scopes.settings {
+        if let Some(s) = db.kv_get("settings")? {
+            db.oplog_append("settings", "app", "put", Some(s))?;
+        }
+    }
     Ok(())
 }
 
@@ -107,7 +130,7 @@ pub fn get_status(db: &Db) -> Result<SyncStatus> {
         .and_then(|m| serde_json::from_str::<Manifest>(&m).ok())
         .map(|m| m.devices)
         .unwrap_or_default();
-    let me = device_id(db)?;
+    let me = db.device_id();
     let devices = devices
         .into_iter()
         .map(|mut d| {
@@ -153,56 +176,158 @@ fn master_cipher(db: &Db, vault: &Vault) -> Result<XChaCha20Poly1305> {
     Ok(XChaCha20Poly1305::new((&mk).into()))
 }
 
-fn seal(cipher: &XChaCha20Poly1305, plain: &[u8]) -> Result<Vec<u8>> {
+fn seal(cipher: &XChaCha20Poly1305, plain: &[u8], aad: &str) -> Result<Vec<u8>> {
     use chacha20poly1305::aead::AeadCore;
     let nonce = XChaCha20Poly1305::generate_nonce(&mut chacha20poly1305::aead::OsRng);
-    let ct = cipher.encrypt(&nonce, plain).map_err(|e| AppError(format!("加密失败: {e}")))?;
+    let ct = cipher
+        .encrypt(&nonce, Payload { msg: plain, aad: aad.as_bytes() })
+        .map_err(|e| AppError(format!("加密失败: {e}")))?;
     let mut out = nonce.to_vec();
     out.extend(ct);
     Ok(out)
 }
 
-fn unseal(cipher: &XChaCha20Poly1305, blob: &[u8]) -> Result<Vec<u8>> {
+fn unseal(cipher: &XChaCha20Poly1305, blob: &[u8], aad: &str) -> Result<Vec<u8>> {
     if blob.len() < 24 {
         return Err(AppError("密文格式错误".into()));
     }
     let (nonce, ct) = blob.split_at(24);
     cipher
-        .decrypt(chacha20poly1305::XNonce::from_slice(nonce), ct)
-        .map_err(|_| AppError("解密失败 — 主密码不一致?".into()))
+        .decrypt(
+            chacha20poly1305::XNonce::from_slice(nonce),
+            Payload { msg: ct, aad: aad.as_bytes() },
+        )
+        .map_err(|_| AppError("解密失败 — 主密码不一致或对象被移动?".into()))
+}
+
+fn scope_allows(cfg: &SyncConfig, entity: &str) -> bool {
+    match entity {
+        "host" | "forward" => cfg.scopes.hosts,
+        "key" => cfg.scopes.keys,
+        "snippet" => cfg.scopes.snippets,
+        "settings" => cfg.scopes.settings,
+        _ => false,
+    }
+}
+
+fn oplog_object_key(device: &str, seq: i64) -> String {
+    format!("oplog/{device}/{seq:010}.bin")
+}
+
+/// 本地 oplog 条目 → 桶内明文结构(key 实体把设备密钥层换成明文,随后整体主密钥加密)
+fn to_wire(vault: &Vault, me: &str, row: &OplogRow) -> Result<WireOp> {
+    let mut payload: Option<serde_json::Value> =
+        row.payload.as_deref().map(serde_json::from_str).transpose()?;
+    if row.entity == "key" && row.op == "put" {
+        if let Some(p) = payload.as_mut() {
+            let dev_enc = p["privateDevEnc"]
+                .as_str()
+                .ok_or_else(|| AppError("key payload 缺少私钥".into()))?;
+            let pem = vault.decrypt(
+                &b64().decode(dev_enc).map_err(|e| AppError(e.to_string()))?,
+            )?;
+            p["privatePem"] = serde_json::Value::String(
+                String::from_utf8(pem).map_err(|_| AppError("私钥解码失败".into()))?,
+            );
+            p.as_object_mut().unwrap().remove("privateDevEnc");
+        }
+    }
+    Ok(WireOp {
+        entity: row.entity.clone(),
+        entity_id: row.entity_id.clone(),
+        op: row.op.clone(),
+        payload,
+        lamport: row.lamport,
+        device_id: me.to_string(),
+        created_at: row.created_at.clone(),
+    })
+}
+
+/// 应用一条远端条目(LWW 判定已通过)
+fn apply_wire(db: &Db, vault: &Vault, wire: &WireOp) -> Result<()> {
+    if wire.op == "del" {
+        return db.delete_entity_raw(&wire.entity, &wire.entity_id);
+    }
+    let payload = wire
+        .payload
+        .as_ref()
+        .ok_or_else(|| AppError("put 条目缺少 payload".into()))?;
+    match wire.entity.as_str() {
+        "host" => {
+            let mut host: Host = serde_json::from_value(payload["host"].clone())?;
+            let group_name = payload["groupName"].as_str().unwrap_or_default();
+            host.group_id = db.group_by_name_or_create(group_name)?;
+            db.upsert_host_raw(&host)?;
+        }
+        "snippet" => {
+            let s: Snippet = serde_json::from_value(payload.clone())?;
+            db.upsert_snippet_raw(&s)?;
+        }
+        "forward" => {
+            let f: ForwardRule = serde_json::from_value(payload.clone())?;
+            db.upsert_forward_raw(&f)?;
+        }
+        "key" => {
+            let meta: SshKeyMeta = serde_json::from_value(payload["meta"].clone())?;
+            let pem = payload["privatePem"]
+                .as_str()
+                .ok_or_else(|| AppError("key 条目缺少私钥".into()))?;
+            let dev_enc = vault.encrypt(pem.as_bytes())?;
+            db.upsert_key_raw(&meta, &dev_enc)?;
+        }
+        "settings" => {
+            db.kv_set("settings", &payload.to_string())?;
+        }
+        other => return Err(AppError(format!("未知实体类型: {other}"))),
+    }
+    Ok(())
 }
 
 pub async fn sync_now(app: AppHandle, db: Arc<Db>, vault: Arc<Vault>) -> Result<()> {
-    let emit = |syncing: bool, last: Option<String>| {
-        let devices = get_status(&db).map(|s| s.devices).unwrap_or_default();
-        let _ = app.emit(
-            "sync://state",
-            SyncStatus { configured: true, syncing, last_sync_at: last, devices },
-        );
+    let emit = |syncing: bool| {
+        let mut status = get_status(&db).unwrap_or(SyncStatus {
+            configured: true,
+            syncing,
+            last_sync_at: None,
+            devices: vec![],
+        });
+        status.syncing = syncing;
+        let _ = app.emit("sync://state", status);
     };
-    emit(true, db.kv_get(KV_LAST)?);
-
-    let result = do_sync(&db, &vault).await;
-    let now = chrono::Local::now().format("%H:%M").to_string();
+    emit(true);
+    let result = sync_once(&db, &vault).await;
     if result.is_ok() {
-        db.kv_set(KV_LAST, &now)?;
+        db.kv_set(KV_LAST, &chrono::Local::now().format("%H:%M").to_string())?;
     }
-    emit(false, db.kv_get(KV_LAST)?);
+    emit(false);
     result
 }
 
-async fn do_sync(db: &Db, vault: &Vault) -> Result<()> {
+/// 无 UI 依赖的一次完整推拉(集成测试亦复用)
+pub async fn sync_once(db: &Db, vault: &Vault) -> Result<()> {
     let (bucket, cfg) = open_bucket(db, vault)?;
     let cipher = master_cipher(db, vault)?;
-    let me = device_id(db)?;
+    let me = db.device_id();
 
-    // ---- push:本机快照 ----
-    let snapshot = build_snapshot(db, vault, &cipher, &cfg, &me)?;
-    let blob = seal(&cipher, &serde_json::to_vec(&snapshot)?)?;
-    bucket
-        .put_object(format!("snapshot/{me}.bin"), &blob)
-        .await
-        .map_err(|e| AppError(format!("上传快照失败: {e}")))?;
+    db.bootstrap_oplog()?;
+
+    // ---- push:未推送的本地条目,逐条加密上传(append-only,幂等)----
+    let pushed: i64 = db
+        .kv_get(KV_PUSHED)?
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    for row in db.oplog_after(pushed)? {
+        if scope_allows(&cfg, &row.entity) {
+            let wire = to_wire(vault, &me, &row)?;
+            let key = oplog_object_key(&me, row.seq);
+            let blob = seal(&cipher, &serde_json::to_vec(&wire)?, &key)?;
+            bucket
+                .put_object(&key, &blob)
+                .await
+                .map_err(|e| AppError(format!("上传 {key} 失败: {e}")))?;
+        }
+        db.kv_set(KV_PUSHED, &row.seq.to_string())?;
+    }
 
     // ---- manifest:设备清单(读-改-写)----
     let mut manifest: Manifest = match bucket.get_object("manifest.json").await {
@@ -226,109 +351,55 @@ async fn do_sync(db: &Db, vault: &Vault) -> Result<()> {
         .map_err(|e| AppError(format!("上传 manifest 失败: {e}")))?;
     db.kv_set("sync_manifest", &serde_json::to_string(&manifest)?)?;
 
-    // ---- pull:其他设备快照,LWW 合并 ----
+    // ---- pull:其他设备前缀,按游标增量下载并 LWW 合并 ----
     let listing = bucket
-        .list("snapshot/".into(), None)
+        .list("oplog/".into(), None)
         .await
-        .map_err(|e| AppError(format!("列举快照失败: {e}")))?;
+        .map_err(|e| AppError(format!("列举 oplog 失败: {e}")))?;
+    // (device, seq, object_key),仅取游标之后的
+    let mut pending: Vec<(String, i64, String)> = Vec::new();
     for page in listing {
         for obj in page.contents {
-            if obj.key == format!("snapshot/{me}.bin") {
+            let parts: Vec<&str> = obj.key.split('/').collect();
+            if parts.len() != 3 || parts[0] != "oplog" {
                 continue;
             }
-            let Ok(resp) = bucket.get_object(&obj.key).await else { continue };
-            let Ok(plain) = unseal(&cipher, resp.bytes()) else { continue };
-            let Ok(remote) = serde_json::from_slice::<Snapshot>(&plain) else { continue };
-            merge_snapshot(db, vault, &cipher, remote)?;
-        }
-    }
-    Ok(())
-}
-
-fn build_snapshot(
-    db: &Db,
-    vault: &Vault,
-    cipher: &XChaCha20Poly1305,
-    cfg: &SyncConfig,
-    me: &str,
-) -> Result<Snapshot> {
-    let keys = if cfg.scopes.keys {
-        let mut out = Vec::new();
-        for meta in db.list_keys()?.into_iter().filter(|k| k.sync_enabled) {
-            let pem = vault.decrypt(&db.get_key_private_enc(&meta.id)?)?;
-            out.push(SnapshotKey {
-                meta,
-                private_pem_enc: b64().encode(seal(cipher, &pem)?),
-            });
-        }
-        Some(out)
-    } else {
-        None
-    };
-    Ok(Snapshot {
-        device_id: me.to_string(),
-        created_at: chrono::Local::now().format("%Y-%m-%d %H:%M").to_string(),
-        hosts: cfg.scopes.hosts.then(|| db.list_hosts()).transpose()?,
-        groups: cfg.scopes.hosts.then(|| db.list_groups()).transpose()?,
-        snippets: cfg.scopes.snippets.then(|| db.list_snippets()).transpose()?,
-        keys,
-        settings: None, // 设置项同步后续版本接入
-    })
-}
-
-fn merge_snapshot(
-    db: &Db,
-    vault: &Vault,
-    cipher: &XChaCha20Poly1305,
-    remote: Snapshot,
-) -> Result<()> {
-    // 简化 LWW:本地不存在的实体直接导入;已存在的保留本地(后续版本比较 lamport/updated_at)
-    if let Some(hosts) = remote.hosts {
-        let local: std::collections::HashSet<String> =
-            db.list_hosts()?.into_iter().map(|h| h.id).collect();
-        for h in hosts {
-            if !local.contains(&h.id) {
-                db.save_host(HostInput {
-                    id: None,
-                    name: h.name,
-                    addr: Some(h.addr),
-                    port: Some(h.port),
-                    user: Some(h.user),
-                    group_id: None, // 分组映射从简:入默认分组
-                    tags: Some(h.tags),
-                    key_id: None,
-                })?;
+            let dev = parts[1].to_string();
+            if dev == me {
+                continue;
+            }
+            let Ok(seq) = parts[2].trim_end_matches(".bin").parse::<i64>() else { continue };
+            if seq > db.cursor_get(&dev)? {
+                pending.push((dev, seq, obj.key.clone()));
             }
         }
     }
-    if let Some(snips) = remote.snippets {
-        let local: std::collections::HashSet<String> =
-            db.list_snippets()?.into_iter().map(|s| s.id).collect();
-        for s in snips {
-            if !local.contains(&s.id) {
-                db.save_snippet(SnippetInput {
-                    id: Some(s.id),
-                    name: s.name,
-                    command: s.command,
-                    tags: Some(s.tags),
-                })?;
+    // 同设备内按 seq 升序应用
+    pending.sort_by(|a, b| (&a.0, a.1).cmp(&(&b.0, b.1)));
+    for (dev, seq, key) in pending {
+        let resp = bucket
+            .get_object(&key)
+            .await
+            .map_err(|e| AppError(format!("下载 {key} 失败: {e}")))?;
+        match unseal(&cipher, resp.bytes(), &key)
+            .and_then(|plain| serde_json::from_slice::<WireOp>(&plain).map_err(Into::into))
+        {
+            Ok(wire) => {
+                if scope_allows(&cfg, &wire.entity)
+                    && db.version_accept_remote(
+                        &wire.entity,
+                        &wire.entity_id,
+                        wire.lamport,
+                        &wire.device_id,
+                        &wire.op,
+                    )?
+                {
+                    apply_wire(db, vault, &wire)?;
+                }
             }
+            Err(e) => eprintln!("[sync] 跳过损坏条目 {key}: {e}"),
         }
-    }
-    if let Some(keys) = remote.keys {
-        let local: std::collections::HashSet<String> =
-            db.list_keys()?.into_iter().map(|k| k.fingerprint).collect();
-        for k in keys {
-            if !local.contains(&k.meta.fingerprint) {
-                let pem = unseal(
-                    cipher,
-                    &b64().decode(&k.private_pem_enc).map_err(|e| AppError(e.to_string()))?,
-                )?;
-                let enc = vault.encrypt(&pem)?;
-                db.insert_key(&k.meta.name, &k.meta.algo, &k.meta.fingerprint, &k.meta.public_key, &enc)?;
-                db.set_key_sync(&k.meta.id, true).ok();
-            }
-        }
+        db.cursor_set(&dev, seq)?;
     }
     Ok(())
 }
