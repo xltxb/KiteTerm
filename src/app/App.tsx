@@ -1,6 +1,5 @@
 import { useEffect, useRef } from "react";
 import { ipc } from "@/ipc";
-import { isTauri } from "@/ipc/api";
 import { Sidebar } from "./Sidebar";
 import { CommandPalette } from "./CommandPalette";
 import { TerminalScreen } from "@/screens/TerminalScreen";
@@ -29,8 +28,8 @@ export function App() {
     void load();
     void loadSync();
 
-    // 启动恢复会话(仅桌面端;设置关闭时后端返回空列表)
-    if (isTauri() && !restored.current) {
+    // 启动恢复会话(设置关闭时后端返回空列表)
+    if (!restored.current) {
       restored.current = true;
       void (async () => {
         const targets = await ipc.restoreTargets();
