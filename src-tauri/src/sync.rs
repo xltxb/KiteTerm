@@ -29,6 +29,15 @@ const KV_CONFIG: &str = "sync_config";
 const KV_MK: &str = "sync_mk_enc";
 const KV_LAST: &str = "sync_last_at";
 const KV_PUSHED: &str = "sync_pushed_seq";
+const KV_SNAP_SEEN: &str = "sync_snapshot_seen";
+
+/// 压实阈值:早于该秒数且已被本机应用的 oplog 对象并入快照后删除(默认 30 天;测试可用环境变量收窄)
+fn compact_max_age_secs() -> i64 {
+    std::env::var("VELA_COMPACT_MAX_AGE_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(30 * 86400)
+}
 
 fn b64() -> base64::engine::general_purpose::GeneralPurpose {
     base64::engine::general_purpose::STANDARD
@@ -38,6 +47,13 @@ fn b64() -> base64::engine::general_purpose::GeneralPurpose {
 struct Manifest {
     devices: Vec<SyncDevice>,
     updated_at: String,
+}
+
+/// 压实快照:全量实体终态(每实体一条 WireOp,保留原 lamport/device 供 LWW)
+#[derive(Serialize, Deserialize)]
+struct Snapshot {
+    lamport: i64,
+    entries: Vec<WireOp>,
 }
 
 /// 桶内 oplog 条目的明文结构(整体加密后落桶)
@@ -161,8 +177,8 @@ async fn open_bucket(db: &Db, vault: &Vault) -> Result<(Box<Bucket>, SyncConfig,
     let creds = Credentials::new(
         Some(&creds_info.access_key),
         Some(&creds_info.secret_key),
-        None,
-        None,
+        creds_info.session_token.as_deref(),
+        creds_info.session_token.as_deref(),
         None,
     )
     .map_err(|e| AppError(format!("凭据错误: {e}")))?;
@@ -205,6 +221,29 @@ fn unseal(cipher: &XChaCha20Poly1305, blob: &[u8], aad: &str) -> Result<Vec<u8>>
         .map_err(|_| AppError("解密失败 — 主密码不一致或对象被移动?".into()))
 }
 
+/// 恢复短语:主密钥(32B)↔ BIP39 24 词。无旧设备时凭短语重建主密钥;
+/// 忘记主密码且无短语 = 数据不可恢复(产品内明确提示)。
+pub fn recovery_phrase(db: &Db, vault: &Vault) -> Result<String> {
+    let mk_enc = db
+        .kv_get(KV_MK)?
+        .ok_or_else(|| AppError("尚未设置主密码,无恢复短语可展示".into()))?;
+    let mk = vault.decrypt(&b64().decode(mk_enc).map_err(|e| AppError(e.to_string()))?)?;
+    let mnemonic = bip39::Mnemonic::from_entropy(&mk)
+        .map_err(|e| AppError(format!("生成恢复短语失败: {e}")))?;
+    Ok(mnemonic.to_string())
+}
+
+pub fn restore_master_from_phrase(db: &Db, vault: &Vault, phrase: &str) -> Result<()> {
+    let mnemonic = bip39::Mnemonic::parse(phrase.trim().to_lowercase())
+        .map_err(|e| AppError(format!("恢复短语无效: {e}")))?;
+    let entropy = mnemonic.to_entropy();
+    if entropy.len() != 32 {
+        return Err(AppError("恢复短语应为 24 个单词(256 位)".into()));
+    }
+    db.kv_set(KV_MK, &b64().encode(vault.encrypt(&entropy)?))?;
+    Ok(())
+}
+
 fn scope_allows(cfg: &SyncConfig, entity: &str) -> bool {
     match entity {
         "host" | "forward" => cfg.scopes.hosts,
@@ -219,22 +258,26 @@ fn oplog_object_key(prefix: &str, device: &str, seq: i64) -> String {
     format!("{prefix}/oplog/{device}/{seq:010}.bin")
 }
 
+/// key 实体 payload:设备密钥层 → 明文(随后整条经主密钥加密出网)
+fn key_payload_plaintext(vault: &Vault, p: &mut serde_json::Value) -> Result<()> {
+    let dev_enc = p["privateDevEnc"]
+        .as_str()
+        .ok_or_else(|| AppError("key payload 缺少私钥".into()))?;
+    let pem = vault.decrypt(&b64().decode(dev_enc).map_err(|e| AppError(e.to_string()))?)?;
+    p["privatePem"] = serde_json::Value::String(
+        String::from_utf8(pem).map_err(|_| AppError("私钥解码失败".into()))?,
+    );
+    p.as_object_mut().unwrap().remove("privateDevEnc");
+    Ok(())
+}
+
 /// 本地 oplog 条目 → 桶内明文结构(key 实体把设备密钥层换成明文,随后整体主密钥加密)
 fn to_wire(vault: &Vault, me: &str, row: &OplogRow) -> Result<WireOp> {
     let mut payload: Option<serde_json::Value> =
         row.payload.as_deref().map(serde_json::from_str).transpose()?;
     if row.entity == "key" && row.op == "put" {
         if let Some(p) = payload.as_mut() {
-            let dev_enc = p["privateDevEnc"]
-                .as_str()
-                .ok_or_else(|| AppError("key payload 缺少私钥".into()))?;
-            let pem = vault.decrypt(
-                &b64().decode(dev_enc).map_err(|e| AppError(e.to_string()))?,
-            )?;
-            p["privatePem"] = serde_json::Value::String(
-                String::from_utf8(pem).map_err(|_| AppError("私钥解码失败".into()))?,
-            );
-            p.as_object_mut().unwrap().remove("privateDevEnc");
+            key_payload_plaintext(vault, p)?;
         }
     }
     Ok(WireOp {
@@ -288,6 +331,158 @@ fn apply_wire(db: &Db, vault: &Vault, wire: &WireOp) -> Result<()> {
     Ok(())
 }
 
+/// 本地全量终态 → 压实快照(每实体一条,保留原 lamport/device 供 LWW 幂等合并)
+fn build_snapshot(db: &Db, vault: &Vault, cfg: &SyncConfig) -> Result<Snapshot> {
+    let now = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
+    let hosts = db.list_hosts()?;
+    let snippets = db.list_snippets()?;
+    let forwards = db.list_forwards()?;
+    let mut entries = Vec::new();
+    for (entity, entity_id, lamport, device_id, op) in db.list_sync_versions()? {
+        if !scope_allows(cfg, &entity) {
+            continue;
+        }
+        let payload = if op == "put" {
+            let p: Option<serde_json::Value> = match entity.as_str() {
+                "host" => match hosts.iter().find(|h| h.id == entity_id) {
+                    Some(h) => Some(serde_json::from_str(&db.host_payload(h)?)?),
+                    None => None,
+                },
+                "snippet" => snippets
+                    .iter()
+                    .find(|s| s.id == entity_id)
+                    .map(serde_json::to_value)
+                    .transpose()?,
+                "forward" => forwards
+                    .iter()
+                    .find(|f| f.id == entity_id)
+                    .map(serde_json::to_value)
+                    .transpose()?,
+                "key" => match db.key_payload(&entity_id) {
+                    Ok(s) => {
+                        let mut v: serde_json::Value = serde_json::from_str(&s)?;
+                        key_payload_plaintext(vault, &mut v)?;
+                        Some(v)
+                    }
+                    Err(_) => None,
+                },
+                "settings" => db.kv_get("settings")?.map(|s| serde_json::from_str(&s)).transpose()?,
+                _ => None,
+            };
+            match p {
+                Some(v) => Some(v),
+                None => continue, // 版本表有记录但实体已不在(不一致),跳过
+            }
+        } else {
+            None
+        };
+        entries.push(WireOp {
+            entity,
+            entity_id,
+            op,
+            payload,
+            lamport,
+            device_id,
+            created_at: now.clone(),
+        });
+    }
+    Ok(Snapshot { lamport: db.lamport_now()?, entries })
+}
+
+/// 拉取并应用最新快照(新设备快速引导;老设备补上被压实掉的历史)
+async fn pull_snapshot(
+    db: &Db,
+    vault: &Vault,
+    bucket: &Bucket,
+    cipher: &XChaCha20Poly1305,
+    cfg: &SyncConfig,
+    prefix: &str,
+) -> Result<()> {
+    let snap_prefix = format!("{prefix}/snapshot/");
+    let Ok(pages) = bucket.list(snap_prefix.clone(), None).await else { return Ok(()) };
+    let mut best: Option<(i64, String)> = None;
+    for page in pages {
+        for obj in page.contents {
+            let Some(rest) = obj.key.strip_prefix(&snap_prefix) else { continue };
+            let Ok(lamport) = rest.trim_end_matches(".bin").parse::<i64>() else { continue };
+            if best.as_ref().map(|(l, _)| lamport > *l).unwrap_or(true) {
+                best = Some((lamport, obj.key.clone()));
+            }
+        }
+    }
+    let Some((lamport, key)) = best else { return Ok(()) };
+    let seen: i64 = db.kv_get(KV_SNAP_SEEN)?.and_then(|v| v.parse().ok()).unwrap_or(0);
+    if lamport <= seen {
+        return Ok(());
+    }
+    let resp = bucket
+        .get_object(&key)
+        .await
+        .map_err(|e| AppError(format!("下载快照失败: {e}")))?;
+    let plain = unseal(cipher, resp.bytes(), &key)?;
+    let snap: Snapshot = serde_json::from_slice(&plain)?;
+    for wire in &snap.entries {
+        if scope_allows(cfg, &wire.entity)
+            && db.version_accept_remote(&wire.entity, &wire.entity_id, wire.lamport, &wire.device_id, &wire.op)?
+        {
+            apply_wire(db, vault, wire)?;
+        }
+    }
+    db.kv_set(KV_SNAP_SEEN, &lamport.to_string())?;
+    Ok(())
+}
+
+/// 压实:把「早于阈值且本机已应用」的 oplog 对象并入快照后删除;仅保留最新快照
+async fn maybe_compact(
+    db: &Db,
+    vault: &Vault,
+    bucket: &Bucket,
+    cipher: &XChaCha20Poly1305,
+    cfg: &SyncConfig,
+    prefix: &str,
+    me: &str,
+    objects: Vec<(String, i64, String, String)>,
+) -> Result<()> {
+    let cutoff = chrono::Utc::now() - chrono::Duration::seconds(compact_max_age_secs());
+    let pushed: i64 = db.kv_get(KV_PUSHED)?.and_then(|v| v.parse().ok()).unwrap_or(0);
+    let mut candidates = Vec::new();
+    for (dev, seq, key, last_modified) in objects {
+        let covered = if dev == me { seq <= pushed } else { seq <= db.cursor_get(&dev)? };
+        if !covered {
+            continue;
+        }
+        let Ok(t) = chrono::DateTime::parse_from_rfc3339(&last_modified) else { continue };
+        if t.with_timezone(&chrono::Utc) < cutoff {
+            candidates.push(key);
+        }
+    }
+    if candidates.is_empty() {
+        return Ok(());
+    }
+    let snapshot = build_snapshot(db, vault, cfg)?;
+    let snap_key = format!("{prefix}/snapshot/{:020}.bin", snapshot.lamport);
+    let blob = seal(cipher, &serde_json::to_vec(&snapshot)?, &snap_key)?;
+    bucket
+        .put_object(&snap_key, &blob)
+        .await
+        .map_err(|e| AppError(format!("上传快照失败: {e}")))?;
+    for key in &candidates {
+        let _ = bucket.delete_object(key).await;
+    }
+    // 只保留最新快照(按零填充文件名字典序比较)
+    if let Ok(pages) = bucket.list(format!("{prefix}/snapshot/"), None).await {
+        for page in pages {
+            for obj in page.contents {
+                if obj.key.as_str() < snap_key.as_str() {
+                    let _ = bucket.delete_object(&obj.key).await;
+                }
+            }
+        }
+    }
+    db.kv_set(KV_SNAP_SEEN, &snapshot.lamport.to_string())?;
+    Ok(())
+}
+
 pub async fn sync_now(app: AppHandle, db: Arc<Db>, vault: Arc<Vault>) -> Result<()> {
     let emit = |syncing: bool| {
         let mut status = get_status(&db).unwrap_or(SyncStatus {
@@ -334,28 +529,76 @@ pub async fn sync_once(db: &Db, vault: &Vault) -> Result<()> {
         db.kv_set(KV_PUSHED, &row.seq.to_string())?;
     }
 
-    // ---- manifest:设备清单(读-改-写)----
+    // ---- manifest:设备清单(主密钥加密;If-Match 乐观锁,冲突重读重算)----
     let manifest_key = format!("{prefix}/manifest.json");
-    let mut manifest: Manifest = match bucket.get_object(&manifest_key).await {
-        Ok(resp) => serde_json::from_slice(resp.bytes()).unwrap_or_default(),
-        Err(_) => Manifest::default(),
-    };
     let host_name = whoami::fallible::hostname().unwrap_or_else(|_| "此设备".into());
-    let now = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
-    manifest.devices.retain(|d| d.id != me);
-    manifest.devices.push(SyncDevice {
-        id: me.clone(),
-        name: host_name,
-        kind: "laptop".into(),
-        last_seen_at: now.clone(),
-        current: false,
-    });
-    manifest.updated_at = now;
-    bucket
-        .put_object(&manifest_key, &serde_json::to_vec(&manifest)?)
-        .await
-        .map_err(|e| AppError(format!("上传 manifest 失败: {e}")))?;
-    db.kv_set("sync_manifest", &serde_json::to_string(&manifest)?)?;
+    let mut manifest_saved = false;
+    for attempt in 0..3 {
+        let (mut manifest, etag): (Manifest, Option<String>) =
+            match bucket.get_object(&manifest_key).await {
+                Ok(resp) if resp.status_code() == 200 => {
+                    let etag = resp.headers().get("etag").cloned();
+                    let m = unseal(&cipher, resp.bytes(), &manifest_key)
+                        .ok()
+                        .and_then(|p| serde_json::from_slice(&p).ok())
+                        // 兼容旧版明文 manifest(首次升级后即改写为密文)
+                        .or_else(|| serde_json::from_slice(resp.bytes()).ok())
+                        .unwrap_or_default();
+                    (m, etag)
+                }
+                _ => (Manifest::default(), None),
+            };
+        let now = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
+        manifest.devices.retain(|d| d.id != me);
+        manifest.devices.push(SyncDevice {
+            id: me.clone(),
+            name: host_name.clone(),
+            kind: "laptop".into(),
+            last_seen_at: now.clone(),
+            current: false,
+        });
+        manifest.updated_at = now;
+        let blob = seal(&cipher, &serde_json::to_vec(&manifest)?, &manifest_key)?;
+        // If-Match 已有版本 / If-None-Match 首建,防并发写相互覆盖
+        let mut headers = http::HeaderMap::new();
+        if let Some(tag) = &etag {
+            if let Ok(v) = tag.parse() {
+                headers.insert(http::header::IF_MATCH, v);
+            }
+        } else {
+            headers.insert(http::header::IF_NONE_MATCH, "*".parse().unwrap());
+        }
+        let cond_bucket = bucket
+            .with_extra_headers(headers)
+            .map_err(|e| AppError(format!("构造条件写失败: {e}")))?;
+        match cond_bucket.put_object(&manifest_key, &blob).await {
+            Ok(_) => {
+                db.kv_set("sync_manifest", &serde_json::to_string(&manifest)?)?;
+                manifest_saved = true;
+                break;
+            }
+            Err(s3::error::S3Error::HttpFailWithBody(412 | 409, _)) if attempt < 2 => {
+                continue; // 并发写冲突:重读重算
+            }
+            Err(s3::error::S3Error::HttpFailWithBody(501 | 400, _)) => {
+                // 存储不支持条件写:降级为无条件覆盖
+                bucket
+                    .put_object(&manifest_key, &blob)
+                    .await
+                    .map_err(|e| AppError(format!("上传 manifest 失败: {e}")))?;
+                db.kv_set("sync_manifest", &serde_json::to_string(&manifest)?)?;
+                manifest_saved = true;
+                break;
+            }
+            Err(e) => return Err(AppError(format!("上传 manifest 失败: {e}"))),
+        }
+    }
+    if !manifest_saved {
+        return Err(AppError("manifest 并发冲突重试仍失败".into()));
+    }
+
+    // ---- 快照引导:先应用最新压实快照(新设备快速引导 / 补齐被压实历史)----
+    pull_snapshot(db, vault, &bucket, &cipher, &cfg, &prefix).await?;
 
     // ---- pull:其他设备前缀,按游标增量下载并 LWW 合并 ----
     let list_prefix = format!("{prefix}/oplog/");
@@ -363,8 +606,9 @@ pub async fn sync_once(db: &Db, vault: &Vault) -> Result<()> {
         .list(list_prefix.clone(), None)
         .await
         .map_err(|e| AppError(format!("列举 oplog 失败: {e}")))?;
-    // (device, seq, object_key),仅取游标之后的
+    // pending:(device, seq, object_key) 游标之后待应用;seen:全部对象(压实判定用)
     let mut pending: Vec<(String, i64, String)> = Vec::new();
+    let mut seen_objects: Vec<(String, i64, String, String)> = Vec::new();
     for page in listing {
         for obj in page.contents {
             let Some(rest) = obj.key.strip_prefix(&list_prefix) else { continue };
@@ -373,10 +617,11 @@ pub async fn sync_once(db: &Db, vault: &Vault) -> Result<()> {
                 continue;
             }
             let dev = parts[0].to_string();
+            let Ok(seq) = parts[1].trim_end_matches(".bin").parse::<i64>() else { continue };
+            seen_objects.push((dev.clone(), seq, obj.key.clone(), obj.last_modified.clone()));
             if dev == me {
                 continue;
             }
-            let Ok(seq) = parts[1].trim_end_matches(".bin").parse::<i64>() else { continue };
             if seq > db.cursor_get(&dev)? {
                 pending.push((dev, seq, obj.key.clone()));
             }
@@ -409,5 +654,8 @@ pub async fn sync_once(db: &Db, vault: &Vault) -> Result<()> {
         }
         db.cursor_set(&dev, seq)?;
     }
+
+    // ---- 压实:早于阈值且已应用的条目并入快照后删除(文档 3.5)----
+    maybe_compact(db, vault, &bucket, &cipher, &cfg, &prefix, &me, seen_objects).await?;
     Ok(())
 }

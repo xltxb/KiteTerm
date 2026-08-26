@@ -361,6 +361,16 @@ pub async fn sync_now(app: AppHandle, state: State<'_, AppState>) -> Result<()> 
     sync::sync_now(app, state.db.clone(), state.vault.clone()).await
 }
 
+#[tauri::command]
+pub fn sync_recovery_phrase(state: State<AppState>) -> Result<String> {
+    sync::recovery_phrase(&state.db, &state.vault)
+}
+
+#[tauri::command]
+pub fn sync_restore_master(state: State<AppState>, phrase: String) -> Result<()> {
+    sync::restore_master_from_phrase(&state.db, &state.vault, &phrase)
+}
+
 // ---- 账户(管理平台)----
 
 #[tauri::command]

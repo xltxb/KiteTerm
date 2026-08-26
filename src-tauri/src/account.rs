@@ -30,6 +30,9 @@ pub struct PlatformCreds {
     pub region: String,
     pub access_key: String,
     pub secret_key: String,
+    /// STS 临时凭据的会话令牌(平台开启 STS 时下发)
+    #[serde(default)]
+    pub session_token: Option<String>,
     pub prefix: String,
 }
 

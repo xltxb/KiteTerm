@@ -98,6 +98,10 @@ export interface VelaIpc {
   saveSyncConfig(cfg: SyncConfig & { secretKey?: string; masterPassword?: string }): Promise<void>;
   syncNow(): Promise<void>;
   onSyncState(cb: (s: SyncStatus) => void): Unsubscribe;
+  /** 主密钥的 BIP39 24 词恢复短语(需已设置主密码) */
+  syncRecoveryPhrase(): Promise<string>;
+  /** 用恢复短语重建主密钥(忘记主密码时) */
+  syncRestoreMaster(phrase: string): Promise<void>;
 
   // ---- 账户(管理平台)----
   accountRegister(email: string, password: string): Promise<void>;

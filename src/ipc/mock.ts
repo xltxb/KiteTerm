@@ -364,6 +364,10 @@ export function createMockIpc(): VelaIpc {
       }, 1600);
     },
     onSyncState: (cb) => evSync.on(cb),
+    async syncRecoveryPhrase() {
+      return "abandon ability able about above absent absorb abstract absurd abuse access accident account accuse achieve acid acoustic acquire across act action actor actress actual";
+    },
+    async syncRestoreMaster() {},
 
     async accountRegister() {},
     async accountLogin(email) {

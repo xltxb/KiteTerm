@@ -100,6 +100,8 @@ pub fn run() {
             commands::sync_get_config,
             commands::sync_save_config,
             commands::sync_now,
+            commands::sync_recovery_phrase,
+            commands::sync_restore_master,
             commands::settings_get,
             commands::settings_save,
             commands::account_register,
