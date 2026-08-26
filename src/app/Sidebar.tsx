@@ -9,13 +9,13 @@ import {
   Moon,
   PanelLeftClose,
   PanelLeftOpen,
-  Sailboat,
   Server,
   Settings,
   SquareTerminal,
   Sun,
 } from "lucide-react";
 import type { ReactNode } from "react";
+import { KiteMark } from "@/components/KiteMark";
 import { useSyncStore } from "@/stores/sync";
 import { useUiStore } from "@/stores/ui";
 import type { Screen } from "@/types";
@@ -110,12 +110,12 @@ export function Sidebar() {
             boxShadow: "var(--glow-sm)",
           }}
         >
-          <Sailboat size={18} />
+          <KiteMark size={18} />
         </div>
         {!collapsed && (
           <div style={{ display: "flex", flexDirection: "column", lineHeight: 1.15 }}>
             <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 16, color: "var(--text-strong)", letterSpacing: "-0.02em" }}>
-              Vela Term
+              KiteTerm
             </span>
             <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, letterSpacing: "0.09em", color: "var(--text-faint)" }}>
               SSH · SCP · SYNC

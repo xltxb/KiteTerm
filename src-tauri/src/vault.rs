@@ -21,12 +21,12 @@ impl Vault {
     /// 设备密钥优先存系统 Keychain(macOS 钥匙串 / Windows 凭据管理器);
     /// 旧版 device.key 文件自动迁移后删除;Keychain 不可用时回退 0600 文件存储。
     ///
-    /// `VELA_NO_KEYCHAIN=1` 强制走文件回退 —— 用于 CI / 集成测试:每次重新编译都会
+    /// `KITE_NO_KEYCHAIN=1` 强制走文件回退 —— 用于 CI / 集成测试:每次重新编译都会
     /// 产生新二进制,系统钥匙串会视其为新程序而弹出授权框并阻塞无人值守的进程。
     pub fn open(data_dir: &Path) -> Result<Self> {
         let path = data_dir.join(DEVICE_KEY_FILE);
-        if std::env::var("VELA_NO_KEYCHAIN").is_err() {
-            if let Ok(entry) = keyring::Entry::new("com.vela.term", "device-key") {
+        if std::env::var("KITE_NO_KEYCHAIN").is_err() {
+            if let Ok(entry) = keyring::Entry::new("com.kiteterm.app", "device-key") {
                 // 1) Keychain 已有
                 if let Ok(hex) = entry.get_password() {
                     if let Some(key) = decode_key_hex(&hex) {

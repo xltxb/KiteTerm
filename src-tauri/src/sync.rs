@@ -33,7 +33,7 @@ const KV_SNAP_SEEN: &str = "sync_snapshot_seen";
 
 /// 压实阈值:早于该秒数且已被本机应用的 oplog 对象并入快照后删除(默认 30 天;测试可用环境变量收窄)
 fn compact_max_age_secs() -> i64 {
-    std::env::var("VELA_COMPACT_MAX_AGE_SECS")
+    std::env::var("KITE_COMPACT_MAX_AGE_SECS")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(30 * 86400)

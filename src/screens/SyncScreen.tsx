@@ -317,7 +317,7 @@ export function SyncScreen() {
         <div className="card" style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 20px" }}>
           <Lock size={15} />
           <div style={{ flex: 1, fontSize: 12.5, color: "var(--text-muted)", lineHeight: 1.5 }}>
-            同步数据以主密码派生密钥在本地加密,Vela 与管理平台均无法读取你的私钥与主机凭据。
+            同步数据以主密码派生密钥在本地加密,KiteTerm 与管理平台均无法读取你的私钥与主机凭据。
           </div>
           <Button variant="ghost" onClick={() => setShowRestore(true)}>用恢复短语恢复</Button>
           <Button variant="outline" disabled={!config?.hasMasterKey} onClick={() => setShowPhrase(true)}>

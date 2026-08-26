@@ -6,7 +6,7 @@ import "./app.css";
 
 const root = ReactDOM.createRoot(document.getElementById("root")!);
 
-// Vela Term 只发布 macOS / Windows 桌面端。直接用浏览器打开开发服务器时给出明确提示,
+// KiteTerm 只发布 macOS / Windows 桌面端。直接用浏览器打开开发服务器时给出明确提示,
 // 而不是渲染一个所有 IPC 都会失败的空壳。
 if (!inDesktopShell()) {
   root.render(
@@ -32,10 +32,10 @@ if (!inDesktopShell()) {
           color: "var(--text-strong)",
         }}
       >
-        请在桌面应用中打开 Vela Term
+        请在桌面应用中打开 KiteTerm
       </div>
       <div style={{ fontSize: 13.5, lineHeight: 1.7, maxWidth: 460 }}>
-        Vela Term 是 macOS / Windows 桌面应用,SSH、SFTP、密钥与同步能力均由本地 Rust 核心提供,
+        KiteTerm 是 macOS / Windows 桌面应用,SSH、SFTP、密钥与同步能力均由本地 Rust 核心提供,
         没有 Web 版本。
         <br />
         开发请运行 <span style={{ fontFamily: "var(--font-mono)", color: "var(--accent-text)" }}>pnpm tauri dev</span>,

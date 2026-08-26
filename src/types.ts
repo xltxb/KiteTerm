@@ -1,4 +1,4 @@
-// 领域类型 — 与 src-tauri SQLite 模型及 IPC 契约一一对应(见《Vela Term 产品与开发文档》3.3)
+// 领域类型 — 与 src-tauri SQLite 模型及 IPC 契约一一对应(见《KiteTerm 产品与开发文档》3.3)
 
 export type Screen =
   | "terminal"

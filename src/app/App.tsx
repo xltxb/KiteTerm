@@ -45,7 +45,7 @@ export function App() {
 
     // 退出前确认(后端拦截 CloseRequested 后询问)
     return ipc.onCloseRequested((n) => {
-      if (window.confirm(`还有 ${n} 个会话打开中,确认退出 Vela Term?`)) {
+      if (window.confirm(`还有 ${n} 个会话打开中,确认退出 KiteTerm?`)) {
         void ipc.appQuit();
       }
     });

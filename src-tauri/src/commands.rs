@@ -76,7 +76,7 @@ pub fn list_keys(state: State<AppState>) -> Result<Vec<SshKeyMeta>> {
 
 #[tauri::command]
 pub fn generate_key(state: State<AppState>, name: String, algo: String) -> Result<SshKeyMeta> {
-    let generated = vault::generate(&algo, &format!("{}@vela-term", whoami::username()))?;
+    let generated = vault::generate(&algo, &format!("{}@kite-term", whoami::username()))?;
     let enc = state.vault.encrypt(generated.private_pem.as_bytes())?;
     let id = state.db.insert_key(&name, &generated.algo, &generated.fingerprint, &generated.public_openssh, &enc)?;
     state
