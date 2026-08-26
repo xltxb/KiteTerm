@@ -6,3 +6,4 @@ src-tauri/gen/
 *.local
 server/target/
 vela-server.db
+design/
