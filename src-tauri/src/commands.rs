@@ -361,6 +361,46 @@ pub async fn sync_now(app: AppHandle, state: State<'_, AppState>) -> Result<()> 
     sync::sync_now(app, state.db.clone(), state.vault.clone()).await
 }
 
+// ---- 账户(管理平台)----
+
+#[tauri::command]
+pub async fn account_register(
+    state: State<'_, AppState>,
+    email: String,
+    password: String,
+) -> Result<()> {
+    crate::account::register(&state.db, &email, &password).await
+}
+
+#[tauri::command]
+pub async fn account_login(
+    state: State<'_, AppState>,
+    email: String,
+    password: String,
+) -> Result<crate::account::AccountInfo> {
+    crate::account::login(&state.db, &state.vault, &email, &password).await
+}
+
+#[tauri::command]
+pub async fn account_logout(state: State<'_, AppState>) -> Result<()> {
+    crate::account::logout(&state.db, &state.vault).await
+}
+
+#[tauri::command]
+pub fn account_current(state: State<AppState>) -> Result<Option<crate::account::AccountInfo>> {
+    crate::account::current(&state.db)
+}
+
+#[tauri::command]
+pub fn platform_url_get(state: State<AppState>) -> Result<String> {
+    Ok(crate::account::platform_url(&state.db))
+}
+
+#[tauri::command]
+pub fn platform_url_set(state: State<AppState>, url: String) -> Result<()> {
+    crate::account::set_platform_url(&state.db, &url)
+}
+
 // ---- AI 助手 ----
 
 #[tauri::command]

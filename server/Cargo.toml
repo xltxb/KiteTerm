@@ -1,0 +1,21 @@
+[package]
+name = "vela-server"
+version = "0.1.0"
+edition = "2021"
+description = "Vela Term 管理平台:账户注册/登录、同步授权与 S3 凭据下发"
+
+[dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.40", features = ["bundled"] }
+argon2 = "0.5"
+rand = "0.8"
+uuid = { version = "1", features = ["v4"] }
+chrono = "0.4"
+rust-s3 = { version = "0.35", default-features = false, features = ["tokio-rustls-tls"] }
+
+[profile.release]
+lto = true
+strip = true

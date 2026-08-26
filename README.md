@@ -15,7 +15,8 @@
 | SSH | russh + russh-sftp(Rust) |
 | 存储 | SQLite(rusqlite,配置/片段/密钥/录制索引) |
 | 加密 | XChaCha20-Poly1305 + Argon2id(密钥落库、同步 E2E) |
-| 同步 | 用户自备 S3 兼容桶(AWS S3 / R2 / MinIO),桶内仅密文 |
+| 同步 | **管理平台管控**:注册/登录后由平台下发 S3 凭据(平台持桶,按用户前缀隔离);桶内仅密文,平台零知识 |
+| 管理平台 | `server/`(Rust axum + SQLite):账户、令牌、同步授权开关、凭据下发、管理接口 |
 
 ## 开发
 
@@ -30,6 +31,14 @@ pnpm tauri dev
 
 # 构建
 pnpm tauri build
+
+# 管理平台(账户/同步授权/凭据下发;S3 指向任意兼容存储,如本地 MinIO)
+VELA_ADMIN_KEY=<管理密钥> \
+S3_ENDPOINT=http://127.0.0.1:19000 S3_BUCKET=vela-sync \
+S3_ACCESS_KEY=<ak> S3_SECRET_KEY=<sk> \
+cargo run --manifest-path server/Cargo.toml
+# 应用内「同步」页默认平台地址 http://127.0.0.1:8787,可在“平台设置”修改
+# 管理接口:GET /api/admin/users、POST /api/admin/users/{email}/sync {enabled}(X-Admin-Key)
 ```
 
 ## 目录结构
@@ -62,7 +71,7 @@ src-tauri/src/
 - **F4 密钥管理**:生成 Ed25519 / RSA4096、导入、指纹、复制公钥、使用统计;密码认证兜底;设备密钥存系统 Keychain(旧文件自动迁移)✅(Touch ID/agent:后续)
 - **F5 端口转发**:L / R / D 三类实转发 + 流量统计 + 应用启动自动恢复启用规则 ✅
 - **F6 命令片段**:片段库 + 终端右栏快捷面板一键运行 + `{{cursor}}` 占位符停留待编辑 ✅
-- **F7 云同步**:S3 兼容桶配置、分项开关、设备列表;**oplog 增量同步**(逐条 E2E 加密 + AAD 绑定对象路径、每设备游标增量拉取、实体级 LWW 合并 + lamport 时钟、删除墓碑、分项开关重开自动补发存量)✅(30 天压实:后续)
+- **F7 云同步**:**管理平台管控** — 注册/登录后平台下发存储凭据并放开同步,平台可按账户停用;分项开关、设备列表;**oplog 增量同步**(逐条 E2E 加密 + AAD 绑定对象路径、每设备游标增量拉取、实体级 LWW 合并 + lamport 时钟、删除墓碑、分项开关重开自动补发存量);主密码仅本地派生密钥,平台零知识 ✅(30 天压实、STS 临时凭据:后续)
 - **F8 会话录制**:asciicast v2 录制(状态栏 REC 计时)+ 内建回放器(播放/暂停/进度/1–4× 倍速)✅
 - **F9 命令面板**:⌘K,统一搜索主机/片段/动作 ✅
 - **F10 设置**:深/浅主题、终端字号、光标闪烁、行为开关(启动恢复会话 / 断线自动重连 / 退出前确认均已生效)、快捷键表 ✅
@@ -76,5 +85,7 @@ src-tauri/src/
 - 监控采样命令面向 Linux 远端(/proc);macOS 远端显示离线
 - Keychain 不可用的平台回退应用数据目录 0600 文件;恢复短语(BIP39)后续
 
-集成自检(`src-tauri/examples/`):`ssh_check`(真实 SSH 栈 + TOFU)、`sync_check`(双设备经本地 MinIO:
-初始同步 / LWW / 墓碑 / 幂等重放 / 并发冲突收敛,桶内均为密文)。
+集成自检(`src-tauri/examples/`):`ssh_check`(真实 SSH 栈 + TOFU)、`sync_check`(双设备同账户,
+经管理平台 + 本地 MinIO:注册登录 / 凭据下发 / 初始同步 / LWW / 墓碑 / 幂等重放 / 并发冲突收敛 /
+平台停用与恢复管控,桶内均为密文)。
+- 同步凭据 v1 为平台共享凭据 + 用户前缀约定;升级 STS 按前缀签发临时凭据为后续硬化项

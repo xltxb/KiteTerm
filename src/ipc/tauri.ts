@@ -72,6 +72,13 @@ export function createTauriIpc(): VelaIpc {
     syncNow: () => invoke("sync_now"),
     onSyncState: (cb) => sub<SyncStatus>("sync://state", cb),
 
+    accountRegister: (email, password) => invoke("account_register", { email, password }),
+    accountLogin: (email, password) => invoke("account_login", { email, password }),
+    accountLogout: () => invoke("account_logout"),
+    accountCurrent: () => invoke("account_current"),
+    platformUrlGet: () => invoke("platform_url_get"),
+    platformUrlSet: (url) => invoke("platform_url_set", { url }),
+
     getSettings: () => invoke("settings_get"),
     saveSettings: (s) => invoke("settings_save", { settings: s }),
 

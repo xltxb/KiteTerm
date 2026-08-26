@@ -1,3 +1,4 @@
+pub mod account;
 mod ai;
 mod commands;
 pub mod db;
@@ -101,6 +102,12 @@ pub fn run() {
             commands::sync_now,
             commands::settings_get,
             commands::settings_save,
+            commands::account_register,
+            commands::account_login,
+            commands::account_logout,
+            commands::account_current,
+            commands::platform_url_get,
+            commands::platform_url_set,
             commands::ai_get_config,
             commands::ai_save_config,
             commands::ai_ask,

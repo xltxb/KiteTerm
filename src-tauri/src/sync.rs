@@ -26,7 +26,6 @@ use crate::models::*;
 use crate::vault::Vault;
 
 const KV_CONFIG: &str = "sync_config";
-const KV_SECRET: &str = "sync_secret_enc";
 const KV_MK: &str = "sync_mk_enc";
 const KV_LAST: &str = "sync_last_at";
 const KV_PUSHED: &str = "sync_pushed_seq";
@@ -55,33 +54,35 @@ struct WireOp {
 }
 
 pub fn get_config(db: &Db) -> Result<SyncConfig> {
-    match db.kv_get(KV_CONFIG)? {
-        Some(json) => Ok(serde_json::from_str(&json)?),
-        None => Ok(SyncConfig {
+    let mut cfg: SyncConfig = match db.kv_get(KV_CONFIG)? {
+        Some(json) => serde_json::from_str(&json)?,
+        None => SyncConfig {
             endpoint: String::new(),
             bucket: String::new(),
-            region: "auto".into(),
+            region: String::new(),
             access_key: String::new(),
             has_secret: false,
+            has_master_key: false,
             scopes: SyncScopes { hosts: true, keys: true, snippets: true, settings: false },
             secret_key: None,
             master_password: None,
-        }),
-    }
+        },
+    };
+    cfg.has_master_key = db.kv_get(KV_MK)?.is_some();
+    cfg.secret_key = None;
+    cfg.master_password = None;
+    Ok(cfg)
 }
 
 pub fn save_config(db: &Db, vault: &Vault, mut cfg: SyncConfig) -> Result<()> {
     let old = get_config(db)?;
-    if let Some(secret) = cfg.secret_key.take() {
-        if !secret.is_empty() {
-            db.kv_set(KV_SECRET, &b64().encode(vault.encrypt(secret.as_bytes())?))?;
-            cfg.has_secret = true;
-        }
-    }
+    cfg.secret_key = None; // S3 凭据由平台下发,本地不再接受手工配置
     if let Some(pw) = cfg.master_password.take() {
         if !pw.is_empty() {
-            // Argon2id 派生主密钥;盐与桶绑定(endpoint+bucket),换桶即换密钥空间
-            let salt = format!("vela-sync:{}:{}", cfg.endpoint, cfg.bucket);
+            // 盐绑定平台账户(users/{id}):同一账户各设备派生出同一主密钥,换账户即换密钥空间
+            let account = crate::account::current(db)?
+                .ok_or_else(|| AppError("LOGIN_REQUIRED: 设置主密码前请先登录账户".into()))?;
+            let salt = format!("vela-sync:users/{}", account.id);
             let mut mk = [0u8; 32];
             Argon2::default()
                 .hash_password_into(pw.as_bytes(), salt.as_bytes(), &mut mk)
@@ -124,7 +125,10 @@ pub fn save_config(db: &Db, vault: &Vault, mut cfg: SyncConfig) -> Result<()> {
 
 pub fn get_status(db: &Db) -> Result<SyncStatus> {
     let cfg = get_config(db)?;
-    let configured = !cfg.endpoint.is_empty() && !cfg.bucket.is_empty() && cfg.has_secret;
+    // 已登录 + 平台放开同步 + 已设主密码 → 可同步
+    let account = crate::account::current(db)?;
+    let configured =
+        account.as_ref().map(|a| a.sync_enabled).unwrap_or(false) && cfg.has_master_key;
     let devices = db
         .kv_get("sync_manifest")?
         .and_then(|m| serde_json::from_str::<Manifest>(&m).ok())
@@ -146,25 +150,26 @@ pub fn get_status(db: &Db) -> Result<SyncStatus> {
     })
 }
 
-fn open_bucket(db: &Db, vault: &Vault) -> Result<(Box<Bucket>, SyncConfig)> {
+/// 打开平台桶:凭据(含用户前缀)由管理平台按登录态与授权状态下发
+async fn open_bucket(db: &Db, vault: &Vault) -> Result<(Box<Bucket>, SyncConfig, String)> {
     let cfg = get_config(db)?;
-    if cfg.endpoint.is_empty() || cfg.bucket.is_empty() {
-        return Err(AppError("尚未配置同步存储".into()));
-    }
-    let secret_enc = db
-        .kv_get(KV_SECRET)?
-        .ok_or_else(|| AppError("缺少 Secret Key".into()))?;
-    let secret = String::from_utf8(
-        vault.decrypt(&b64().decode(secret_enc).map_err(|e| AppError(e.to_string()))?)?,
+    let creds_info = crate::account::sync_credentials(db, vault).await?;
+    let region = Region::Custom {
+        region: creds_info.region.clone(),
+        endpoint: creds_info.endpoint.clone(),
+    };
+    let creds = Credentials::new(
+        Some(&creds_info.access_key),
+        Some(&creds_info.secret_key),
+        None,
+        None,
+        None,
     )
-    .map_err(|_| AppError("Secret 解码失败".into()))?;
-    let region = Region::Custom { region: cfg.region.clone(), endpoint: cfg.endpoint.clone() };
-    let creds = Credentials::new(Some(&cfg.access_key), Some(&secret), None, None, None)
-        .map_err(|e| AppError(format!("凭据错误: {e}")))?;
-    let bucket = Bucket::new(&cfg.bucket, region, creds)
+    .map_err(|e| AppError(format!("凭据错误: {e}")))?;
+    let bucket = Bucket::new(&creds_info.bucket, region, creds)
         .map_err(|e| AppError(format!("bucket 初始化失败: {e}")))?
         .with_path_style();
-    Ok((bucket, cfg))
+    Ok((bucket, cfg, creds_info.prefix))
 }
 
 fn master_cipher(db: &Db, vault: &Vault) -> Result<XChaCha20Poly1305> {
@@ -210,8 +215,8 @@ fn scope_allows(cfg: &SyncConfig, entity: &str) -> bool {
     }
 }
 
-fn oplog_object_key(device: &str, seq: i64) -> String {
-    format!("oplog/{device}/{seq:010}.bin")
+fn oplog_object_key(prefix: &str, device: &str, seq: i64) -> String {
+    format!("{prefix}/oplog/{device}/{seq:010}.bin")
 }
 
 /// 本地 oplog 条目 → 桶内明文结构(key 实体把设备密钥层换成明文,随后整体主密钥加密)
@@ -305,7 +310,7 @@ pub async fn sync_now(app: AppHandle, db: Arc<Db>, vault: Arc<Vault>) -> Result<
 
 /// 无 UI 依赖的一次完整推拉(集成测试亦复用)
 pub async fn sync_once(db: &Db, vault: &Vault) -> Result<()> {
-    let (bucket, cfg) = open_bucket(db, vault)?;
+    let (bucket, cfg, prefix) = open_bucket(db, vault).await?;
     let cipher = master_cipher(db, vault)?;
     let me = db.device_id();
 
@@ -319,7 +324,7 @@ pub async fn sync_once(db: &Db, vault: &Vault) -> Result<()> {
     for row in db.oplog_after(pushed)? {
         if scope_allows(&cfg, &row.entity) {
             let wire = to_wire(vault, &me, &row)?;
-            let key = oplog_object_key(&me, row.seq);
+            let key = oplog_object_key(&prefix, &me, row.seq);
             let blob = seal(&cipher, &serde_json::to_vec(&wire)?, &key)?;
             bucket
                 .put_object(&key, &blob)
@@ -330,7 +335,8 @@ pub async fn sync_once(db: &Db, vault: &Vault) -> Result<()> {
     }
 
     // ---- manifest:设备清单(读-改-写)----
-    let mut manifest: Manifest = match bucket.get_object("manifest.json").await {
+    let manifest_key = format!("{prefix}/manifest.json");
+    let mut manifest: Manifest = match bucket.get_object(&manifest_key).await {
         Ok(resp) => serde_json::from_slice(resp.bytes()).unwrap_or_default(),
         Err(_) => Manifest::default(),
     };
@@ -346,29 +352,31 @@ pub async fn sync_once(db: &Db, vault: &Vault) -> Result<()> {
     });
     manifest.updated_at = now;
     bucket
-        .put_object("manifest.json", &serde_json::to_vec(&manifest)?)
+        .put_object(&manifest_key, &serde_json::to_vec(&manifest)?)
         .await
         .map_err(|e| AppError(format!("上传 manifest 失败: {e}")))?;
     db.kv_set("sync_manifest", &serde_json::to_string(&manifest)?)?;
 
     // ---- pull:其他设备前缀,按游标增量下载并 LWW 合并 ----
+    let list_prefix = format!("{prefix}/oplog/");
     let listing = bucket
-        .list("oplog/".into(), None)
+        .list(list_prefix.clone(), None)
         .await
         .map_err(|e| AppError(format!("列举 oplog 失败: {e}")))?;
     // (device, seq, object_key),仅取游标之后的
     let mut pending: Vec<(String, i64, String)> = Vec::new();
     for page in listing {
         for obj in page.contents {
-            let parts: Vec<&str> = obj.key.split('/').collect();
-            if parts.len() != 3 || parts[0] != "oplog" {
+            let Some(rest) = obj.key.strip_prefix(&list_prefix) else { continue };
+            let parts: Vec<&str> = rest.split('/').collect();
+            if parts.len() != 2 {
                 continue;
             }
-            let dev = parts[1].to_string();
+            let dev = parts[0].to_string();
             if dev == me {
                 continue;
             }
-            let Ok(seq) = parts[2].trim_end_matches(".bin").parse::<i64>() else { continue };
+            let Ok(seq) = parts[1].trim_end_matches(".bin").parse::<i64>() else { continue };
             if seq > db.cursor_get(&dev)? {
                 pending.push((dev, seq, obj.key.clone()));
             }

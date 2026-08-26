@@ -128,13 +128,20 @@ export function createMockIpc(): VelaIpc {
   let aiConfig = { model: "claude-opus-5", hasKey: false };
   let syncStatus: SyncStatus = { configured: true, syncing: false, lastSyncAt: "2 分钟前", devices: mockDevices };
   let syncConfig: SyncConfig = {
-    endpoint: "https://r2.example.com",
+    endpoint: "http://127.0.0.1:8787(平台下发)",
     bucket: "vela-sync",
     region: "auto",
-    accessKey: "AKIA…DEMO",
+    accessKey: "",
     hasSecret: true,
+    hasMasterKey: true,
     scopes: { hosts: true, keys: true, snippets: true, settings: false },
   };
+  let account: { id: string; email: string; syncEnabled: boolean } | null = {
+    id: "u-demo",
+    email: "lin@vela.dev",
+    syncEnabled: true,
+  };
+  let platformUrl = "http://127.0.0.1:8787";
 
   const sessions = new Map<string, SessionInfo>();
   const shells = new Map<string, FakeShell>();
@@ -357,6 +364,20 @@ export function createMockIpc(): VelaIpc {
       }, 1600);
     },
     onSyncState: (cb) => evSync.on(cb),
+
+    async accountRegister() {},
+    async accountLogin(email) {
+      account = { id: "u-demo", email, syncEnabled: true };
+      syncStatus = { ...syncStatus, configured: true };
+      return account;
+    },
+    async accountLogout() {
+      account = null;
+      syncStatus = { ...syncStatus, configured: false };
+    },
+    async accountCurrent() { return account; },
+    async platformUrlGet() { return platformUrl; },
+    async platformUrlSet(url) { platformUrl = url; },
 
     async getSettings() { return settings; },
     async saveSettings(s) { settings = s; },
