@@ -18,7 +18,7 @@ import type {
 
 export type Unsubscribe = () => void;
 
-/** 前端 ↔ 后端 IPC 契约(《开发文档》2.5)。浏览器环境由 mock 实现。 */
+/** 前端 ↔ Rust 核心的 IPC 契约(《开发文档》2.5)。唯一实现为 Tauri(桌面端)。 */
 export interface VelaIpc {
   // ---- hosts ----
   listGroups(): Promise<HostGroup[]>;
@@ -127,6 +127,7 @@ export interface VelaIpc {
   onCloseRequested(cb: (activeSessions: number) => void): Unsubscribe;
 }
 
-export function isTauri(): boolean {
+/** 是否运行在桌面外壳内。仅用于启动守卫 —— 应用不提供浏览器运行形态。 */
+export function inDesktopShell(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }

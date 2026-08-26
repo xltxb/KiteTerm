@@ -3,11 +3,18 @@
 自用优先的桌面 SSH 终端:远程连接、SFTP 传输、密钥管理、端口转发、服务器监控与端到端加密云同步。
 本仓库为《Vela Term 产品需求与开发文档》与原型 `design/Vela Term.dc.html` 的实现(设计系统:Vela Design System)。
 
+## 形态
+
+| 组件 | 形态 | 说明 |
+|---|---|---|
+| **Vela Term(APP)** | **macOS / Windows 桌面端** | 无 Web 版本 —— SSH/SFTP/密钥/同步能力均由本地 Rust 核心提供,前端只在 Tauri WebView 内运行;直接用浏览器打开开发服务器会显示提示页而非应用 |
+| **管理平台** | **Web** | `server/` 提供管理控制台(`/admin`)与账户、授权、凭据下发接口 |
+
 ## 技术栈
 
 | 层 | 选型 |
 |---|---|
-| 壳 | Tauri 2 |
+| 壳 | Tauri 2(macOS / Windows) |
 | UI | React 18 + TypeScript + Vite |
 | 终端 | xterm.js(WebGL 渲染 + search/fit addon) |
 | 状态 | Zustand(每域一个 store) |
@@ -23,13 +30,10 @@
 ```bash
 pnpm install
 
-# 纯前端预览(浏览器 mock 后端,演示数据同原型)
-pnpm dev            # http://localhost:1420
-
-# 桌面应用(需 Rust 工具链)
+# 桌面应用(需 Rust 工具链)—— 唯一的运行方式
 pnpm tauri dev
 
-# 构建
+# 构建(macOS 产出 .app/.dmg;Windows 产出 .msi/.nsis,需在对应系统上执行)
 pnpm tauri build
 
 # 管理平台(账户/同步授权/凭据下发;S3 指向任意兼容存储,如本地 MinIO)
@@ -54,7 +58,7 @@ src/
   screens/         # 终端 / 主机 / 传输 / 转发 / 监控 / 密钥 / 片段 / 同步 / 设置
   components/      # Button、Switch、Badge 等基础组件(对齐 Vela DS)
   stores/          # ui / data / session / transfer / sync / monitor
-  ipc/             # IPC 契约 + Tauri 实现 + 浏览器 mock
+  ipc/             # IPC 契约 + Tauri 实现(桌面端唯一实现)
   theme/           # Vela tokens(colors/typography/spacing/effects/motion)
 src-tauri/src/
   ssh.rs           # russh 会话、PTY、输出事件流

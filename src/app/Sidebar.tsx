@@ -16,7 +16,6 @@ import {
   Sun,
 } from "lucide-react";
 import type { ReactNode } from "react";
-import { isTauri } from "@/ipc/api";
 import { useSyncStore } from "@/stores/sync";
 import { useUiStore } from "@/stores/ui";
 import type { Screen } from "@/types";
@@ -97,16 +96,9 @@ export function Sidebar() {
         overflowX: "hidden",
       }}
     >
-      {/* Tauri(macOS Overlay 标题栏)下原生红绿灯会叠加于此处,只留拖拽区;浏览器预览时画假按钮 */}
-      <div style={{ display: "flex", gap: 8, padding: "2px 6px 14px 6px", minHeight: 26 }} data-tauri-drag-region>
-        {!isTauri() && (
-          <>
-            <span style={{ width: 12, height: 12, borderRadius: 99, background: "#ff5f57" }} />
-            <span style={{ width: 12, height: 12, borderRadius: 99, background: "#febc2e" }} />
-            <span style={{ width: 12, height: 12, borderRadius: 99, background: "#28c840" }} />
-          </>
-        )}
-      </div>
+      {/* macOS Overlay 标题栏的原生窗口按钮叠加于此处;Windows 下为纯拖拽区 */}
+      <div style={{ display: "flex", gap: 8, padding: "2px 6px 14px 6px", minHeight: 26 }} data-tauri-drag-region />
+
       <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "4px 6px 14px 6px" }}>
         <div
           className="icon-chip"
