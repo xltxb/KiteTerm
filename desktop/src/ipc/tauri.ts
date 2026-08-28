@@ -83,6 +83,8 @@ export function createTauriIpc(): KiteIpc {
     accountLogin: (email, password) => invoke("account_login", { email, password }),
     accountLogout: () => invoke("account_logout"),
     accountCurrent: () => invoke("account_current"),
+    featuresGet: () => invoke("features_get"),
+    featuresRefresh: () => invoke("features_refresh"),
     platformUrlGet: () => invoke("platform_url_get"),
     platformUrlSet: (url) => invoke("platform_url_set", { url }),
 

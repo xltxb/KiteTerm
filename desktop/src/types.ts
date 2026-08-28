@@ -161,6 +161,19 @@ export interface AiSettings {
 export type AiMode = "chat" | "explain" | "command";
 
 /** 管理平台账户 */
+/** 管理平台下发的功能开关。known=false 表示从未成功拉到过 —— 此时一律全关。 */
+export interface Features {
+  /** 注册策略:open | invite | closed */
+  registration: string;
+  login: boolean;
+  sync: boolean;
+  ai: boolean;
+  /** 口令规则随开关一起下发 */
+  passwordMinLength: number;
+  passwordRule: string;
+  known: boolean;
+}
+
 export interface AccountInfo {
   id: string;
   email: string;

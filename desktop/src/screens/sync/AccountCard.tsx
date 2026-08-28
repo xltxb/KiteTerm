@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { UserRound } from "lucide-react";
 import { Button, Segmented, TextInput } from "@/components/ui";
 import { ipc } from "@/ipc";
+import { useFeaturesStore } from "@/stores/features";
 import { AccountSummary } from "@/screens/sync/AccountSummary";
 import { checkPassword, PasswordStrength } from "@/screens/sync/PasswordStrength";
 import { useSyncStore } from "@/stores/sync";
@@ -28,19 +29,11 @@ export function AccountCard() {
   const [error, setError] = useState<string | null>(null);
   const [showPlatform, setShowPlatform] = useState(false);
   const [platformUrl, setPlatformUrl] = useState("");
-  const [policy, setPolicy] = useState<{ mode: string; passwordMinLength: number; passwordRule: string } | null>(null);
-
-  const loadPolicy = async () => {
-    try {
-      setPolicy(await ipc.accountRegisterPolicy());
-    } catch {
-      setPolicy(null); // 平台不可达时按开放注册渲染,真正的拦截以服务端为准
-    }
-  };
+  // 注册策略与口令规则都随功能开关一起下发,不再单独拉 /api/register/policy
+  const { features, refresh: refreshFeatures } = useFeaturesStore();
 
   useEffect(() => {
     void ipc.platformUrlGet().then(setPlatformUrl);
-    void loadPolicy();
   }, []);
 
   const run = async (kind: "login" | "register", fn: () => Promise<void>) => {
@@ -57,9 +50,13 @@ export function AccountCard() {
 
   if (account) return <AccountSummary account={account} />;
 
-  const isRegister = mode === "register";
-  const registerClosed = isRegister && policy?.mode === "closed";
-  const needInvite = policy?.mode === "invite";
+  const loginOn = features.login;
+  const registerOn = features.registration !== "closed";
+  // 登录被关掉时强制落到注册页(反之亦然),免得停在一个用不了的页签上
+  const effectiveMode = !loginOn && registerOn ? "register" : !registerOn ? "login" : mode;
+  const isRegister = effectiveMode === "register";
+  const registerClosed = isRegister && !registerOn;
+  const needInvite = features.registration === "invite";
   const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
   const pwCheck = checkPassword(password);
   const canRegister =
@@ -73,22 +70,37 @@ export function AccountCard() {
           {isRegister ? "注册管理平台账户" : "登录管理平台"}
         </span>
         <span className="spacer" />
-        <Segmented
-          options={[{ value: "login", label: "登录" }, { value: "register", label: "注册" }]}
-          value={mode}
-          onChange={(m) => { setMode(m); setError(null); }}
-        />
+        {loginOn && registerOn && (
+          <Segmented
+            options={[{ value: "login", label: "登录" }, { value: "register", label: "注册" }]}
+            value={effectiveMode}
+            onChange={(m) => { setMode(m); setError(null); }}
+          />
+        )}
       </div>
       <div className="fs-sm t-muted lh-relaxed mb-12">
         云同步由管理平台统一管控:注册并登录后,平台为你的账户下发专属存储空间并放开同步。主密码只在本地派生密钥,平台无法解密你的数据。
       </div>
 
+      {!loginOn && !registerOn && (
+        <div className="alert alert-warning mb-12">
+          {features.known
+            ? "该平台已同时关闭登录与注册,请联系管理员。"
+            : "尚未连上管理平台 —— 在「设置 → 管理平台」填好地址后再试。"}
+        </div>
+      )}
       {registerClosed && (
         <div className="alert alert-warning mb-12">
           该平台当前未开放注册,请联系管理员开通账户。
         </div>
       )}
+      {!loginOn && registerOn && (
+        <div className="alert alert-warning mb-12">
+          该平台当前已关闭登录,仅开放注册。
+        </div>
+      )}
 
+      {(loginOn || registerOn) && (
       <div className="form-grid">
         <TextInput
           label="邮箱"
@@ -97,12 +109,12 @@ export function AccountCard() {
           onChange={(e) => setEmail(e.target.value)}
         />
         <TextInput
-          label={isRegister ? `密码(${policy?.passwordMinLength ?? 8} 位以上)` : "密码"}
+          label={isRegister ? `密码(${features.passwordMinLength} 位以上)` : "密码"}
           type="password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && !isRegister && email.trim() && password) {
+            if (e.key === "Enter" && !isRegister && loginOn && email.trim() && password) {
               void run("login", () => login(email.trim(), password));
             }
           }}
@@ -124,9 +136,10 @@ export function AccountCard() {
           />
         )}
       </div>
+      )}
 
       {isRegister && password.length > 0 && (
-        <PasswordStrength check={pwCheck} rule={policy?.passwordRule ?? DEFAULT_PW_RULE} />
+        <PasswordStrength check={pwCheck} rule={features.passwordRule || DEFAULT_PW_RULE} />
       )}
       {isRegister && confirm.length > 0 && password !== confirm && (
         <div className="fs-xs t-danger mt-4">两次输入的密码不一致</div>
@@ -143,7 +156,7 @@ export function AccountCard() {
             onChange={(e) => setPlatformUrl(e.target.value)}
             onBlur={async () => {
               await ipc.platformUrlSet(platformUrl.trim());
-              void loadPolicy();
+              void refreshFeatures();
             }}
           />
         </div>
@@ -154,7 +167,7 @@ export function AccountCard() {
           {showPlatform ? "收起平台设置" : "平台设置"}
         </span>
         <span className="spacer" />
-        {isRegister ? (
+        {!loginOn && !registerOn ? null : isRegister ? (
           <Button
             variant="primary"
             loading={busy === "register"}
@@ -171,7 +184,7 @@ export function AccountCard() {
           <Button
             variant="primary"
             loading={busy === "login"}
-            disabled={!email.trim() || !password || busy !== null}
+            disabled={!loginOn || !email.trim() || !password || busy !== null}
             onClick={() => void run("login", () => login(email.trim(), password))}
           >
             登录

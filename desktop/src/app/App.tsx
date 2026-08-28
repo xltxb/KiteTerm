@@ -12,6 +12,7 @@ import { SnippetsScreen } from "@/screens/SnippetsScreen";
 import { SyncScreen } from "@/screens/SyncScreen";
 import { SettingsScreen } from "@/screens/SettingsScreen";
 import { useDataStore } from "@/stores/data";
+import { useFeaturesStore } from "@/stores/features";
 import { useSessionStore } from "@/stores/session";
 import { useSyncStore } from "@/stores/sync";
 import { useUiStore } from "@/stores/ui";
@@ -20,6 +21,7 @@ export function App() {
   const { screen, setPalette, loadSettings, go } = useUiStore();
   const load = useDataStore((s) => s.load);
   const loadSync = useSyncStore((s) => s.load);
+  const loadFeatures = useFeaturesStore((s) => s.load);
 
   const restored = useRef(false);
 
@@ -27,6 +29,7 @@ export function App() {
     void loadSettings();
     void load();
     void loadSync();
+    void loadFeatures();
 
     // 启动恢复会话(设置关闭时后端返回空列表)
     if (!restored.current) {
@@ -49,7 +52,7 @@ export function App() {
         void ipc.appQuit();
       }
     });
-  }, [loadSettings, load, loadSync]);
+  }, [loadSettings, load, loadSync, loadFeatures]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {

@@ -1,5 +1,8 @@
+import { useEffect, useState } from "react";
 import { ChevronDown, Minus, Plus } from "lucide-react";
-import { ScreenHeader, Segmented, Switch } from "@/components/ui";
+import { Button, ScreenHeader, Segmented, Switch, TextInput } from "@/components/ui";
+import { ipc } from "@/ipc";
+import { useFeaturesStore } from "@/stores/features";
 import { useUiStore } from "@/stores/ui";
 
 const BEHAVIORS = [
@@ -25,8 +28,92 @@ const SHORTCUTS = [
   { label: "AI 生成命令", keys: "⌘ ⇧ A" },
 ];
 
+/** 平台连接与功能开关。
+ *
+ *  这一段**永远显示**,不受任何开关影响 —— 功能开关的兜底是「从未拉到过就全关」,
+ *  如果连平台地址都配不了,全新安装的用户就再也没法指向自己的平台、把功能打开。 */
+function PlatformCard() {
+  const { features, refresh } = useFeaturesStore();
+  const [url, setUrl] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    void ipc.platformUrlGet().then(setUrl);
+  }, []);
+
+  const save = async () => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      await ipc.platformUrlSet(url.trim());
+      await refresh();
+      const now = useFeaturesStore.getState().features;
+      setMsg(now.known ? "已连上平台,功能开关已更新" : "保存了,但没连上平台 —— 地址对吗?平台在跑吗?");
+    } catch (e) {
+      setMsg(String(e).replace(/^[A-Za-z_]+:\s*/, ""));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const items: { label: string; on: boolean }[] = [
+    { label: "注册", on: features.registration !== "closed" },
+    { label: "登录", on: features.login },
+    { label: "云同步", on: features.sync },
+    { label: "AI 助手", on: features.ai },
+  ];
+
+  return (
+    <div className="card pad-band mb-16">
+      <div className="settings-section-title">管理平台</div>
+
+      <div className="settings-row">
+        <div className="grow lh-snug">
+          <div className="w-semi fs-md t-strong">平台地址</div>
+          <div className="fs-sm t-faint">
+            功能开关由管理平台下发。改完地址点「连接」即可重新拉取。
+          </div>
+        </div>
+        <TextInput
+          value={url}
+          placeholder="http://127.0.0.1:8787"
+          onChange={(e) => setUrl(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && void save()}
+          style={{ width: 240 }}
+        />
+        <Button variant="secondary" loading={busy} onClick={() => void save()}>
+          连接
+        </Button>
+      </div>
+
+      {msg && <div className="settings-row fs-sm t-muted lh-normal">{msg}</div>}
+
+      <div className="settings-row">
+        <div className="grow lh-snug">
+          <div className="w-semi fs-md t-strong">功能开关</div>
+          <div className="fs-sm t-faint">
+            {features.known
+              ? "以下为平台当前下发的状态,关闭的功能在本机隐藏入口。"
+              : "尚未从平台拉到开关 —— 未获授权前一律按关闭处理。填好上面的地址再点「连接」。"}
+          </div>
+        </div>
+        <div className="row gap-8 wrap jend" style={{ maxWidth: 300 }}>
+          {items.map((it) => (
+            <span key={it.label} className={it.on ? "badge badge-success" : "badge badge-neutral"}>
+              <span className="dot" />
+              {it.label}
+            </span>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function SettingsScreen() {
   const { settings, setSettings } = useUiStore();
+  const aiOn = useFeaturesStore((s) => s.features.ai);
 
   const stepFont = (delta: number) =>
     setSettings({ terminalFontSize: Math.max(11, Math.min(18, settings.terminalFontSize + delta)) });
@@ -73,9 +160,11 @@ export function SettingsScreen() {
           </div>
         </div>
 
+        <PlatformCard />
+
         <div className="card pad-band mb-16">
           <div className="settings-section-title">行为</div>
-          {BEHAVIORS.map((b) => (
+          {BEHAVIORS.filter((b) => b.key !== "naturalLanguageInput" || aiOn).map((b) => (
             <div key={b.key} className="settings-row">
               <div className="grow lh-snug">
                 <div className="w-semi fs-md t-strong">{b.label}</div>
@@ -88,7 +177,7 @@ export function SettingsScreen() {
 
         <div className="card pad-band">
           <div className="settings-section-title">快捷键</div>
-          {SHORTCUTS.map((s) => (
+          {SHORTCUTS.filter((s) => aiOn || !s.label.startsWith("AI")).map((s) => (
             <div key={s.label} className="settings-row">
               <span className="grow fs-md t-strong">{s.label}</span>
               <span className="kbd">{s.keys}</span>
