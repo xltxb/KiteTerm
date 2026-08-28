@@ -17,6 +17,7 @@ import { RightDock } from "@/screens/terminal/RightDock";
 import { SearchBar } from "@/screens/terminal/SearchBar";
 import { XtermPane } from "@/screens/terminal/XtermPane";
 import { useAiStore } from "@/stores/ai";
+import { useFeaturesStore } from "@/stores/features";
 import { getTerminalContext, useSessionStore } from "@/stores/session";
 import { useUiStore } from "@/stores/ui";
 
@@ -40,11 +41,12 @@ export function TerminalScreen() {
   const clearPendingAiInput = useSessionStore((s) => s.clearPendingAiInput);
   const setNlEnabled = useSessionStore((s) => s.setNlEnabled);
   const nlSetting = useUiStore((s) => s.settings.naturalLanguageInput);
+  const aiOn = useFeaturesStore((s) => s.features.ai);
 
   // 设置开关同步给终端输入拦截逻辑
   useEffect(() => {
-    setNlEnabled(nlSetting);
-  }, [nlSetting, setNlEnabled]);
+    setNlEnabled(nlSetting && aiOn);
+  }, [nlSetting, aiOn, setNlEnabled]);
 
   /** 把最近输出交给 AI 解释,并把右栏切到 AI 助手 */
   const explainOutput = () => {
@@ -72,11 +74,11 @@ export function TerminalScreen() {
       } else if (mod && (e.key === "t" || e.key === "T")) {
         e.preventDefault();
         setPalette(true);
-      } else if (mod && e.shiftKey && (e.key === "a" || e.key === "A")) {
+      } else if (aiOn && mod && e.shiftKey && (e.key === "a" || e.key === "A")) {
         // ⌘⇧A:自然语言生成命令
         e.preventDefault();
         setCmdBarOpen(true);
-      } else if (mod && !e.shiftKey && (e.key === "i" || e.key === "I") && active) {
+      } else if (aiOn && mod && !e.shiftKey && (e.key === "i" || e.key === "I") && active) {
         // ⌘I:让 AI 解释最近的终端输出
         e.preventDefault();
         explainOutput();
@@ -85,7 +87,7 @@ export function TerminalScreen() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, close, setPalette]);
+  }, [active, close, setPalette, aiOn]);
 
   return (
     <>
@@ -123,15 +125,17 @@ export function TerminalScreen() {
             <Circle size={15} fill={active.recording ? "currentColor" : "none"} />
           </div>
         )}
-        <div
-          className="tab-action"
-          data-tone="accent"
-          title="AI 生成命令(⌘⇧A)"
-          onClick={() => setCmdBarOpen(true)}
-        >
-          <Sparkles size={15} />
-        </div>
-        {active && (
+        {aiOn && (
+          <div
+            className="tab-action"
+            data-tone="accent"
+            title="AI 生成命令(⌘⇧A)"
+            onClick={() => setCmdBarOpen(true)}
+          >
+            <Sparkles size={15} />
+          </div>
+        )}
+        {aiOn && active && (
           <div className="tab-action" title="AI 解释最近输出(⌘I)" onClick={explainOutput}>
             <MessageCircleQuestion size={15} />
           </div>
@@ -143,8 +147,8 @@ export function TerminalScreen() {
 
       <div className="grow term-body">
         <div className="grow term-surface">
-          {cmdBarOpen && <AiCommandBar onClose={() => setCmdBarOpen(false)} />}
-          {pendingAiInput && (
+          {aiOn && cmdBarOpen && <AiCommandBar onClose={() => setCmdBarOpen(false)} />}
+          {aiOn && pendingAiInput && (
             <AiCommandBar
               initialRequest={pendingAiInput.text}
               replaceLineInSession={pendingAiInput.sessionId}
@@ -155,7 +159,7 @@ export function TerminalScreen() {
             <>
               <XtermPane sessionId={active.id} />
               {searchOpen && <SearchBar sessionId={active.id} onClose={() => setSearchOpen(false)} />}
-              <AiFab sessionId={active.id} onOpenEmpty={() => setCmdBarOpen(true)} />
+              {aiOn && <AiFab sessionId={active.id} onOpenEmpty={() => setCmdBarOpen(true)} />}
             </>
           ) : (
             <div className="empty-state fill">

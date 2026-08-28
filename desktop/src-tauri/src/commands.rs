@@ -405,6 +405,18 @@ pub async fn account_register(
     .await
 }
 
+/// 读缓存,不发网络请求 —— 界面首屏用它,避免等平台响应
+#[tauri::command]
+pub fn features_get(state: State<AppState>) -> Result<crate::features::Features> {
+    Ok(crate::features::cached(&state.db))
+}
+
+/// 向平台拉一次并刷新缓存;平台不可达时沿用缓存
+#[tauri::command]
+pub async fn features_refresh(state: State<'_, AppState>) -> Result<crate::features::Features> {
+    crate::features::refresh(&state.db).await
+}
+
 #[tauri::command]
 pub async fn account_register_policy(
     state: State<'_, AppState>,

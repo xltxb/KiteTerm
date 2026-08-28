@@ -268,6 +268,28 @@ async fn health() -> Json<serde_json::Value> {
     Json(json!({ "ok": true, "service": "kite-server" }))
 }
 
+/// 全局功能开关。注册用三档 registration_mode 表达(closed 即关),
+/// 其余是布尔;默认全开 —— 平台没显式关过的功能就是可用的。
+fn feature_on(conn: &Connection, feature: &str) -> bool {
+    setting_get(conn, &format!("feature_{feature}"), "1") == "1"
+}
+
+/// 客户端据此决定哪些入口可见。**免鉴权** —— 客户端未登录时也要能拿到,
+/// 否则「登录开关」自身就没法下发。
+async fn features(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let conn = state.db.lock().unwrap();
+    Ok(Json(json!({
+        "registration": setting_get(&conn, "registration_mode", &state.cfg.registration_default),
+        "login": feature_on(&conn, "login"),
+        "sync": feature_on(&conn, "sync"),
+        "ai": feature_on(&conn, "ai"),
+        "passwordMinLength": PASSWORD_MIN_LEN,
+        "passwordRule": "至少 8 位,且包含字母、数字、符号中的至少两类",
+    })))
+}
+
 /// 公开的注册策略:客户端据此决定是否展示邀请码输入、以及口令规则提示
 async fn register_policy(
     State(state): State<Arc<AppState>>,
@@ -409,6 +431,11 @@ async fn login(
     {
         return Err(err(StatusCode::UNAUTHORIZED, "bad_credentials", "邮箱或密码错误"));
     }
+    // 开关校验放在口令校验之后:先把凭据不对的挡掉,避免通过错误信息区分
+    // 「密码错」和「登录已关」而泄露邮箱是否存在
+    if !feature_on(&conn, "login") {
+        return Err(err(StatusCode::FORBIDDEN, "LOGIN_DISABLED", "平台当前已关闭登录"));
+    }
     let (token, expires_at) = issue_token(&conn, &user_id)?;
     Ok(Json(json!({
         "token": token,
@@ -448,6 +475,16 @@ async fn sync_credentials(
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let user = authenticate(&state, &headers)?;
+    {
+        let conn = state.db.lock().unwrap();
+        if !feature_on(&conn, "sync") {
+            return Err(err(
+                StatusCode::FORBIDDEN,
+                "SYNC_DISABLED",
+                "平台当前已关闭云同步",
+            ));
+        }
+    }
     if !user.sync_enabled {
         return Err(err(
             StatusCode::FORBIDDEN,
@@ -605,10 +642,18 @@ async fn admin_get_settings(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     require_admin(&state, &headers)?;
     let conn = state.db.lock().unwrap();
-    Ok(Json(json!({
-        "registrationMode": setting_get(&conn, "registration_mode", &state.cfg.registration_default),
-        "defaultSyncEnabled": setting_get(&conn, "default_sync_enabled", "1") == "1",
-    })))
+    Ok(Json(settings_payload(&conn, &state)))
+}
+
+/// 管理接口与公开接口共用同一份取值,避免两边漂移
+fn settings_payload(conn: &Connection, state: &AppState) -> serde_json::Value {
+    json!({
+        "registrationMode": setting_get(conn, "registration_mode", &state.cfg.registration_default),
+        "defaultSyncEnabled": setting_get(conn, "default_sync_enabled", "1") == "1",
+        "featureLogin": feature_on(conn, "login"),
+        "featureSync": feature_on(conn, "sync"),
+        "featureAi": feature_on(conn, "ai"),
+    })
 }
 
 #[derive(Deserialize)]
@@ -616,6 +661,9 @@ async fn admin_get_settings(
 struct AdminSettingsBody {
     registration_mode: Option<String>,
     default_sync_enabled: Option<bool>,
+    feature_login: Option<bool>,
+    feature_sync: Option<bool>,
+    feature_ai: Option<bool>,
 }
 
 async fn admin_set_settings(
@@ -634,10 +682,17 @@ async fn admin_set_settings(
     if let Some(on) = body.default_sync_enabled {
         setting_set(&conn, "default_sync_enabled", if on { "1" } else { "0" }).map_err(internal)?;
     }
-    Ok(Json(json!({
-        "registrationMode": setting_get(&conn, "registration_mode", &state.cfg.registration_default),
-        "defaultSyncEnabled": setting_get(&conn, "default_sync_enabled", "1") == "1",
-    })))
+    for (feature, value) in [
+        ("login", body.feature_login),
+        ("sync", body.feature_sync),
+        ("ai", body.feature_ai),
+    ] {
+        if let Some(on) = value {
+            setting_set(&conn, &format!("feature_{feature}"), if on { "1" } else { "0" })
+                .map_err(internal)?;
+        }
+    }
+    Ok(Json(settings_payload(&conn, &state)))
 }
 
 async fn admin_list_invites(
@@ -865,6 +920,7 @@ async fn main() {
         .route("/api/logout", post(logout))
         .route("/api/me", get(me))
         .route("/api/sync/credentials", get(sync_credentials))
+        .route("/api/features", get(features))
         .route("/api/admin/stats", get(admin_stats))
         .route("/api/admin/settings", get(admin_get_settings).post(admin_set_settings))
         .route("/api/admin/invites", get(admin_list_invites).post(admin_create_invite))

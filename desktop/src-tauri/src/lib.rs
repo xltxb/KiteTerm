@@ -3,6 +3,7 @@ pub mod ai;
 mod commands;
 pub mod db;
 pub mod error;
+pub mod features;
 mod forward;
 pub mod models;
 mod monitor;
@@ -114,6 +115,8 @@ pub fn run() {
             commands::settings_get,
             commands::settings_save,
             commands::account_register,
+            commands::features_get,
+            commands::features_refresh,
             commands::account_register_policy,
             commands::account_login,
             commands::account_logout,

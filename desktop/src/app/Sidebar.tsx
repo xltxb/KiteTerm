@@ -13,6 +13,7 @@ import {
   KtTerminal,
   KtTransfer,
 } from "@/components/icons";
+import { useFeaturesStore } from "@/stores/features";
 import { useSyncStore } from "@/stores/sync";
 import { useUiStore } from "@/stores/ui";
 import type { Screen } from "@/types";
@@ -63,6 +64,7 @@ function NavItem({
 export function Sidebar() {
   const { screen, go, sidebarCollapsed, toggleSidebar, setPalette, settings, setSettings } = useUiStore();
   const syncStatus = useSyncStore((s) => s.status);
+  const features = useFeaturesStore((s) => s.features);
   const collapsed = sidebarCollapsed;
   const dark = settings.theme === "dark";
 
@@ -83,7 +85,7 @@ export function Sidebar() {
         )}
       </div>
 
-      {NAV.map((n) => (
+      {NAV.filter((n) => n.screen !== "sync" || features.sync).map((n) => (
         <NavItem
           key={n.screen}
           active={screen === n.screen}
@@ -103,13 +105,15 @@ export function Sidebar() {
         label={collapsed ? "展开侧栏" : "收起侧栏"}
         onClick={toggleSidebar}
       />
-      <NavItem
-        collapsed={collapsed}
-        small
-        icon={<span className={syncStatus.syncing ? "dot-lg dot-warn" : "dot-lg dot-ok"} />}
-        label={syncStatus.syncing ? "同步中…" : `已同步 · ${syncStatus.lastSyncAt ?? "从未"}`}
-        onClick={() => go("sync")}
-      />
+      {features.sync && (
+        <NavItem
+          collapsed={collapsed}
+          small
+          icon={<span className={syncStatus.syncing ? "dot-lg dot-warn" : "dot-lg dot-ok"} />}
+          label={syncStatus.syncing ? "同步中…" : `已同步 · ${syncStatus.lastSyncAt ?? "从未"}`}
+          onClick={() => go("sync")}
+        />
+      )}
       <NavItem
         collapsed={collapsed}
         small

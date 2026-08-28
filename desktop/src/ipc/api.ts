@@ -7,6 +7,7 @@ import type {
   FileEntry,
   ForwardRule,
   ForwardType,
+  Features,
   Host,
   HostGroup,
   MonitorSample,
@@ -113,6 +114,12 @@ export interface KiteIpc {
 
   // ---- 账户(管理平台)----
   /** 平台注册策略:open 开放 / invite 需邀请码 / closed 关闭 */
+  // ---- 功能开关(管理平台下发,客户端缓存)----
+  /** 读缓存,不发网络请求 */
+  featuresGet(): Promise<Features>;
+  /** 向平台拉一次并刷新缓存;平台不可达时沿用缓存 */
+  featuresRefresh(): Promise<Features>;
+
   accountRegisterPolicy(): Promise<{ mode: string; passwordMinLength: number; passwordRule: string }>;
   /** 注册成功即完成登录(平台直接签发令牌) */
   accountRegister(email: string, password: string, inviteCode?: string): Promise<AccountInfo>;
