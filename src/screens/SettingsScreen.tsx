@@ -16,6 +16,8 @@ const SHORTCUTS = [
   { label: "拆分终端", keys: "⌘ D" },
   { label: "搜索输出", keys: "⌘ F" },
   { label: "上传文件", keys: "⌘ U" },
+  { label: "AI 解释最近输出", keys: "⌘ I" },
+  { label: "AI 生成命令", keys: "⌘ ⇧ A" },
 ];
 
 export function SettingsScreen() {

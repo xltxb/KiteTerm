@@ -1,5 +1,8 @@
 import type {
   AccountInfo,
+  AiMode,
+  AiProvider,
+  AiSettings,
   AppSettings,
   FileEntry,
   ForwardRule,
@@ -123,11 +126,18 @@ export interface KiteIpc {
   getSettings(): Promise<AppSettings>;
   saveSettings(s: AppSettings): Promise<void>;
 
-  // ---- AI 助手 ----
-  aiGetConfig(): Promise<{ model: string; hasKey: boolean }>;
-  aiSaveConfig(model: string, apiKey?: string): Promise<void>;
-  /** messages 为完整对话历史;terminalContext 为当前会话最近输出 */
-  aiAsk(messages: { role: "user" | "assistant"; content: string }[], terminalContext: string): Promise<string>;
+  // ---- AI 助手(多模型可选,按协议请求不同接口)----
+  aiGetSettings(): Promise<AiSettings>;
+  /** 新增或更新模型;apiKey 省略表示保持原密钥,传空串表示清除 */
+  aiSaveProvider(provider: Omit<AiProvider, "hasKey"> & { hasKey?: boolean }, apiKey?: string): Promise<AiSettings>;
+  aiDeleteProvider(id: string): Promise<AiSettings>;
+  aiSetActive(id: string): Promise<AiSettings>;
+  /** messages 为完整对话历史;terminalContext 为当前会话最近输出;mode 决定协助场景 */
+  aiAsk(
+    messages: { role: "user" | "assistant"; content: string }[],
+    terminalContext: string,
+    mode?: AiMode,
+  ): Promise<string>;
 
   // ---- 会话恢复 / 退出 ----
   restoreTargets(): Promise<string[]>;

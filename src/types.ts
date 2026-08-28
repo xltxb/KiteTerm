@@ -141,6 +141,25 @@ export interface SyncConfig {
   scopes: { hosts: boolean; keys: boolean; snippets: boolean; settings: boolean };
 }
 
+/** AI 模型配置(密钥不回传前端) */
+export interface AiProvider {
+  id: string;
+  name: string;
+  /** anthropic | openai | ollama —— 决定请求哪种接口 */
+  protocol: "anthropic" | "openai" | "ollama";
+  baseUrl: string;
+  model: string;
+  hasKey: boolean;
+}
+
+export interface AiSettings {
+  providers: AiProvider[];
+  activeId: string | null;
+}
+
+/** AI 协助场景 */
+export type AiMode = "chat" | "explain" | "command";
+
 /** 管理平台账户 */
 export interface AccountInfo {
   id: string;
