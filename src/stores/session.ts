@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { Terminal } from "@xterm/xterm";
 import { ipc } from "@/ipc";
+import { looksLikeNaturalLanguage, stripPrompt } from "@/lib/nlDetect";
 import type { SessionInfo } from "@/types";
 
 /**
@@ -27,10 +28,33 @@ export function getTerminalContext(id: string, maxLines = 80): string {
   return lines.join("\n").trim();
 }
 
+/** 读取光标所在行里用户已输入的部分(去掉 shell 提示符) */
+export function readCurrentInputLine(id: string): string {
+  const term = terminals.get(id);
+  if (!term) return "";
+  const buf = term.buffer.active;
+  const raw = buf.getLine(buf.baseY + buf.cursorY)?.translateToString(true) ?? "";
+  return stripPrompt(raw);
+}
+
+/** 被拦下的白话输入,等待 AI 处理 */
+export interface PendingAiInput {
+  sessionId: string;
+  text: string;
+}
+
 interface SessionState {
   sessions: SessionInfo[];
   activeId: string | null;
   wired: boolean;
+  /** 终端里敲了白话并回车 —— 由终端界面接手交给 AI */
+  pendingAiInput: PendingAiInput | null;
+  /** 运行期开关,由设置同步 */
+  nlEnabled: boolean;
+  setNlEnabled: (on: boolean) => void;
+  clearPendingAiInput: () => void;
+  /** 清掉终端当前行(Ctrl+U + Ctrl+K),用于把白话替换成真正的命令 */
+  clearInputLine: (id: string) => Promise<void>;
   open: (hostId: string, password?: string) => Promise<string>;
   close: (id: string) => Promise<void>;
   setActive: (id: string) => void;
@@ -43,6 +67,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   sessions: [],
   activeId: null,
   wired: false,
+  pendingAiInput: null,
+  nlEnabled: true,
+
+  setNlEnabled: (on) => set({ nlEnabled: on }),
+  clearPendingAiInput: () => set({ pendingAiInput: null }),
+
+  clearInputLine: async (id) => {
+    // Ctrl+U 清到行首,Ctrl+K 清到行尾 —— 覆盖光标在中间的情况
+    await ipc.writeSession(id, "\x15\x0b");
+  },
 
   wire: () => {
     if (get().wired) return;
@@ -81,6 +115,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       },
     });
     term.onData((data) => {
+      // 白话直连:光标行是自然语言而非命令时,拦下回车交给 AI
+      // (只拦单独的回车键;粘贴进来的整块内容不在此列)
+      if (data === "\r" && get().nlEnabled) {
+        const line = readCurrentInputLine(info.id);
+        if (looksLikeNaturalLanguage(line)) {
+          set({ pendingAiInput: { sessionId: info.id, text: line.replace(/^\?\s*/, "") } });
+          return; // 回车不下发,原文留在行内 —— 用户取消也不丢输入
+        }
+      }
       // 粘贴护栏:多行粘贴(含换行的整块输入)需确认,防止误执行
       const isPaste = data.length > 1 && /[\r\n]/.test(data);
       if (isPaste) {

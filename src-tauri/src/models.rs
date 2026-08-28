@@ -235,6 +235,13 @@ pub struct AppSettings {
     pub restore_sessions: bool,
     pub auto_reconnect: bool,
     pub confirm_on_quit: bool,
+    /// 终端里直接输入白话时,自动转交 AI 生成命令
+    #[serde(default = "default_true")]
+    pub natural_language_input: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for AppSettings {
@@ -247,6 +254,7 @@ impl Default for AppSettings {
             restore_sessions: true,
             auto_reconnect: true,
             confirm_on_quit: false,
+            natural_language_input: true,
         }
     }
 }

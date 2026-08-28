@@ -13,20 +13,31 @@ const RISKY = [
   /\btruncate\b/, />\s*\/dev\/[sh]d[a-z]/, /\bgit\s+push\s+.*--force/,
 ];
 
-export function AiCommandBar({ onClose }: { onClose: () => void }) {
-  const [request, setRequest] = useState("");
+export function AiCommandBar({
+  onClose,
+  initialRequest,
+  /** 该请求来自终端里直接敲的白话 —— 采纳命令前要先清掉那一行 */
+  replaceLineInSession,
+}: {
+  onClose: () => void;
+  initialRequest?: string;
+  replaceLineInSession?: string;
+}) {
+  const [request, setRequest] = useState(initialRequest ?? "");
   const [command, setCommand] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const { toCommand, busy, activeProvider } = useAiStore();
   const activeId = useSessionStore((s) => s.activeId);
   const runCommand = useSessionStore((s) => s.runCommand);
+  const clearInputLine = useSessionStore((s) => s.clearInputLine);
   const inputRef = useRef<HTMLInputElement>(null);
   const provider = activeProvider();
+  const fromTerminal = !!replaceLineInSession;
 
   useEffect(() => { inputRef.current?.focus(); }, []);
 
-  const generate = async () => {
-    const q = request.trim();
+  const generate = async (text?: string) => {
+    const q = (text ?? request).trim();
     if (!q || busy) return;
     setError(null);
     setCommand(null);
@@ -47,12 +58,20 @@ export function AiCommandBar({ onClose }: { onClose: () => void }) {
     }
   };
 
+  // 从终端白话进来的:直接开始生成,不用再按一次回车
+  useEffect(() => {
+    if (initialRequest?.trim()) void generate(initialRequest);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const risky = command ? RISKY.some((re) => re.test(command)) : false;
 
-  const insert = (execute: boolean) => {
+  const insert = async (execute: boolean) => {
     if (!command || !activeId) return;
-    // 注入终端;execute=false 时只填入不回车,交由用户自己按回车
-    void runCommand(execute ? command : `${command}{{cursor}}`);
+    // 来自终端白话:先把那行白话清掉,再写入真正的命令
+    if (replaceLineInSession) await clearInputLine(replaceLineInSession);
+    // execute=false 时只填入不回车,交由用户自己确认后执行
+    await runCommand(execute ? command : `${command}{{cursor}}`);
     onClose();
   };
 
@@ -83,6 +102,7 @@ export function AiCommandBar({ onClose }: { onClose: () => void }) {
               if (e.key === "Enter") void generate();
               if (e.key === "Escape") onClose();
             }}
+            readOnly={fromTerminal && busy}
             placeholder="用一句话描述你想做什么,例如:找出占用 8080 端口的进程"
             style={{ flex: 1, background: "transparent", border: "none", outline: "none", fontFamily: "var(--font-sans)", fontSize: 13.5, color: "var(--text-strong)" }}
           />
@@ -96,7 +116,9 @@ export function AiCommandBar({ onClose }: { onClose: () => void }) {
         <div style={{ padding: "12px 16px", display: "flex", flexDirection: "column", gap: 10 }}>
           {!command && !error && (
             <div style={{ fontSize: 12, color: "var(--text-faint)", lineHeight: 1.6 }}>
-              AI 会结合当前终端最近的输出生成一条命令。生成后需要你确认才会写入终端,不会自动执行。
+              {fromTerminal
+                ? "检测到你输入的是一句话而不是命令,已交给 AI 翻译。采纳后会替换终端里的这一行。"
+                : "AI 会结合当前终端最近的输出生成一条命令。生成后需要你确认才会写入终端,不会自动执行。"}
               {provider && (
                 <>
                   <br />

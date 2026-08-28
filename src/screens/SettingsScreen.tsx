@@ -6,6 +6,11 @@ const BEHAVIORS = [
   { key: "restoreSessions" as const, label: "启动时恢复会话", desc: "重新打开上次的标签与工作目录" },
   { key: "autoReconnect" as const, label: "断线自动重连", desc: "网络恢复后自动重连 SSH 会话" },
   { key: "confirmOnQuit" as const, label: "退出前确认", desc: "有活跃会话时退出需二次确认" },
+  {
+    key: "naturalLanguageInput" as const,
+    label: "终端白话直连 AI",
+    desc: "在终端直接敲自然语言回车,自动交给 AI 翻译成命令(采纳前需确认)",
+  },
 ];
 
 const SHORTCUTS = [
