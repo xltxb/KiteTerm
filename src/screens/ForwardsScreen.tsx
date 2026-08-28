@@ -1,15 +1,9 @@
 import { useState } from "react";
 import { ArrowRightLeft, Trash2 } from "lucide-react";
 import { Button, ScreenHeader, Segmented, Switch, TextInput } from "@/components/ui";
+import { fmtBytes } from "@/lib/format";
 import { useDataStore } from "@/stores/data";
 import type { ForwardRule, ForwardType } from "@/types";
-
-function fmtBytes(n: number): string {
-  if (n <= 0) return "0 B";
-  if (n < 1024 ** 2) return `${(n / 1024).toFixed(1)} KB`;
-  if (n < 1024 ** 3) return `${(n / 1024 ** 2).toFixed(1)} MB`;
-  return `${(n / 1024 ** 3).toFixed(1)} GB`;
-}
 
 function ruleText(f: ForwardRule): string {
   if (f.type === "D") return `SOCKS5 · localhost:${f.localPort}`;
@@ -30,12 +24,13 @@ export function ForwardsScreen() {
 
   return (
     <div className="screen vscroll">
-      <div className="screen-inner" style={{ maxWidth: 880 }}>
+      <div className="screen-inner medium">
         <ScreenHeader eyebrow="PORT FORWARDING" title="端口转发" count={`${activeCount} 活跃`} />
 
-        <div className="card" style={{ padding: "16px 20px", marginBottom: 16 }}>
-          <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-muted)", marginBottom: 12 }}>新建规则</div>
-          <div style={{ display: "flex", alignItems: "flex-end", gap: 10, flexWrap: "wrap" }}>
+        <div className="card pad-card mb-16">
+          <div className="fs-sm w-bold t-muted mb-12">新建规则</div>
+          {/* 表单一行排布,控件底对齐(label 高度不同) */}
+          <div className="row wrap aend gap-10">
             <Segmented
               mono
               options={[{ value: "L", label: "L" }, { value: "R", label: "R" }, { value: "D", label: "D" }]}
@@ -48,7 +43,7 @@ export function ForwardsScreen() {
             )}
             <div style={{ width: 160 }}>
               <label className="input-label">经由主机</label>
-              <select className="input" style={{ width: "100%" }} value={via} onChange={(e) => setVia(e.target.value)}>
+              <select className="input w-full" value={via} onChange={(e) => setVia(e.target.value)}>
                 <option value="">选择主机…</option>
                 {hosts.map((h) => <option key={h.id} value={h.id}>{h.name}</option>)}
               </select>
@@ -64,35 +59,34 @@ export function ForwardsScreen() {
               创建
             </Button>
           </div>
-          <div style={{ fontSize: 11.5, color: "var(--text-faint)", marginTop: 10 }}>
+          <div className="fs-xs t-faint mt-8">
             L 本地转发 · R 远程转发 · D 动态 SOCKS5 代理
           </div>
         </div>
 
-        <div className="card" style={{ padding: "6px 20px" }}>
+        <div className="card">
           {forwards.length === 0 && (
-            <div style={{ padding: "24px 0", textAlign: "center", fontSize: 13, color: "var(--text-faint)" }}>还没有转发规则</div>
+            <div className="empty-state fs-md" style={{ padding: "24px 0" }}>还没有转发规则</div>
           )}
           {forwards.map((f) => (
-            <div key={f.id} style={{ display: "flex", alignItems: "center", gap: 14, padding: "13px 0", borderBottom: "1px solid var(--border-subtle)" }}>
-              <span style={{ width: 28, height: 28, flex: "none", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 700, background: "var(--accent-subtle)", color: "var(--accent-text)" }}>
+            <div key={f.id} className="list-row">
+              <span className="icon-chip sm mono fs-xs w-bold">
                 {f.type}
               </span>
-              <div style={{ flex: 1, minWidth: 0, lineHeight: 1.4 }}>
-                <div style={{ fontFamily: "var(--font-mono)", fontSize: 12.5, color: "var(--text-strong)" }}>{ruleText(f)}</div>
-                <div style={{ fontSize: 11.5, color: "var(--text-faint)" }}>
+              <div className="grow lh-normal">
+                <div className="mono fs-sm t-strong">{ruleText(f)}</div>
+                <div className="fs-xs t-faint">
                   经 {hostName(f.viaHostId)} · ↑ {fmtBytes(f.bytesUp)} · ↓ {fmtBytes(f.bytesDown)}
                 </div>
               </div>
-              <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, color: f.enabled ? "var(--success-text)" : "var(--text-faint)" }}>
-                <span style={{ width: 6, height: 6, borderRadius: 99, background: f.enabled ? "var(--success-text)" : "var(--text-faint)" }} />
+              <span className={f.enabled ? "row gap-6 fs-xs t-success" : "row gap-6 fs-xs t-faint"}>
+                <span className={f.enabled ? "dot-sm dot-ok" : "dot-sm"} />
                 {f.enabled ? "活跃" : "已停用"}
               </span>
               <Switch on={f.enabled} onChange={(on) => void toggleForward(f.id, on)} />
               <div
-                className="hover-row"
+                className="icon-btn sm plain"
                 onClick={() => { if (confirm("删除该转发规则?")) void deleteForward(f.id); }}
-                style={{ padding: 6, borderRadius: 8, cursor: "pointer", color: "var(--text-faint)" }}
               >
                 <Trash2 size={15} />
               </div>
@@ -100,7 +94,7 @@ export function ForwardsScreen() {
           ))}
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 14, fontSize: 12, color: "var(--text-faint)" }}>
+        <div className="row gap-8 fs-sm t-faint mt-12">
           <ArrowRightLeft size={13} />
           规则随主机配置一并云同步;断线重连后自动恢复活跃规则。
         </div>

@@ -1,35 +1,32 @@
-import {
-  Activity,
-  ArrowDownUp,
-  ArrowRightLeft,
-  Braces,
-  Cloud,
-  Command,
-  KeyRound,
-  Moon,
-  PanelLeftClose,
-  PanelLeftOpen,
-  Server,
-  Settings,
-  SquareTerminal,
-  Sun,
-} from "lucide-react";
+import { Moon, PanelLeftClose, PanelLeftOpen, Sun } from "lucide-react";
 import type { ReactNode } from "react";
 import { KiteMark } from "@/components/KiteMark";
+import {
+  KtCommand,
+  KtForward,
+  KtHosts,
+  KtKeys,
+  KtMonitor,
+  KtSettings,
+  KtSnippets,
+  KtSync,
+  KtTerminal,
+  KtTransfer,
+} from "@/components/icons";
 import { useSyncStore } from "@/stores/sync";
 import { useUiStore } from "@/stores/ui";
 import type { Screen } from "@/types";
 
 const NAV: { screen: Screen; label: string; icon: ReactNode }[] = [
-  { screen: "terminal", label: "终端", icon: <SquareTerminal size={18} /> },
-  { screen: "hosts", label: "主机", icon: <Server size={18} /> },
-  { screen: "transfer", label: "传输", icon: <ArrowDownUp size={18} /> },
-  { screen: "forwards", label: "转发", icon: <ArrowRightLeft size={18} /> },
-  { screen: "monitor", label: "监控", icon: <Activity size={18} /> },
-  { screen: "keys", label: "密钥", icon: <KeyRound size={18} /> },
-  { screen: "snippets", label: "片段", icon: <Braces size={18} /> },
-  { screen: "sync", label: "同步", icon: <Cloud size={18} /> },
-  { screen: "settings", label: "设置", icon: <Settings size={18} /> },
+  { screen: "terminal", label: "终端", icon: <KtTerminal size={18} /> },
+  { screen: "hosts", label: "主机", icon: <KtHosts size={18} /> },
+  { screen: "transfer", label: "传输", icon: <KtTransfer size={18} /> },
+  { screen: "forwards", label: "转发", icon: <KtForward size={18} /> },
+  { screen: "monitor", label: "监控", icon: <KtMonitor size={18} /> },
+  { screen: "keys", label: "密钥", icon: <KtKeys size={18} /> },
+  { screen: "snippets", label: "片段", icon: <KtSnippets size={18} /> },
+  { screen: "sync", label: "同步", icon: <KtSync size={18} /> },
+  { screen: "settings", label: "设置", icon: <KtSettings size={18} /> },
 ];
 
 function NavItem({
@@ -52,23 +49,12 @@ function NavItem({
   return (
     <div
       onClick={onClick}
-      className={active ? undefined : "hover-row"}
-      style={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: collapsed ? "center" : "flex-start",
-        gap: small ? 10 : 11,
-        padding: collapsed ? "9px 0" : "9px 12px",
-        borderRadius: 10,
-        cursor: "pointer",
-        fontWeight: 600,
-        fontSize: small ? 12.5 : 13.5,
-        color: active ? "var(--accent-text)" : "var(--text-muted)",
-        background: active ? "var(--accent-subtle)" : "transparent",
-      }}
+      title={collapsed ? label : undefined}
+      className={small ? "nav-item sm" : "nav-item"}
+      data-active={active ? "true" : "false"}
     >
       {icon}
-      {!collapsed && <span style={{ flex: trailing ? 1 : undefined }}>{label}</span>}
+      {!collapsed && <span className={trailing ? "grow" : undefined}>{label}</span>}
       {!collapsed && trailing}
     </div>
   );
@@ -81,45 +67,18 @@ export function Sidebar() {
   const dark = settings.theme === "dark";
 
   return (
-    <aside
-      className="vscroll"
-      style={{
-        width: collapsed ? 64 : 228,
-        flex: "none",
-        display: "flex",
-        flexDirection: "column",
-        gap: 4,
-        padding: "16px 12px",
-        borderRight: "1px solid var(--border-subtle)",
-        background: "var(--surface-card)",
-        overflowY: "auto",
-        overflowX: "hidden",
-      }}
-    >
+    <aside className="sidebar vscroll" data-collapsed={collapsed ? "true" : "false"}>
       {/* macOS Overlay 标题栏的原生窗口按钮叠加于此处;Windows 下为纯拖拽区 */}
-      <div style={{ display: "flex", gap: 8, padding: "2px 6px 14px 6px", minHeight: 26 }} data-tauri-drag-region />
+      <div style={{ padding: "2px 6px 14px 6px", minHeight: 26 }} data-tauri-drag-region />
 
-      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "4px 6px 14px 6px" }}>
-        <div
-          className="icon-chip"
-          style={{
-            width: 34,
-            height: 34,
-            background: "linear-gradient(135deg,var(--azure-500),var(--cyan-400))",
-            color: "#fff",
-            boxShadow: "var(--glow-sm)",
-          }}
-        >
+      <div className="row gap-10" style={{ padding: "4px 6px 14px 6px" }}>
+        <div className="brand-mark">
           <KiteMark size={18} />
         </div>
         {!collapsed && (
-          <div style={{ display: "flex", flexDirection: "column", lineHeight: 1.15 }}>
-            <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 16, color: "var(--text-strong)", letterSpacing: "-0.02em" }}>
-              KiteTerm
-            </span>
-            <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, letterSpacing: "0.09em", color: "var(--text-faint)" }}>
-              SSH · SCP · SYNC
-            </span>
+          <div className="col lh-tight">
+            <span className="brand-name">KiteTerm</span>
+            <span className="brand-sub">SSH · SCP · SYNC</span>
           </div>
         )}
       </div>
@@ -135,38 +94,28 @@ export function Sidebar() {
         />
       ))}
 
-      <div style={{ flex: 1 }} />
+      <div className="spacer" />
 
       <NavItem
         collapsed={collapsed}
         small
         icon={collapsed ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
-        label="收起侧栏"
+        label={collapsed ? "展开侧栏" : "收起侧栏"}
         onClick={toggleSidebar}
       />
       <NavItem
         collapsed={collapsed}
         small
-        icon={
-          <span
-            style={{
-              width: 7,
-              height: 7,
-              flex: "none",
-              borderRadius: 99,
-              background: syncStatus.syncing ? "var(--warning)" : "var(--success)",
-            }}
-          />
-        }
+        icon={<span className={syncStatus.syncing ? "dot-lg dot-warn" : "dot-lg dot-ok"} />}
         label={syncStatus.syncing ? "同步中…" : `已同步 · ${syncStatus.lastSyncAt ?? "从未"}`}
         onClick={() => go("sync")}
       />
       <NavItem
         collapsed={collapsed}
         small
-        icon={<Command size={15} />}
+        icon={<KtCommand size={15} />}
         label="命令面板"
-        trailing={<span className="kbd" style={{ fontSize: 10.5, padding: "2px 6px" }}>⌘K</span>}
+        trailing={<span className="kbd sm">⌘K</span>}
         onClick={() => setPalette(true)}
       />
       <NavItem
@@ -178,37 +127,14 @@ export function Sidebar() {
       />
 
       <div
-        style={{
-          borderTop: "1px solid var(--border-subtle)",
-          margin: "8px 4px 4px 4px",
-          paddingTop: 12,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: collapsed ? "center" : "flex-start",
-          gap: 10,
-        }}
+        className={collapsed ? "row jcenter gap-10 bd-top" : "row gap-10 bd-top"}
+        style={{ margin: "8px 4px 4px 4px", paddingTop: 12 }}
       >
-        <div
-          style={{
-            width: 30,
-            height: 30,
-            flex: "none",
-            borderRadius: 99,
-            background: "var(--accent-subtle)",
-            color: "var(--accent-text)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            fontWeight: 700,
-            fontSize: 13,
-          }}
-        >
-          L
-        </div>
+        <div className="avatar">L</div>
         {!collapsed && (
-          <div style={{ display: "flex", flexDirection: "column", lineHeight: 1.2 }}>
-            <span style={{ fontWeight: 600, fontSize: 13, color: "var(--text-strong)" }}>Lin</span>
-            <span style={{ fontSize: 11, color: "var(--text-faint)" }}>Pro 工作区</span>
+          <div className="col lh-tight">
+            <span className="fs-md w-semi t-strong">Lin</span>
+            <span className="fs-xs t-faint">Pro 工作区</span>
           </div>
         )}
       </div>

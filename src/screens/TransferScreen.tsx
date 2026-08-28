@@ -14,17 +14,10 @@ import {
 } from "lucide-react";
 import { Badge, Progress } from "@/components/ui";
 import { ipc } from "@/ipc";
+import { fmtBytes } from "@/lib/format";
 import { useSessionStore } from "@/stores/session";
 import { useTransferStore } from "@/stores/transfer";
 import type { FileEntry, TransferJob } from "@/types";
-
-function fmtSize(n: number): string {
-  if (n <= 0) return "—";
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 ** 2) return `${(n / 1024).toFixed(1)} KB`;
-  if (n < 1024 ** 3) return `${(n / 1024 ** 2).toFixed(1)} MB`;
-  return `${(n / 1024 ** 3).toFixed(1)} GB`;
-}
 
 function fileIcon(f: FileEntry) {
   if (f.isDir) return <Folder size={15} />;
@@ -34,16 +27,17 @@ function fileIcon(f: FileEntry) {
   return <File size={15} />;
 }
 
-function jobMeta(j: TransferJob): { text: string; color: string } {
+/** 队列行右侧的状态文案与配色(tone 为文字颜色工具类) */
+function jobMeta(j: TransferJob): { text: string; tone: string } {
   switch (j.state) {
     case "running":
-      return { text: `${fmtSize(j.rateBps)}/s`, color: "var(--accent-text)" };
+      return { text: `${fmtBytes(j.rateBps, "—")}/s`, tone: "t-accent" };
     case "done":
-      return { text: `完成 · ${(j.elapsedMs / 1000).toFixed(1)}s`, color: "var(--success-text)" };
+      return { text: `完成 · ${(j.elapsedMs / 1000).toFixed(1)}s`, tone: "t-success" };
     case "failed":
-      return { text: j.error ?? "失败", color: "var(--danger-text)" };
+      return { text: j.error ?? "失败", tone: "t-danger" };
     default:
-      return { text: "排队中", color: "var(--text-faint)" };
+      return { text: "排队中", tone: "t-faint" };
   }
 }
 
@@ -65,37 +59,33 @@ function FilePane({
   onOpenDir: (name: string) => void;
 }) {
   return (
-    <div className="card" style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "12px 16px", borderBottom: "1px solid var(--border-subtle)" }}>
+    <div className="card col grow clip">
+      <div className="row gap-8 pad-tight bd-bottom">
         {icon}
-        <span style={{ fontWeight: 700, fontSize: 13, color: "var(--text-strong)" }}>{title}</span>
-        <span style={{ fontFamily: "var(--font-mono)", fontSize: 11.5, color: "var(--text-faint)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{path}</span>
+        <span className="w-bold fs-md t-strong">{title}</span>
+        <span className="mono fs-xs t-faint ellipsis">{path}</span>
       </div>
-      <div className="vscroll" style={{ flex: 1, overflow: "auto" }}>
+      <div className="vscroll grow scroll">
         <div
-          className="hover-row"
+          className="hover-row row gap-10 fs-md t-faint py-8 px-16 cursor-default"
           onDoubleClick={() => onOpenDir("..")}
-          style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 16px", fontSize: 13, color: "var(--text-faint)", cursor: "default" }}
         >
           <Folder size={15} /><span>..</span>
         </div>
         {files.map((f) => (
           <div
             key={f.name}
-            className="hover-row"
+            className="hover-row row gap-10 fs-md py-8 px-16 cursor-default"
             onClick={() => onSelect(f.name === selected ? null : f.name)}
             onDoubleClick={() => f.isDir && onOpenDir(f.name)}
-            style={{
-              display: "flex", alignItems: "center", gap: 10, padding: "9px 16px", cursor: "default", fontSize: 13,
-              background: f.name === selected ? "var(--accent-subtle)" : undefined,
-            }}
+            style={{ background: f.name === selected ? "var(--accent-subtle)" : undefined }}
           >
             {fileIcon(f)}
-            <span style={{ flex: 1, color: "var(--text-strong)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{f.name}</span>
-            <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--text-faint)", width: 70, textAlign: "right" }}>
-              {f.isDir ? "—" : fmtSize(f.size)}
+            <span className="grow t-strong ellipsis">{f.name}</span>
+            <span className="mono fs-xs t-faint text-right" style={{ width: 70 }}>
+              {f.isDir ? "—" : fmtBytes(f.size, "—")}
             </span>
-            <span style={{ fontSize: 11, color: "var(--text-faint)", width: 96, textAlign: "right", whiteSpace: "nowrap" }}>{f.modified}</span>
+            <span className="fs-xs t-faint nowrap text-right" style={{ width: 96 }}>{f.modified}</span>
           </div>
         ))}
       </div>
@@ -127,13 +117,13 @@ export function TransferScreen() {
   const queuedCount = t.jobs.filter((j) => j.state === "queued").length;
 
   return (
-    <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", padding: "24px 28px", gap: 16 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+    <div className="col grow gap-16 clip py-24 px-28">
+      <div className="row gap-12">
         <div>
           <div className="eyebrow">SFTP / SCP</div>
-          <h1 className="screen-title" style={{ fontSize: 22 }}>文件传输</h1>
+          <h1 className="screen-title fs-xl">文件传输</h1>
         </div>
-        <span style={{ flex: 1 }} />
+        <span className="spacer" />
         {active ? (
           <Badge color="accent" dot>{active.hostName} 已连接</Badge>
         ) : (
@@ -141,7 +131,7 @@ export function TransferScreen() {
         )}
       </div>
 
-      <div style={{ flex: 1, minHeight: 0, display: "flex", alignItems: "stretch" }}>
+      <div className="row grow min-h-0 astretch">
         <FilePane
           title="本地"
           icon={<Laptop size={15} />}
@@ -151,16 +141,16 @@ export function TransferScreen() {
           onSelect={(n) => t.select("local", n)}
           onOpenDir={(n) => void t.setLocalPath(active?.id ?? null, joinPath(t.localPath, n))}
         />
-        <div style={{ width: 56, flex: "none", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10 }}>
+        <div className="col fnone jcenter acenter gap-10" style={{ width: 56 }}>
           <div
             onClick={() => active && t.localSel && void t.upload(active.id)}
             title="上传所选"
+            className="row jcenter r-full clickable"
             style={{
-              width: 36, height: 36, borderRadius: 99,
+              width: 36, height: 36,
               background: active && t.localSel ? "var(--accent)" : "var(--surface-card)",
               border: active && t.localSel ? "none" : "1px solid var(--border-default)",
               color: active && t.localSel ? "var(--text-on-accent)" : "var(--text-faint)",
-              display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer",
               boxShadow: active && t.localSel ? "var(--glow-sm)" : "none",
             }}
           >
@@ -169,12 +159,12 @@ export function TransferScreen() {
           <div
             onClick={() => active && t.remoteSel && void t.download(active.id)}
             title="下载所选"
+            className="row jcenter r-full clickable"
             style={{
-              width: 36, height: 36, borderRadius: 99,
+              width: 36, height: 36,
               background: active && t.remoteSel ? "var(--accent)" : "var(--surface-card)",
               border: active && t.remoteSel ? "none" : "1px solid var(--border-default)",
               color: active && t.remoteSel ? "var(--text-on-accent)" : "var(--text-muted)",
-              display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer",
             }}
           >
             <ArrowLeft size={16} />
@@ -191,33 +181,33 @@ export function TransferScreen() {
         />
       </div>
 
-      <div className="card" style={{ flex: "none", padding: "14px 18px", maxHeight: 180, display: "flex", flexDirection: "column" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
-          <span style={{ fontWeight: 700, fontSize: 13, color: "var(--text-strong)" }}>传输队列</span>
-          <span style={{ fontSize: 11.5, color: "var(--text-faint)" }}>
+      <div className="card col fnone pad-card" style={{ maxHeight: 180 }}>
+        <div className="row gap-8 mb-8">
+          <span className="w-bold fs-md t-strong">传输队列</span>
+          <span className="fs-xs t-faint">
             {runningCount} 进行中 · {queuedCount} 排队
           </span>
         </div>
-        <div className="vscroll" style={{ display: "flex", flexDirection: "column", gap: 2, overflow: "auto" }}>
-          {t.jobs.length === 0 && <div style={{ fontSize: 12, color: "var(--text-faint)", padding: "6px 2px" }}>队列为空 — 选中文件后用中间箭头上传/下载。</div>}
+        <div className="vscroll col gap-2 scroll">
+          {t.jobs.length === 0 && <div className="fs-sm t-faint py-6 px-2">队列为空 — 选中文件后用中间箭头上传/下载。</div>}
           {t.jobs.map((j) => {
             const meta = jobMeta(j);
             return (
-              <div key={j.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "7px 2px" }}>
+              <div key={j.id} className="row gap-12 py-8 px-2">
                 {j.direction === "upload" ? <Upload size={15} /> : <Download size={15} />}
-                <span style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--text-strong)", width: 210, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{j.name}</span>
-                <span style={{ fontSize: 11, color: "var(--text-faint)", flex: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                <span className="mono fs-sm t-strong ellipsis" style={{ width: 210 }}>{j.name}</span>
+                <span className="fs-xs t-faint grow ellipsis">
                   {j.direction === "upload" ? `${j.localPath} → ${j.remotePath}` : `${j.remotePath} → ${j.localPath}`}
                 </span>
                 <div style={{ width: 180 }}><Progress value={j.progress} /></div>
-                <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--text-muted)", width: 48, textAlign: "right" }}>
+                <span className="mono fs-xs t-muted text-right" style={{ width: 48 }}>
                   {j.state === "queued" ? "—" : `${Math.round(j.progress)}%`}
                 </span>
-                <span style={{ fontSize: 11, color: meta.color, width: 110, textAlign: "right", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={j.error ?? undefined}>{meta.text}</span>
+                <span className={`fs-xs ellipsis text-right ${meta.tone}`} style={{ width: 110 }} title={j.error ?? undefined}>{meta.text}</span>
                 {j.state === "failed" && (
                   <span
                     onClick={() => void ipc.retryTransfer(j.id)}
-                    style={{ fontSize: 11.5, color: "var(--accent-text)", cursor: "pointer", whiteSpace: "nowrap" }}
+                    className="fs-xs t-accent clickable nowrap"
                   >
                     重试
                   </span>

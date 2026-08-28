@@ -7,6 +7,7 @@ export function Button({
   variant = "primary",
   size = "sm",
   loading = false,
+  className,
   children,
   ...rest
 }: ButtonHTMLAttributes<HTMLButtonElement> & {
@@ -14,9 +15,14 @@ export function Button({
   size?: "sm" | "md";
   loading?: boolean;
 }) {
+  // 调用方传的 className 是追加的修饰类(如 slim / w-full),不能覆盖掉基础 btn 类
   return (
-    <button className={`btn btn-${size} btn-${variant}`} disabled={loading || rest.disabled} {...rest}>
-      {loading && <Loader2 size={14} style={{ animation: "vspin 0.9s linear infinite" }} />}
+    <button
+      className={`btn btn-${size} btn-${variant}${className ? ` ${className}` : ""}`}
+      disabled={loading || rest.disabled}
+      {...rest}
+    >
+      {loading && <Loader2 size={14} className="spin" />}
       {children}
     </button>
   );
@@ -24,10 +30,17 @@ export function Button({
 
 export function TextInput({
   label,
+  className,
   style,
   ...rest
 }: InputHTMLAttributes<HTMLInputElement> & { label?: string }) {
-  const input = <input className="input" style={label ? { width: "100%" } : style} {...rest} />;
+  const input = (
+    <input
+      className={`input${className ? ` ${className}` : ""}`}
+      style={label ? { width: "100%" } : style}
+      {...rest}
+    />
+  );
   if (!label) return input;
   return (
     <div style={style}>
@@ -40,16 +53,18 @@ export function TextInput({
 export function Badge({
   color = "neutral",
   dot = false,
+  className,
   children,
   style,
 }: {
   color?: "accent" | "success" | "warning" | "danger" | "neutral";
   dot?: boolean;
+  className?: string;
   children: ReactNode;
   style?: CSSProperties;
 }) {
   return (
-    <span className={`badge badge-${color}`} style={style}>
+    <span className={`badge badge-${color}${className ? ` ${className}` : ""}`} style={style}>
       {dot && <span className="dot" />}
       {children}
     </span>
@@ -117,8 +132,8 @@ export function ScreenHeader({
   children?: ReactNode;
 }) {
   return (
-    <div style={{ display: "flex", alignItems: "flex-end", gap: 16, marginBottom: 22 }}>
-      <div style={{ flex: 1 }}>
+    <div className="screen-header">
+      <div className="spacer">
         <div className="eyebrow">{eyebrow}</div>
         <h1 className="screen-title">
           {title} {count && <span className="count">{count}</span>}

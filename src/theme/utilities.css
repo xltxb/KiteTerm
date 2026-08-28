@@ -1,0 +1,174 @@
+/* ============================================================
+   Vela — Utilities
+   界面里反复出现的排布/字号/颜色写法收敛成类,组件不再内联。
+   命名直接带 px 数值(.gap-8),不引入需要换算的抽象刻度。
+   ============================================================ */
+
+:root {
+  /* ---- 界面字号(比 --text-* 更密的一档,专供桌面端控件) ----
+     由原型 design/prototype.html 的实际取值归并而来 */
+  --ui-2xs: 10.5px; /* mono 小标签、kbd */
+  --ui-xs:  11.5px; /* 状态栏、次要说明 */
+  --ui-sm:  12.5px; /* 副文本、分段项 */
+  --ui-md:  13.5px; /* 正文与导航默认 */
+  --ui-lg:  16px;   /* 品牌名、区块标题 */
+  --ui-xl:  22px;   /* KPI 数字 */
+
+  /* 圆角刻度里缺的一档:圆角容器内部的小控件(标签页动作、片段序号) */
+  --radius-inner: 8px;
+}
+
+/* ---- 排布 ---- */
+.row  { display: flex; align-items: center; }
+.rowt { display: flex; align-items: flex-start; }
+.col  { display: flex; flex-direction: column; }
+.grow { flex: 1; min-width: 0; }
+.fnone { flex: none; }
+.wrap { flex-wrap: wrap; }
+.between { justify-content: space-between; }
+.jcenter { justify-content: center; }
+.jend { justify-content: flex-end; }
+.spacer { flex: 1; }
+
+.gap-2  { gap: 2px; }
+.gap-4  { gap: 4px; }
+.gap-6  { gap: 6px; }
+.gap-8  { gap: 8px; }
+.gap-10 { gap: 10px; }
+.gap-12 { gap: 12px; }
+.gap-14 { gap: 14px; }
+.gap-16 { gap: 16px; }
+
+/* ---- 交叉轴对齐(.row 默认 center,.col 默认 stretch) ---- */
+.astart   { align-items: flex-start; }
+.acenter  { align-items: center; }
+.aend     { align-items: flex-end; }
+.astretch { align-items: stretch; }
+
+/* flex 子项要能被压缩到比内容更小,才轮得到内部滚动 */
+.min-h-0 { min-height: 0; }
+.min-w-0 { min-width: 0; }
+
+/* 滚动容器。.vscroll 只管滚动条外观,滚动行为由这里给。 */
+.scroll-y { overflow-y: auto; min-height: 0; }
+.scroll-x { overflow-x: auto; min-width: 0; }
+.scroll   { overflow: auto; min-height: 0; }
+
+/* ---- 等分网格 ---- */
+.grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.grid-4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+
+/* ---- 内边距 ---- */
+.p-6  { padding: 6px; }
+.p-8  { padding: 8px; }
+.p-10 { padding: 10px; }
+.p-12 { padding: 12px; }
+.p-16 { padding: 16px; }
+.p-20 { padding: 20px; }
+/* 卡片惯用内边距:标准卡 / 紧凑卡 / 卡内分区 */
+.pad-card  { padding: 16px 20px; }
+.pad-tight { padding: 12px 16px; }
+.pad-band  { padding: 8px 20px; }
+/* 单轴内边距 */
+.px-2  { padding-left: 2px;  padding-right: 2px; }
+.px-8  { padding-left: 8px;  padding-right: 8px; }
+.px-12 { padding-left: 12px; padding-right: 12px; }
+.px-16 { padding-left: 16px; padding-right: 16px; }
+.px-20 { padding-left: 20px; padding-right: 20px; }
+.px-28 { padding-left: 28px; padding-right: 28px; }
+.pt-12 { padding-top: 12px; }
+.py-4  { padding-top: 4px;  padding-bottom: 4px; }
+.py-6  { padding-top: 6px;  padding-bottom: 6px; }
+.py-8  { padding-top: 8px;  padding-bottom: 8px; }
+.py-12 { padding-top: 12px; padding-bottom: 12px; }
+.py-16 { padding-top: 16px; padding-bottom: 16px; }
+.py-24 { padding-top: 24px; padding-bottom: 24px; }
+.py-32 { padding-top: 32px; padding-bottom: 32px; }
+
+/* ---- 外边距(只做上下,水平间距一律交给 flex gap) ---- */
+.mt-4  { margin-top: 4px; }
+.mt-8  { margin-top: 8px; }
+.mt-12 { margin-top: 12px; }
+.mt-16 { margin-top: 16px; }
+.mt-20 { margin-top: 20px; }
+/* 唯一的水平外边距:紧跟在文本后面的行内元素,没有 flex 容器可用 gap */
+.ml-6  { margin-left: 6px; }
+.mb-0  { margin-bottom: 0; }
+.mb-4  { margin-bottom: 4px; }
+.mb-8  { margin-bottom: 8px; }
+.mb-12 { margin-bottom: 12px; }
+.mb-16 { margin-bottom: 16px; }
+.mb-20 { margin-bottom: 20px; }
+
+/* ---- 面 ---- */
+.bg-page   { background: var(--surface-page); }
+.bg-card   { background: var(--surface-card); }
+.bg-sunken { background: var(--surface-sunken); }
+.bg-raised { background: var(--surface-raised); }
+.bd        { border: 1px solid var(--border-default); }
+.bd-subtle { border: 1px solid var(--border-subtle); }
+.bd-top    { border-top: 1px solid var(--border-subtle); }
+.bd-bottom { border-bottom: 1px solid var(--border-subtle); }
+.glow      { box-shadow: var(--glow-sm); }
+
+/* ---- 圆角 ---- */
+.r-sm    { border-radius: var(--radius-sm); }
+.r-inner { border-radius: var(--radius-inner); }
+.r-md    { border-radius: var(--radius-md); }
+.r-lg    { border-radius: var(--radius-lg); }
+.r-full  { border-radius: var(--radius-full); }
+
+/* ---- 字号 ---- */
+.fs-2xs { font-size: var(--ui-2xs); }
+.fs-xs  { font-size: var(--ui-xs); }
+.fs-sm  { font-size: var(--ui-sm); }
+.fs-md  { font-size: var(--ui-md); }
+.fs-lg  { font-size: var(--ui-lg); }
+.fs-xl  { font-size: var(--ui-xl); }
+
+/* ---- 字族与字重 ---- */
+.sans    { font-family: var(--font-sans); }
+.mono    { font-family: var(--font-mono); }
+.display { font-family: var(--font-display); letter-spacing: var(--tracking-tight); }
+.w-medium { font-weight: var(--weight-medium); }
+.w-semi  { font-weight: var(--weight-semibold); }
+.w-bold  { font-weight: var(--weight-bold); }
+
+/* ---- 文字颜色 ---- */
+.t-strong  { color: var(--text-strong); }
+.t-body    { color: var(--text-body); }
+.t-muted   { color: var(--text-muted); }
+.t-faint   { color: var(--text-faint); }
+.t-accent  { color: var(--accent-text); }
+.t-success { color: var(--success-text); }
+.t-warning { color: var(--warning-text); }
+.t-danger  { color: var(--danger-text); }
+
+/* ---- 文字行为 ---- */
+.ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nowrap   { white-space: nowrap; }
+.prewrap  { white-space: pre-wrap; word-break: break-word; }
+.caps     { letter-spacing: var(--tracking-caps); text-transform: uppercase; }
+.tracking-wide  { letter-spacing: var(--tracking-wide); }
+.tracking-wider { letter-spacing: var(--tracking-wider); }
+.text-center { text-align: center; }
+.text-right  { text-align: right; }
+
+/* ---- 行高 ---- */
+.lh-tight   { line-height: var(--leading-tight); }
+.lh-snug    { line-height: var(--leading-snug); }
+.lh-normal  { line-height: var(--leading-normal); }
+.lh-relaxed { line-height: var(--leading-relaxed); }
+
+/* ---- 尺寸与裁剪 ---- */
+.w-full { width: 100%; }
+.clip   { overflow: hidden; }
+
+/* ---- 交互 ---- */
+.clickable { cursor: pointer; user-select: none; }
+/* 组件类自带 pointer,但这一处只是复用外观、并不可点 */
+.cursor-default { cursor: default; }
+
+/* 加载中的图标(配 lucide 的 Loader2) */
+.spin { animation: vspin 0.9s linear infinite; }

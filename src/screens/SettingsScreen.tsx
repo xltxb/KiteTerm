@@ -33,13 +33,13 @@ export function SettingsScreen() {
 
   return (
     <div className="screen vscroll">
-      <div className="screen-inner" style={{ maxWidth: 760 }}>
+      <div className="screen-inner narrow">
         <ScreenHeader eyebrow="SETTINGS" title="设置" />
 
-        <div className="card" style={{ padding: "8px 20px", marginBottom: 16 }}>
+        <div className="card pad-band mb-16">
           <div className="settings-section-title">外观</div>
           <div className="settings-row">
-            <span style={{ flex: 1, fontWeight: 600, fontSize: 13.5, color: "var(--text-strong)" }}>主题</span>
+            <span className="grow w-semi fs-md t-strong">主题</span>
             <Segmented
               options={[{ value: "dark", label: "深色" }, { value: "light", label: "浅色" }]}
               value={settings.theme}
@@ -47,50 +47,50 @@ export function SettingsScreen() {
             />
           </div>
           <div className="settings-row">
-            <span style={{ flex: 1, fontWeight: 600, fontSize: 13.5, color: "var(--text-strong)" }}>终端字体</span>
-            <span style={{ fontFamily: "var(--font-mono)", fontSize: 12.5, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 6, border: "1px solid var(--border-default)", borderRadius: 10, padding: "6px 12px" }}>
+            <span className="grow w-semi fs-md t-strong">终端字体</span>
+            <span className="row gap-6 mono fs-sm t-muted r-md bd py-6 px-12">
               {settings.terminalFont}
               <ChevronDown size={13} />
             </span>
           </div>
           <div className="settings-row">
-            <span style={{ flex: 1, fontWeight: 600, fontSize: 13.5, color: "var(--text-strong)" }}>终端字号</span>
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <div className="hover-row" onClick={() => stepFont(-1)} style={{ width: 26, height: 26, borderRadius: 8, border: "1px solid var(--border-default)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "var(--text-muted)" }}>
+            <span className="grow w-semi fs-md t-strong">终端字号</span>
+            <div className="row gap-10">
+              <div className="icon-btn sm" onClick={() => stepFont(-1)}>
                 <Minus size={13} />
               </div>
-              <span style={{ fontFamily: "var(--font-mono)", fontSize: 13, color: "var(--text-strong)", width: 38, textAlign: "center" }}>
+              <span className="mono fs-md t-strong text-center num-readout">
                 {settings.terminalFontSize}px
               </span>
-              <div className="hover-row" onClick={() => stepFont(1)} style={{ width: 26, height: 26, borderRadius: 8, border: "1px solid var(--border-default)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "var(--text-muted)" }}>
+              <div className="icon-btn sm" onClick={() => stepFont(1)}>
                 <Plus size={13} />
               </div>
             </div>
           </div>
           <div className="settings-row">
-            <span style={{ flex: 1, fontWeight: 600, fontSize: 13.5, color: "var(--text-strong)" }}>光标闪烁</span>
+            <span className="grow w-semi fs-md t-strong">光标闪烁</span>
             <Switch on={settings.cursorBlink} onChange={(on) => setSettings({ cursorBlink: on })} />
           </div>
         </div>
 
-        <div className="card" style={{ padding: "8px 20px", marginBottom: 16 }}>
+        <div className="card pad-band mb-16">
           <div className="settings-section-title">行为</div>
           {BEHAVIORS.map((b) => (
             <div key={b.key} className="settings-row">
-              <div style={{ flex: 1, lineHeight: 1.35 }}>
-                <div style={{ fontWeight: 600, fontSize: 13.5, color: "var(--text-strong)" }}>{b.label}</div>
-                <div style={{ fontSize: 12, color: "var(--text-faint)" }}>{b.desc}</div>
+              <div className="grow lh-snug">
+                <div className="w-semi fs-md t-strong">{b.label}</div>
+                <div className="fs-sm t-faint">{b.desc}</div>
               </div>
               <Switch on={settings[b.key]} onChange={(on) => setSettings({ [b.key]: on })} />
             </div>
           ))}
         </div>
 
-        <div className="card" style={{ padding: "8px 20px" }}>
+        <div className="card pad-band">
           <div className="settings-section-title">快捷键</div>
           {SHORTCUTS.map((s) => (
-            <div key={s.label} className="settings-row" style={{ padding: "10px 0" }}>
-              <span style={{ flex: 1, fontSize: 13, color: "var(--text-strong)" }}>{s.label}</span>
+            <div key={s.label} className="settings-row">
+              <span className="grow fs-md t-strong">{s.label}</span>
               <span className="kbd">{s.keys}</span>
             </div>
           ))}

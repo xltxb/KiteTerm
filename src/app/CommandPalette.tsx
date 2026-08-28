@@ -93,31 +93,15 @@ export function CommandPalette() {
   return (
     <div
       onClick={() => setPalette(false)}
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: "var(--z-overlay)" as never,
-        background: "var(--surface-overlay)",
-        backdropFilter: "blur(6px)",
-        display: "flex",
-        alignItems: "flex-start",
-        justifyContent: "center",
-        paddingTop: "14vh",
-      }}
+      className="modal-overlay"
+      // 面板从顶部 14vh 落下,层级低于模态,故覆盖 .modal-overlay 的居中与 z-index
+      style={{ zIndex: "var(--z-overlay)" as never, alignItems: "flex-start", paddingTop: "14vh" }}
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        style={{
-          width: 600,
-          maxWidth: "90vw",
-          background: "var(--surface-raised)",
-          border: "1px solid var(--border-default)",
-          borderRadius: 14,
-          boxShadow: "var(--shadow-xl)",
-          overflow: "hidden",
-        }}
+        className="modal lg flush"
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 18px", borderBottom: "1px solid var(--border-subtle)" }}>
+        <div className="row gap-10 p-16 bd-bottom">
           <Search size={16} />
           <input
             ref={inputRef}
@@ -129,33 +113,27 @@ export function CommandPalette() {
               else if (e.key === "Enter" && filtered[sel]) { filtered[sel].run(); setPalette(false); }
             }}
             placeholder="输入命令、主机或片段…"
-            style={{ flex: 1, background: "transparent", border: "none", outline: "none", fontFamily: "var(--font-sans)", fontSize: 14, color: "var(--text-strong)" }}
+            className="input-bare fs-md"
           />
-          <span className="kbd" style={{ fontSize: 10.5, padding: "2px 6px", color: "var(--text-faint)" }}>ESC</span>
+          <span className="kbd fs-2xs t-faint">ESC</span>
         </div>
-        <div style={{ padding: 8, display: "flex", flexDirection: "column" }}>
+        <div className="col p-8">
           {filtered.map((c, i) => (
             <div
               key={c.id}
               onClick={() => { c.run(); setPalette(false); }}
               onMouseEnter={() => setSel(i)}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 12,
-                padding: "10px 12px",
-                borderRadius: 10,
-                cursor: "pointer",
-                background: i === sel ? "var(--accent-subtle)" : "transparent",
-              }}
+              className="row gap-12 clickable r-md p-10"
+              // 选中项高亮由键盘/悬停状态决定,保留内联
+              style={{ background: i === sel ? "var(--accent-subtle)" : "transparent" }}
             >
               {c.icon}
-              <span style={{ flex: 1, fontSize: 13.5, color: "var(--text-strong)" }}>{c.label}</span>
-              <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--text-faint)" }}>{c.hint}</span>
+              <span className="grow fs-md t-strong">{c.label}</span>
+              <span className="mono fs-xs t-faint">{c.hint}</span>
             </div>
           ))}
           {filtered.length === 0 && (
-            <div style={{ padding: "18px 12px", textAlign: "center", fontSize: 13, color: "var(--text-faint)" }}>
+            <div className="empty-state fs-md p-16">
               没有匹配的命令
             </div>
           )}

@@ -3,6 +3,8 @@ import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { Pause, Play, RotateCcw, X } from "lucide-react";
 import { ipc } from "@/ipc";
+import { fmtClock } from "@/lib/format";
+import { terminalTheme } from "@/theme/terminal";
 import type { Recording } from "@/types";
 
 interface CastEvent {
@@ -38,11 +40,6 @@ function parseCast(text: string): Cast {
   return { cols, rows, events, duration: events.length ? events[events.length - 1].t : 0 };
 }
 
-function fmtTime(s: number): string {
-  const m = Math.floor(s / 60);
-  return `${String(m).padStart(2, "0")}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
-}
-
 export function CastPlayer({ recording, onClose }: { recording: Recording; onClose: () => void }) {
   const paneRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -76,7 +73,7 @@ export function CastPlayer({ recording, onClose }: { recording: Recording; onClo
           fontSize: 12,
           disableStdin: true,
           cursorBlink: false,
-          theme: { background: "#0a0a0b", foreground: "#c4ccda" },
+          theme: terminalTheme(),
         });
         termRef.current = term;
         if (paneRef.current) term.open(paneRef.current);
@@ -126,22 +123,21 @@ export function CastPlayer({ recording, onClose }: { recording: Recording; onClo
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div
-        className="modal"
+        className="modal auto"
         onClick={(e) => e.stopPropagation()}
-        style={{ width: "auto", maxWidth: "94vw", padding: 0, overflow: "hidden" }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", borderBottom: "1px solid var(--border-subtle)" }}>
-          <span style={{ fontWeight: 700, fontSize: 13.5, color: "var(--text-strong)" }}>{recording.name}</span>
-          <span style={{ fontSize: 11.5, color: "var(--text-faint)" }}>
+        <div className="sheet-head">
+          <span className="fs-md w-bold t-strong">{recording.name}</span>
+          <span className="fs-xs t-faint">
             {recording.sessionHost} · {recording.startedAt} · asciicast v2
           </span>
-          <span style={{ flex: 1 }} />
-          <X size={16} style={{ cursor: "pointer", color: "var(--text-muted)" }} onClick={onClose} />
+          <span className="spacer" />
+          <X size={16} className="clickable t-muted" onClick={onClose} />
         </div>
 
-        <div style={{ background: "#0a0a0b", padding: "12px 14px" }}>
+        <div className="term-surface" style={{ padding: "12px 14px" }}>
           {error ? (
-            <div style={{ color: "var(--danger-text)", fontSize: 12.5, padding: 20, maxWidth: 480 }}>
+            <div className="fs-sm t-danger" style={{ padding: 20, maxWidth: 480 }}>
               读取录制失败:{error}
             </div>
           ) : (
@@ -149,29 +145,25 @@ export function CastPlayer({ recording, onClose }: { recording: Recording; onClo
           )}
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 16px", borderTop: "1px solid var(--border-subtle)" }}>
+        <div
+          className="row gap-12 bd-top"
+          style={{ padding: "10px 16px" }}
+        >
           <button
-            className="btn btn-sm btn-secondary"
-            style={{ width: 34, padding: 0 }}
+            className="btn btn-sm btn-secondary square"
             onClick={() => (done ? restart() : setPlaying((p) => !p))}
           >
             {done ? <RotateCcw size={14} /> : playing ? <Pause size={14} /> : <Play size={14} />}
           </button>
-          <div style={{ flex: 1, height: 6, borderRadius: 99, background: "var(--surface-sunken)", overflow: "hidden" }}>
-            <div
-              style={{
-                height: "100%",
-                width: duration > 0 ? `${Math.min(100, (clock / duration) * 100)}%` : "0%",
-                background: "linear-gradient(90deg,var(--azure-500),var(--cyan-400))",
-              }}
-            />
+          <div className="progress instant grow">
+            <div style={{ width: duration > 0 ? `${Math.min(100, (clock / duration) * 100)}%` : "0%" }} />
           </div>
-          <span style={{ fontFamily: "var(--font-mono)", fontSize: 11.5, color: "var(--text-muted)" }}>
-            {fmtTime(clock)} / {fmtTime(duration)}
+          <span className="mono fs-xs t-muted">
+            {fmtClock(clock)} / {fmtClock(duration)}
           </span>
           <div className="seg">
             {[1, 2, 4].map((s) => (
-              <div key={s} className="seg-item mono" data-active={speed === s} onClick={() => setSpeed(s)} style={{ padding: "3px 10px" }}>
+              <div key={s} className="seg-item mono tight" data-active={speed === s} onClick={() => setSpeed(s)}>
                 {s}×
               </div>
             ))}
