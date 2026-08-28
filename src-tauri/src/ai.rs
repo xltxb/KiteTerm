@@ -139,9 +139,19 @@ pub fn save_provider(
     if provider.id.trim().is_empty() {
         provider.id = uuid::Uuid::new_v4().to_string();
     }
-    provider.base_url = provider.base_url.trim_end_matches('/').to_string();
+    // 约定填根地址(请求时自行拼 /v1/... 或 /api/...)。用户常把带 /v1 的地址整段贴进来,
+    // 那会拼成 /v1/v1/chat/completions,这里统一规整掉。
+    provider.base_url = provider.base_url.trim().trim_end_matches('/').to_string();
+    if provider.protocol != "ollama" {
+        if let Some(stripped) = provider.base_url.strip_suffix("/v1") {
+            provider.base_url = stripped.to_string();
+        }
+    }
     if provider.base_url.is_empty() {
         return Err(AppError("接口地址不能为空".into()));
+    }
+    if !provider.base_url.starts_with("http://") && !provider.base_url.starts_with("https://") {
+        return Err(AppError("接口地址需以 http:// 或 https:// 开头".into()));
     }
 
     if let Some(key) = api_key {
@@ -316,7 +326,10 @@ async fn ask_anthropic(
 ) -> Result<String> {
     let body = json!({
         "model": p.model,
-        "max_tokens": if mode == AskMode::Command { 512 } else { 16000 },
+        // 不因 command 模式压低上限:思考型模型(如 Claude 默认开启 thinking)会先消耗
+        // 一部分额度,额度太小会导致只剩 thinking 块、没有 text 块。
+        // max_tokens 只是上限,不影响实际计费。
+        "max_tokens": 16000,
         "system": mode.system_prompt(),
         "messages": messages.iter()
             .map(|m| json!({ "role": m.role, "content": m.content }))
@@ -342,19 +355,32 @@ async fn ask_anthropic(
             .unwrap_or("该请求被模型的安全策略拒绝");
         return Ok(format!("(模型拒绝了这次请求:{why})"));
     }
-    let text = payload["content"]
-        .as_array()
-        .map(|blocks| {
-            blocks
-                .iter()
+    let blocks = payload["content"].as_array();
+    let text = blocks
+        .map(|bs| {
+            bs.iter()
                 .filter(|b| b["type"] == "text")
                 .filter_map(|b| b["text"].as_str())
                 .collect::<Vec<_>>()
                 .join("")
         })
         .unwrap_or_default();
-    if text.is_empty() {
-        return Err(AppError("模型未返回文本内容".into()));
+    if text.trim().is_empty() {
+        let stop = payload["stop_reason"].as_str().unwrap_or("unknown");
+        let kinds: Vec<&str> = blocks
+            .map(|bs| bs.iter().filter_map(|b| b["type"].as_str()).collect())
+            .unwrap_or_default();
+        // 只有思考块 / 被上限截断,是最常见的两种"拿不到正文"的原因,分别给出可执行的建议
+        if stop == "max_tokens" || kinds.iter().all(|k| *k == "thinking") && !kinds.is_empty() {
+            return Err(AppError(format!(
+                "模型只返回了思考过程就达到长度上限(stop_reason={stop})。\
+                 请重试,或在模型设置里换用非思考型模型。"
+            )));
+        }
+        return Err(AppError(format!(
+            "模型未返回文本内容(stop_reason={stop},内容块:{})",
+            if kinds.is_empty() { "无".into() } else { kinds.join("/") }
+        )));
     }
     Ok(text)
 }
@@ -371,10 +397,12 @@ async fn ask_openai(
             .iter()
             .map(|m| json!({ "role": m.role, "content": m.content })),
     );
+    // 同 anthropic:不压低上限,避免推理型模型把额度用在思考上导致正文为空
+    let _ = mode;
     let body = json!({
         "model": p.model,
         "messages": msgs,
-        "max_tokens": if mode == AskMode::Command { 512 } else { 4096 },
+        "max_tokens": 8192,
     });
     let resp = http()
         .post(format!("{}/v1/chat/completions", p.base_url))
@@ -388,12 +416,42 @@ async fn ask_openai(
         return Err(read_error(resp).await);
     }
     let payload: serde_json::Value = resp.json().await.map_err(|e| AppError(e.to_string()))?;
-    let text = payload["choices"][0]["message"]["content"]
+    let choice = &payload["choices"][0];
+    let content = &choice["message"]["content"];
+    // 兼容几种实现差异:
+    //   1) 常规 string
+    //   2) 多模态数组 [{type:"text",text:"…"}]
+    //   3) 推理模型把正文放在 reasoning_content(content 为 null)
+    //   4) 旧 completions 风格的 choices[0].text
+    let text = content
         .as_str()
-        .unwrap_or_default()
-        .to_string();
-    if text.is_empty() {
-        return Err(AppError("模型未返回文本内容".into()));
+        .map(str::to_string)
+        .or_else(|| {
+            content.as_array().map(|parts| {
+                parts
+                    .iter()
+                    .filter_map(|x| x["text"].as_str().or_else(|| x.as_str()))
+                    .collect::<Vec<_>>()
+                    .join("")
+            })
+        })
+        .or_else(|| choice["message"]["reasoning_content"].as_str().map(str::to_string))
+        .or_else(|| choice["text"].as_str().map(str::to_string))
+        .unwrap_or_default();
+    if text.trim().is_empty() {
+        let finish = choice["finish_reason"].as_str().unwrap_or("unknown");
+        if finish == "length" {
+            return Err(AppError(
+                "模型输出达到长度上限但没有正文(可能额度都用于推理),请重试或更换模型。".into(),
+            ));
+        }
+        if !choice["message"]["tool_calls"].is_null() {
+            return Err(AppError("模型返回的是工具调用而非文本,请更换模型。".into()));
+        }
+        return Err(AppError(format!(
+            "模型未返回文本内容(finish_reason={finish})。\
+             若接口地址填成了以 /v1 结尾,请改成根地址,例如 https://api.openai.com"
+        )));
     }
     Ok(text)
 }
@@ -417,12 +475,17 @@ async fn ask_ollama(p: &AiProvider, messages: &[ChatMessage], mode: AskMode) -> 
         return Err(read_error(resp).await);
     }
     let payload: serde_json::Value = resp.json().await.map_err(|e| AppError(e.to_string()))?;
+    // /api/chat 返回 message.content;部分版本或 /api/generate 走 response 字段
     let text = payload["message"]["content"]
         .as_str()
+        .or_else(|| payload["response"].as_str())
         .unwrap_or_default()
         .to_string();
-    if text.is_empty() {
-        return Err(AppError("模型未返回文本内容".into()));
+    if text.trim().is_empty() {
+        return Err(AppError(format!(
+            "本地模型未返回文本内容 —— 确认模型「{}」已拉取(ollama pull {})且服务正常。",
+            p.model, p.model
+        )));
     }
     Ok(text)
 }
