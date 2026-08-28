@@ -393,8 +393,23 @@ pub async fn account_register(
     state: State<'_, AppState>,
     email: String,
     password: String,
-) -> Result<()> {
-    crate::account::register(&state.db, &email, &password).await
+    invite_code: Option<String>,
+) -> Result<crate::account::AccountInfo> {
+    crate::account::register(
+        &state.db,
+        &state.vault,
+        &email,
+        &password,
+        invite_code.as_deref(),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn account_register_policy(
+    state: State<'_, AppState>,
+) -> Result<crate::account::RegisterPolicy> {
+    crate::account::register_policy(&state.db).await
 }
 
 #[tauri::command]

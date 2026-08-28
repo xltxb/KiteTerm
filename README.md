@@ -23,7 +23,7 @@
 | 存储 | SQLite(rusqlite,配置/片段/密钥/录制索引) |
 | 加密 | XChaCha20-Poly1305 + Argon2id(密钥落库、同步 E2E) |
 | 同步 | **管理平台管控**:注册/登录后由平台下发 S3 凭据(平台持桶,按用户前缀隔离);桶内仅密文,平台零知识 |
-| 管理平台 | `server/`(Rust axum + SQLite):账户、令牌、同步授权开关、凭据下发、管理接口 + 内嵌 Web 管理控制台(`/admin`) |
+| 管理平台 | `server/`(Rust axum + SQLite):账户注册/登录、注册策略与邀请码、令牌、同步授权开关、凭据下发 + 内嵌 Web 管理控制台(`/admin`) |
 
 ## 开发
 
@@ -41,13 +41,20 @@ KITE_ADMIN_KEY=<管理密钥> \
 S3_ENDPOINT=http://127.0.0.1:19000 S3_BUCKET=vela-sync \
 S3_ACCESS_KEY=<ak> S3_SECRET_KEY=<sk> \
 cargo run --manifest-path server/Cargo.toml
+# 可选:KITE_REGISTRATION=open|invite|closed 注册策略初值(之后以管理后台设置为准)
+#       KITE_REGISTER_LIMIT=5            同一 IP 每小时注册尝试上限
 # 应用内「同步」页默认平台地址 http://127.0.0.1:8787,可在“平台设置”修改
 # Web 管理控制台:http://127.0.0.1:8787/admin(输入管理密钥)——
+#   注册策略(开放/仅邀请码/关闭)、邀请码生成与停用、新用户默认同步开关、
 #   用户列表/搜索、同步启停开关、强制下线(吊销令牌)、按用户查看存储用量、平台统计
-# 管理 API(X-Admin-Key):GET /api/admin/stats、GET /api/admin/users、
-#   POST /api/admin/users/{email}/sync {enabled}、POST /api/admin/users/{email}/revoke、
-#   GET /api/admin/users/{email}/usage
+# 管理 API(X-Admin-Key):GET /api/admin/stats、GET|POST /api/admin/settings、
+#   GET|POST /api/admin/invites、POST /api/admin/invites/{code}/disable、
+#   GET /api/admin/users、POST /api/admin/users/{email}/sync {enabled}、
+#   POST /api/admin/users/{email}/revoke、GET /api/admin/users/{email}/usage
 ```
+
+> 开发提示:`pnpm tauri dev` 建议加 `KITE_NO_KEYCHAIN=1`。每次重新编译都会产生新二进制,
+> 系统钥匙串会视其为新程序而弹出授权框;该开关让设备密钥走 0600 文件回退,避免反复打断。
 
 ## 目录结构
 
@@ -84,6 +91,10 @@ src-tauri/src/
 - **F9 命令面板**:⌘K,统一搜索主机/片段/动作 ✅
 - **F10 设置**:深/浅主题、终端字号、光标闪烁、行为开关(启动恢复会话 / 断线自动重连 / 退出前确认均已生效)、快捷键表 ✅
 - **AI 助手**:右栏对话接入 Claude API(默认 `claude-opus-5`,可换模型;Key 经设备密钥加密存本地);读取当前会话最近输出作为上下文,回复中命令一键「在终端运行」✅
+
+- **账户注册**:平台三档注册策略(开放 / 仅邀请码 / 关闭),邀请码支持次数上限、有效期、备注与停用;
+  邮箱结构校验 + 口令强度规则(长度、字符种类、常见弱口令黑名单,前后端同规则)、确认密码与实时强度提示;
+  按 IP 滑动窗口限流(前置于校验以防邮箱枚举);新用户默认同步开关可配;注册成功即签发令牌免二次登录 ✅
 
 **安全**:known_hosts 指纹校验(TOFU,首连记录;指纹变更即中断连接并告警,需显式「信任新指纹」后重试)。
 

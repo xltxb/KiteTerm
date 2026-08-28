@@ -12,7 +12,7 @@ interface SyncState {
   saveConfig: (cfg: SyncConfig & { secretKey?: string; masterPassword?: string }) => Promise<void>;
   setScope: (key: keyof SyncConfig["scopes"], on: boolean) => Promise<void>;
   login: (email: string, password: string) => Promise<void>;
-  register: (email: string, password: string) => Promise<void>;
+  register: (email: string, password: string, inviteCode?: string) => Promise<void>;
   logout: () => Promise<void>;
 }
 
@@ -37,9 +37,10 @@ export const useSyncStore = create<SyncState>((set, get) => ({
     const account = await ipc.accountLogin(email, password);
     set({ account, status: await ipc.getSyncStatus() });
   },
-  register: async (email, password) => {
-    await ipc.accountRegister(email, password);
-    await get().login(email, password);
+  register: async (email, password, inviteCode) => {
+    // 平台注册成功即返回令牌,无需再登录一次
+    const account = await ipc.accountRegister(email, password, inviteCode);
+    set({ account, status: await ipc.getSyncStatus() });
   },
   logout: async () => {
     await ipc.accountLogout();

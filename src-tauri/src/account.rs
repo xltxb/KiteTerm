@@ -73,18 +73,65 @@ async fn api_error(resp: reqwest::Response) -> AppError {
     AppError(format!("{code}{}{msg}(HTTP {status})", if code.is_empty() { "" } else { ": " }))
 }
 
-pub async fn register(db: &Db, email: &str, password: &str) -> Result<()> {
-    let url = format!("{}/api/register", platform_url(db));
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegisterPolicy {
+    /// open | invite | closed
+    pub mode: String,
+    pub password_min_length: usize,
+    pub password_rule: String,
+}
+
+pub async fn register_policy(db: &Db) -> Result<RegisterPolicy> {
+    let url = format!("{}/api/register/policy", platform_url(db));
     let resp = reqwest::Client::new()
-        .post(&url)
-        .json(&json!({ "email": email, "password": password }))
+        .get(&url)
         .send()
         .await
         .map_err(|e| AppError(format!("无法连接管理平台: {e}")))?;
     if !resp.status().is_success() {
         return Err(api_error(resp).await);
     }
-    Ok(())
+    resp.json().await.map_err(|e| AppError(e.to_string()))
+}
+
+/// 注册成功后平台直接签发令牌,这里顺带完成登录(免二次往返)
+pub async fn register(
+    db: &Db,
+    vault: &Vault,
+    email: &str,
+    password: &str,
+    invite_code: Option<&str>,
+) -> Result<AccountInfo> {
+    let url = format!("{}/api/register", platform_url(db));
+    let resp = reqwest::Client::new()
+        .post(&url)
+        .json(&json!({
+            "email": email,
+            "password": password,
+            "invite_code": invite_code.unwrap_or_default(),
+        }))
+        .send()
+        .await
+        .map_err(|e| AppError(format!("无法连接管理平台: {e}")))?;
+    if !resp.status().is_success() {
+        return Err(api_error(resp).await);
+    }
+    let body: serde_json::Value = resp.json().await.map_err(|e| AppError(e.to_string()))?;
+    let token = body["token"]
+        .as_str()
+        .ok_or_else(|| AppError("平台响应缺少令牌".into()))?;
+    let info = AccountInfo {
+        id: body["user"]["id"].as_str().unwrap_or_default().to_string(),
+        email: body["user"]["email"].as_str().unwrap_or_default().to_string(),
+        sync_enabled: body["user"]["syncEnabled"].as_bool().unwrap_or(false),
+    };
+    db.kv_set(
+        KV_TOKEN,
+        &base64::engine::general_purpose::STANDARD.encode(vault.encrypt(token.as_bytes())?),
+    )?;
+    db.kv_set(KV_ACCOUNT, &serde_json::to_string(&info)?)?;
+    Ok(info)
 }
 
 pub async fn login(db: &Db, vault: &Vault, email: &str, password: &str) -> Result<AccountInfo> {

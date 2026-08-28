@@ -77,7 +77,9 @@ export function createTauriIpc(): KiteIpc {
     syncRecoveryPhrase: () => invoke("sync_recovery_phrase"),
     syncRestoreMaster: (phrase) => invoke("sync_restore_master", { phrase }),
 
-    accountRegister: (email, password) => invoke("account_register", { email, password }),
+    accountRegisterPolicy: () => invoke("account_register_policy"),
+    accountRegister: (email, password, inviteCode) =>
+      invoke("account_register", { email, password, inviteCode }),
     accountLogin: (email, password) => invoke("account_login", { email, password }),
     accountLogout: () => invoke("account_logout"),
     accountCurrent: () => invoke("account_current"),

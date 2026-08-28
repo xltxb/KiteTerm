@@ -109,7 +109,10 @@ export interface KiteIpc {
   syncRestoreMaster(phrase: string): Promise<void>;
 
   // ---- 账户(管理平台)----
-  accountRegister(email: string, password: string): Promise<void>;
+  /** 平台注册策略:open 开放 / invite 需邀请码 / closed 关闭 */
+  accountRegisterPolicy(): Promise<{ mode: string; passwordMinLength: number; passwordRule: string }>;
+  /** 注册成功即完成登录(平台直接签发令牌) */
+  accountRegister(email: string, password: string, inviteCode?: string): Promise<AccountInfo>;
   accountLogin(email: string, password: string): Promise<AccountInfo>;
   accountLogout(): Promise<void>;
   accountCurrent(): Promise<AccountInfo | null>;

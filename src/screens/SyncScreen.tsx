@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Cloud, Laptop, Lock, Monitor, Smartphone, UserRound } from "lucide-react";
-import { Badge, Button, ScreenHeader, Switch, TextInput } from "@/components/ui";
+import { Badge, Button, ScreenHeader, Segmented, Switch, TextInput } from "@/components/ui";
 import { ipc } from "@/ipc";
 import { useSyncStore } from "@/stores/sync";
 import type { SyncConfig } from "@/types";
@@ -18,19 +18,64 @@ function deviceIcon(kind: string) {
   return <Laptop size={15} />;
 }
 
+/** 后端错误形如 `invite_required: 该平台需要邀请码才能注册(HTTP 400)`,展示时只留人话部分 */
+function friendlyError(e: unknown): string {
+  return String(e)
+    .replace(/^(?:Error:\s*)?[A-Za-z_]+:\s*/, "")
+    .replace(/[((]HTTP\s*\d+[))]\s*$/, "")
+    .trim();
+}
+
+/** 口令强度评估:与服务端 password_issue 的规则保持一致,先在本地给出即时反馈 */
+function checkPassword(pw: string): { ok: boolean; score: number; hint: string | null } {
+  if (!pw) return { ok: false, score: 0, hint: null };
+  const len = [...pw].length;
+  const hasLetter = /\p{L}/u.test(pw);
+  const hasDigit = /\p{N}/u.test(pw);
+  const hasSymbol = /[^\p{L}\p{N}\s]/u.test(pw);
+  const kinds = [hasLetter, hasDigit, hasSymbol].filter(Boolean).length;
+  const weak = [
+    "password", "password1", "password123", "12345678", "123456789", "1234567890",
+    "qwerty123", "admin123", "abc12345", "iloveyou", "letmein1", "welcome1",
+  ];
+  if (len < 8) return { ok: false, score: Math.min(1, Math.floor(len / 4)), hint: "密码至少 8 位" };
+  if (len > 128) return { ok: false, score: 1, hint: "密码最多 128 位" };
+  if (kinds < 2) return { ok: false, score: 1, hint: "密码需包含字母、数字、符号中的至少两类" };
+  if (new Set(pw).size < 4) return { ok: false, score: 1, hint: "密码字符过于单一" };
+  if (weak.includes(pw.toLowerCase())) return { ok: false, score: 1, hint: "密码过于常见,请更换" };
+  // 合格后按长度与字符种类给出 2~4 档强度
+  let score = 2;
+  if (len >= 12) score += 1;
+  if (kinds === 3 && len >= 10) score += 1;
+  return { ok: true, score: Math.min(4, score), hint: null };
+}
+
 /** 账户卡:同步由管理平台管控 —— 登录后由平台下发存储凭据并放开同步 */
 function AccountCard() {
   const { account, config, login, register, logout, saveConfig } = useSyncStore();
+  const [mode, setMode] = useState<"login" | "register">("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [invite, setInvite] = useState("");
   const [masterPw, setMasterPw] = useState("");
   const [busy, setBusy] = useState<"login" | "register" | "master" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showPlatform, setShowPlatform] = useState(false);
   const [platformUrl, setPlatformUrl] = useState("");
+  const [policy, setPolicy] = useState<{ mode: string; passwordMinLength: number; passwordRule: string } | null>(null);
+
+  const loadPolicy = async () => {
+    try {
+      setPolicy(await ipc.accountRegisterPolicy());
+    } catch {
+      setPolicy(null); // 平台不可达时按开放注册渲染,真正的拦截以服务端为准
+    }
+  };
 
   useEffect(() => {
     void ipc.platformUrlGet().then(setPlatformUrl);
+    void loadPolicy();
   }, []);
 
   const run = async (kind: "login" | "register", fn: () => Promise<void>) => {
@@ -39,33 +84,121 @@ function AccountCard() {
     try {
       await fn();
     } catch (e) {
-      setError(String(e));
+      setError(friendlyError(e));
     } finally {
       setBusy(null);
     }
   };
 
   if (!account) {
+    const isRegister = mode === "register";
+    const registerClosed = isRegister && policy?.mode === "closed";
+    const needInvite = policy?.mode === "invite";
+    const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+    const pwCheck = checkPassword(password);
+    const canRegister =
+      emailOk && pwCheck.ok && password === confirm && (!needInvite || invite.trim()) && !registerClosed;
+
     return (
       <div className="card" style={{ padding: "16px 20px", marginBottom: 16 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
           <UserRound size={15} />
-          <span style={{ fontSize: 13.5, fontWeight: 700, color: "var(--text-strong)" }}>登录管理平台</span>
+          <span style={{ fontSize: 13.5, fontWeight: 700, color: "var(--text-strong)" }}>
+            {isRegister ? "注册管理平台账户" : "登录管理平台"}
+          </span>
+          <span style={{ flex: 1 }} />
+          <Segmented
+            options={[{ value: "login", label: "登录" }, { value: "register", label: "注册" }]}
+            value={mode}
+            onChange={(m) => { setMode(m); setError(null); }}
+          />
         </div>
         <div style={{ fontSize: 12.5, color: "var(--text-muted)", lineHeight: 1.6, marginBottom: 14 }}>
           云同步由管理平台统一管控:注册并登录后,平台为你的账户下发专属存储空间并放开同步。主密码只在本地派生密钥,平台无法解密你的数据。
         </div>
+
+        {registerClosed && (
+          <div style={{ fontSize: 12.5, color: "var(--warning-text)", background: "var(--warning-subtle)", borderRadius: 10, padding: "10px 12px", marginBottom: 12, lineHeight: 1.6 }}>
+            该平台当前未开放注册,请联系管理员开通账户。
+          </div>
+        )}
+
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-          <TextInput label="邮箱" placeholder="you@example.com" value={email} onChange={(e) => setEmail(e.target.value)} />
-          <TextInput label="密码(至少 8 位)" type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
+          <TextInput
+            label="邮箱"
+            placeholder="you@example.com"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+          />
+          <TextInput
+            label={isRegister ? `密码(${policy?.passwordMinLength ?? 8} 位以上)` : "密码"}
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !isRegister && email.trim() && password) {
+                void run("login", () => login(email.trim(), password));
+              }
+            }}
+          />
+          {isRegister && (
+            <TextInput
+              label="确认密码"
+              type="password"
+              value={confirm}
+              onChange={(e) => setConfirm(e.target.value)}
+            />
+          )}
+          {isRegister && needInvite && (
+            <TextInput
+              label="邀请码"
+              placeholder="XXXX-XXXX-XXXX"
+              value={invite}
+              onChange={(e) => setInvite(e.target.value.toUpperCase())}
+            />
+          )}
         </div>
+
+        {isRegister && password.length > 0 && (
+          <div style={{ marginTop: 10 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <div style={{ flex: 1, height: 4, borderRadius: 99, background: "var(--surface-sunken)", overflow: "hidden" }}>
+                <div
+                  style={{
+                    height: "100%",
+                    width: `${pwCheck.score * 25}%`,
+                    borderRadius: 99,
+                    background: pwCheck.score >= 3 ? "var(--success)" : pwCheck.score >= 2 ? "var(--warning)" : "var(--danger)",
+                    transition: "width 220ms var(--ease-out)",
+                  }}
+                />
+              </div>
+              <span style={{ fontSize: 11, color: "var(--text-faint)", width: 52, textAlign: "right" }}>
+                {["很弱", "弱", "一般", "较强", "很强"][pwCheck.score]}
+              </span>
+            </div>
+            <div style={{ fontSize: 11.5, color: pwCheck.ok ? "var(--text-faint)" : "var(--warning-text)", marginTop: 6, lineHeight: 1.5 }}>
+              {pwCheck.hint ?? policy?.passwordRule ?? "至少 8 位,且包含字母、数字、符号中的至少两类"}
+            </div>
+          </div>
+        )}
+        {isRegister && confirm.length > 0 && password !== confirm && (
+          <div style={{ fontSize: 11.5, color: "var(--danger-text)", marginTop: 6 }}>两次输入的密码不一致</div>
+        )}
+        {isRegister && email.length > 0 && !emailOk && (
+          <div style={{ fontSize: 11.5, color: "var(--danger-text)", marginTop: 6 }}>邮箱格式不正确</div>
+        )}
+
         {showPlatform && (
           <div style={{ marginTop: 12 }}>
             <TextInput
               label="平台地址"
               value={platformUrl}
               onChange={(e) => setPlatformUrl(e.target.value)}
-              onBlur={() => void ipc.platformUrlSet(platformUrl.trim())}
+              onBlur={async () => {
+                await ipc.platformUrlSet(platformUrl.trim());
+                void loadPolicy();
+              }}
               style={{ width: "100%" }}
             />
           </div>
@@ -79,22 +212,29 @@ function AccountCard() {
             {showPlatform ? "收起平台设置" : "平台设置"}
           </span>
           <span style={{ flex: 1 }} />
-          <Button
-            variant="outline"
-            loading={busy === "register"}
-            disabled={!email.trim() || password.length < 8 || busy !== null}
-            onClick={() => void run("register", () => register(email.trim(), password))}
-          >
-            注册并登录
-          </Button>
-          <Button
-            variant="primary"
-            loading={busy === "login"}
-            disabled={!email.trim() || !password || busy !== null}
-            onClick={() => void run("login", () => login(email.trim(), password))}
-          >
-            登录
-          </Button>
+          {isRegister ? (
+            <Button
+              variant="primary"
+              loading={busy === "register"}
+              disabled={!canRegister || busy !== null}
+              onClick={() =>
+                void run("register", () =>
+                  register(email.trim(), password, needInvite ? invite.trim() : undefined),
+                )
+              }
+            >
+              注册并登录
+            </Button>
+          ) : (
+            <Button
+              variant="primary"
+              loading={busy === "login"}
+              disabled={!email.trim() || !password || busy !== null}
+              onClick={() => void run("login", () => login(email.trim(), password))}
+            >
+              登录
+            </Button>
+          )}
         </div>
       </div>
     );
