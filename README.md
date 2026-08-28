@@ -1,7 +1,9 @@
 # KiteTerm
 
 自用优先的桌面 SSH 终端:远程连接、SFTP 传输、密钥管理、端口转发、服务器监控与端到端加密云同步。
-本仓库为《KiteTerm 产品需求与开发文档》与原型 `design/Vela Term.dc.html` 的实现(设计系统:Vela Design System)。
+本仓库为《KiteTerm 产品需求与开发文档》与 UI 原型 `design/prototype.html` 的实现(设计系统:Vela Design System;
+原型提供 A 石墨沉浸 / B 命令中心 / C 工作台三个结构方案,已采用 **A**;
+应用图标源见 `design/icon.svg`,由 `pnpm tauri icon design/icon.svg` 生成 `src-tauri/icons/` 全套)。
 
 ## 形态
 
@@ -18,7 +20,7 @@
 | UI | React 18 + TypeScript + Vite |
 | 终端 | xterm.js(WebGL 渲染 + search/fit addon) |
 | 状态 | Zustand(每域一个 store) |
-| 样式 | Vela Design System tokens(CSS variables,`data-theme` 切换深/浅) |
+| 样式 | Vela Design System(CSS variables + `data-theme` 切换深/浅);四层级联 token → base → components → utilities,组件里不写内联样式 |
 | SSH | russh + russh-sftp(Rust) |
 | 存储 | SQLite(rusqlite,配置/片段/密钥/录制索引) |
 | 加密 | XChaCha20-Poly1305 + Argon2id(密钥落库、同步 E2E) |
@@ -55,18 +57,34 @@ cargo run --manifest-path server/Cargo.toml
 
 > 开发提示:`pnpm tauri dev` 建议加 `KITE_NO_KEYCHAIN=1`。每次重新编译都会产生新二进制,
 > 系统钥匙串会视其为新程序而弹出授权框;该开关让设备密钥走 0600 文件回退,避免反复打断。
+>
+> ⚠️ 该开关用的是 `device.key` 文件密钥,**与钥匙串里那把不是同一个**。带开关跑过之后再用
+> 正常版本启动,同一个库里就会混着两批密钥的密文。应用启动时会自动做**设备密钥迁移**
+> (`src-tauri/src/rewrap.rs`):历史 `device.key` 作为解密兜底,把存量密文逐条改用当前设备
+> 密钥重新加密,**全部成功才删除该文件**;有任何一条没搞定就保留文件、下次启动重试。
+> 因此不会再出现「解密失败(设备密钥不匹配?)」。
 
 ## 目录结构
 
 ```
-design/            # 原型(Vela Term.dc.html)与 Vela 设计系统 tokens
+design/            # 一次性设计产物(不入库):UI 原型 prototype.html、应用图标 icon.svg、设计说明 NOTES.md
 src/
+  app.css          # 样式入口 —— 分层导入:token → base → components → utilities
   app/             # 布局:Sidebar、CommandPalette(⌘K)
   screens/         # 终端 / 主机 / 传输 / 转发 / 监控 / 密钥 / 片段 / 同步 / 设置
-  components/      # Button、Switch、Badge 等基础组件(对齐 Vela DS)
-  stores/          # ui / data / session / transfer / sync / monitor
+    terminal/      #   终端屏拆分:XtermPane / SearchBar / AiFab / RightDock
+    hosts/         #   主机屏拆分:HostRow / HostModal / GroupsModal / PasswordModal
+    sync/          #   同步屏拆分:账户 / 范围 / 设备 / 加密 / 恢复短语等卡片
+  components/      # Button、Switch、Badge 等基础组件 + AI 面板(components/ai/)
+  lib/             # 无依赖工具:nlDetect(白话识别)、format(字节/时长格式化)
+  stores/          # ui / data / session / transfer / sync / monitor / ai
   ipc/             # IPC 契约 + Tauri 实现(桌面端唯一实现)
-  theme/           # Vela tokens(colors/typography/spacing/effects/motion)
+  theme/           # 设计系统四层:
+                   #   token      colors / typography / spacing / effects / motion / terminal
+                   #   base.css   reset 与元素默认样式
+                   #   components.css  语义组件类(外壳、卡片、按钮、对话…)
+                   #   utilities.css   排布/字号/颜色工具类(排在最后,可覆盖组件类)
+                   #   terminal.ts     读取 --term-* 变量组装 xterm 调色板
 src-tauri/src/
   ssh.rs           # russh 会话、PTY、输出事件流
   sftp.rs          # SFTP 列目录 + 传输队列(进度事件、重试)
@@ -115,8 +133,10 @@ src-tauri/src/
 前端用例:`pnpm test`(白话识别规则的正反例 —— 中文/英文意图句判为白话,已知命令、
 含管道或选项、路径、环境变量赋值一律判为命令)。
 
-集成自检(`src-tauri/examples/`,均需 `KITE_NO_KEYCHAIN=1` 以跳过系统钥匙串授权框):
+集成自检(`src-tauri/examples/`,除 `rewrap_check` 外均需 `KITE_NO_KEYCHAIN=1` 以跳过系统钥匙串授权框):
 `ssh_check`(真实 SSH 栈 + TOFU)、
+`rewrap_check`(设备密钥迁移:构造钥匙串密钥与历史 `device.key` 并存的库,验证旧密文可经回退解开、
+迁移后改用当前密钥、全部成功才删旧文件、重复执行为空操作;不触碰系统钥匙串,可无人值守跑)、
 `ai_check`(三协议分发:各配一个模型,校验请求打到正确端点、带对应鉴权头、按各自格式解析响应,
 以及命令模式输出收敛与终端上下文注入;需先跑 mock 服务)、
 `sync_check`(四台设备同账户,

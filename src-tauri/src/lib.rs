@@ -7,6 +7,7 @@ mod forward;
 pub mod models;
 mod monitor;
 mod recorder;
+pub mod rewrap;
 mod sftp;
 pub mod ssh;
 pub mod sync;
@@ -28,6 +29,11 @@ pub fn run() {
                 .expect("no app data dir");
             let db = Arc::new(db::Db::open(data_dir).expect("db open failed"));
             let vault = Arc::new(vault::Vault::open(&db.data_dir).expect("vault open failed"));
+            // 存量数据若是用历史 device.key 加密的,这里统一换成当前设备密钥。
+            // 迁移失败不该挡住启动 —— vault 解密本身已经会回退到历史密钥。
+            if let Err(e) = rewrap::run(&db, &vault) {
+                eprintln!("[rewrap] 设备密钥迁移未完成: {e}");
+            }
             let sessions = Arc::new(ssh::SessionManager::default());
             let transfers = Arc::new(sftp::TransferManager::default());
             let forwards = Arc::new(forward::ForwardManager::default());

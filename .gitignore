@@ -6,4 +6,4 @@ src-tauri/gen/
 *.local
 server/target/
 kite-server.db
-design/
+design/tsconfig.tsbuildinfo
