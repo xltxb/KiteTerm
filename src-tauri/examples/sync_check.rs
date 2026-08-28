@@ -53,7 +53,10 @@ async fn main() {
     account::set_platform_url(&db_b, PLATFORM).unwrap();
 
     let email = format!("sync-check-{}@test.local", db_a.device_id());
-    account::register(&db_a, &email, "check-password-123").await.expect("注册");
+    // 注册即返回登录态(平台直接签发令牌);随后各设备各自登录验证多端
+    account::register(&db_a, &v_a, &email, "check-password-123", None)
+        .await
+        .expect("注册");
     let info_a = account::login(&db_a, &v_a, &email, "check-password-123").await.expect("A 登录");
     let info_b = account::login(&db_b, &v_b, &email, "check-password-123").await.expect("B 登录");
     assert_eq!(info_a.id, info_b.id, "同一账户");
@@ -214,12 +217,21 @@ async fn main() {
     std::env::set_var("KITE_COMPACT_MAX_AGE_SECS", "0");
     sync::sync_once(&db_a, &v_a).await.expect("A 压实同步");
     {
-        // 用 root 凭据直查桶:oplog 应已清空、快照存在、manifest 非明文 JSON
+        // 直查桶:oplog 应已清空、快照存在、manifest 非明文 JSON。
+        // 用平台下发给本账户的凭据(与客户端真实视角一致),避免把 MinIO 管理账号写死在测试里
         use s3::creds::Credentials;
         use s3::{Bucket, Region};
-        let region = Region::Custom { region: "us-east-1".into(), endpoint: "http://127.0.0.1:19000".into() };
-        let c = Credentials::new(Some("kitetest"), Some("kitetest-secret-1"), None, None, None).unwrap();
-        let root = Bucket::new(&creds_a.bucket, region, c).unwrap().with_path_style();
+        let cn = account::sync_credentials(&db_a, &v_a).await.expect("凭据");
+        let region = Region::Custom { region: cn.region.clone(), endpoint: cn.endpoint.clone() };
+        let c = Credentials::new(
+            Some(&cn.access_key),
+            Some(&cn.secret_key),
+            cn.session_token.as_deref(),
+            cn.session_token.as_deref(),
+            None,
+        )
+        .unwrap();
+        let root = Bucket::new(&cn.bucket, region, c).unwrap().with_path_style();
         let count = |pages: Vec<s3::serde_types::ListBucketResult>| {
             pages.into_iter().map(|p| p.contents.len()).sum::<usize>()
         };

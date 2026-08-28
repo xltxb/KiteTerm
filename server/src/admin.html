@@ -45,6 +45,11 @@
   .badge .dot{width:6px;height:6px;border-radius:99px;background:currentColor}
   .badge.ok{background:var(--success-s);color:var(--success-t)}
   .badge.off{background:var(--danger-s);color:var(--danger-t)}
+  .seg{display:inline-flex;gap:2px;background:var(--sunken);border:1px solid var(--border-md);border-radius:10px;padding:3px}
+  .seg-item{padding:5px 14px;border-radius:8px;font:600 12.5px var(--sans);color:var(--muted);
+            cursor:pointer;user-select:none;white-space:nowrap;transition:all .14s cubic-bezier(.16,1,.3,1)}
+  .seg-item:hover{color:var(--text)}
+  .seg-item[data-active="true"]{background:var(--card);color:var(--azure-3)}
   .switch{position:relative;width:40px;height:24px;border-radius:99px;background:var(--sunken);
           border:1px solid var(--border-md);cursor:pointer;transition:all .14s;flex:none;padding:0}
   .switch[data-on="true"]{background:var(--azure);border-color:var(--azure)}
@@ -114,6 +119,32 @@
       <div class="card stat"><div class="label">Active Tokens 活跃令牌</div><div class="num" id="st-tokens">—</div><div class="sub">强制下线会吊销该用户全部令牌</div></div>
     </div>
 
+    <!-- 注册策略 -->
+    <div class="card" style="margin-bottom:16px">
+      <div class="toolbar" style="border-bottom:none;flex-wrap:wrap;gap:14px">
+        <span style="font-size:13px;font-weight:700;color:var(--text-strong)">注册策略</span>
+        <div class="seg" id="reg-mode">
+          <div class="seg-item" data-mode="open" onclick="setRegMode('open')">开放注册</div>
+          <div class="seg-item" data-mode="invite" onclick="setRegMode('invite')">仅邀请码</div>
+          <div class="seg-item" data-mode="closed" onclick="setRegMode('closed')">关闭注册</div>
+        </div>
+        <span style="flex:1"></span>
+        <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--muted);cursor:pointer">
+          新用户默认放开同步
+          <button class="switch" id="default-sync" onclick="toggleDefaultSync()"><span class="thumb"></span></button>
+        </label>
+      </div>
+      <div id="invite-section" class="hidden" style="border-top:1px solid var(--border);padding:14px 16px">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+          <input id="inv-note" class="input" style="width:180px" placeholder="备注(可选)">
+          <input id="inv-uses" class="input" style="width:130px" type="number" min="0" placeholder="可用次数 0=不限">
+          <input id="inv-days" class="input" style="width:130px" type="number" min="0" placeholder="有效天数 0=永久">
+          <button class="btn primary" onclick="createInvite()">生成邀请码</button>
+        </div>
+        <div id="invite-list"></div>
+      </div>
+    </div>
+
     <div class="card">
       <div class="toolbar">
         <input id="search" class="input" style="width:260px" placeholder="搜索邮箱 / 用户 ID…" oninput="render()">
@@ -140,6 +171,7 @@
 <script>
 let KEY = localStorage.getItem("kite_admin_key") || "";
 let USERS = [];
+let SETTINGS = { registrationMode: "open", defaultSyncEnabled: true };
 const $ = (id) => document.getElementById(id);
 
 function toast(msg, isErr) {
@@ -195,16 +227,126 @@ function logout() {
 
 async function refresh() {
   try {
-    const [stats, users] = await Promise.all([api("/api/admin/stats"), api("/api/admin/users")]);
+    const [stats, users, settings] = await Promise.all([
+      api("/api/admin/stats"),
+      api("/api/admin/users"),
+      api("/api/admin/settings"),
+    ]);
     $("st-users").textContent = stats.users;
     $("st-enabled").textContent = stats.syncEnabled;
     $("st-tokens").textContent = stats.activeTokens;
     $("st-endpoint").textContent = stats.endpoint;
     $("bucket-info").textContent = "bucket: " + stats.bucket;
     USERS = users.users;
+    SETTINGS = settings;
+    renderSettings();
     render();
+    if (settings.registrationMode === "invite") loadInvites();
   } catch (e) {
     toast("加载失败:" + e.message, true);
+  }
+}
+
+function renderSettings() {
+  document.querySelectorAll("#reg-mode .seg-item").forEach((el) => {
+    el.dataset.active = String(el.dataset.mode === SETTINGS.registrationMode);
+  });
+  $("default-sync").dataset.on = String(!!SETTINGS.defaultSyncEnabled);
+  $("invite-section").classList.toggle("hidden", SETTINGS.registrationMode !== "invite");
+}
+
+async function setRegMode(mode) {
+  try {
+    SETTINGS = await api("/api/admin/settings", {
+      method: "POST",
+      body: JSON.stringify({ registrationMode: mode }),
+    });
+    renderSettings();
+    toast("注册策略已改为:" + ({ open: "开放注册", invite: "仅邀请码", closed: "关闭注册" }[mode]));
+    if (mode === "invite") loadInvites();
+  } catch (e) {
+    toast("设置失败:" + e.message, true);
+  }
+}
+
+async function toggleDefaultSync() {
+  try {
+    SETTINGS = await api("/api/admin/settings", {
+      method: "POST",
+      body: JSON.stringify({ defaultSyncEnabled: !SETTINGS.defaultSyncEnabled }),
+    });
+    renderSettings();
+    toast("新用户默认同步:" + (SETTINGS.defaultSyncEnabled ? "放开" : "停用"));
+  } catch (e) {
+    toast("设置失败:" + e.message, true);
+  }
+}
+
+async function loadInvites() {
+  try {
+    const { invites } = await api("/api/admin/invites");
+    if (!invites.length) {
+      $("invite-list").innerHTML =
+        `<div style="font-size:12.5px;color:var(--faint);padding:6px 2px">还没有邀请码 —— 生成一个发给要加入的用户。</div>`;
+      return;
+    }
+    $("invite-list").innerHTML = invites
+      .map((v) => {
+        const expired = v.expiresAt !== 0 && v.expiresAt * 1000 < Date.now();
+        const exhausted = v.maxUses !== 0 && v.usedCount >= v.maxUses;
+        const dead = v.disabled || expired || exhausted;
+        const state = v.disabled ? "已停用" : expired ? "已过期" : exhausted ? "已用尽" : "可用";
+        return `
+        <div style="display:flex;align-items:center;gap:12px;padding:9px 2px;border-top:1px solid var(--border)">
+          <span style="font-family:var(--mono);font-size:13px;color:${dead ? "var(--faint)" : "var(--text-strong)"};letter-spacing:.04em">${v.code}</span>
+          <span class="badge ${dead ? "off" : "ok"}"><span class="dot"></span>${state}</span>
+          <span style="font-size:12px;color:var(--muted)">${v.usedCount}${v.maxUses ? " / " + v.maxUses : ""} 次</span>
+          <span style="font-size:12px;color:var(--faint)">${v.expiresAt ? "至 " + fmtTime(v.expiresAt) : "永久"}</span>
+          <span style="font-size:12px;color:var(--faint);flex:1">${v.note || ""}</span>
+          <button class="btn ghost" style="height:26px;padding:0 10px;font-size:11.5px" onclick="copyInvite('${v.code}')">复制</button>
+          ${v.disabled ? "" : `<button class="btn danger-ghost" style="height:26px;padding:0 10px;font-size:11.5px" onclick="disableInvite('${v.code}')">停用</button>`}
+        </div>`;
+      })
+      .join("");
+  } catch (e) {
+    toast("邀请码加载失败:" + e.message, true);
+  }
+}
+
+async function createInvite() {
+  try {
+    const r = await api("/api/admin/invites", {
+      method: "POST",
+      body: JSON.stringify({
+        note: $("inv-note").value.trim(),
+        maxUses: Number($("inv-uses").value) || 0,
+        expiresInDays: Number($("inv-days").value) || 0,
+      }),
+    });
+    $("inv-note").value = "";
+    $("inv-uses").value = "";
+    $("inv-days").value = "";
+    await navigator.clipboard.writeText(r.code).catch(() => {});
+    toast("邀请码已生成并复制:" + r.code);
+    loadInvites();
+  } catch (e) {
+    toast("生成失败:" + e.message, true);
+  }
+}
+
+async function copyInvite(code) {
+  await navigator.clipboard.writeText(code).catch(() => {});
+  toast("已复制 " + code);
+}
+
+async function disableInvite(code) {
+  if (!confirm(`停用邀请码 ${code}?已注册的用户不受影响。`)) return;
+  try {
+    await api(`/api/admin/invites/${encodeURIComponent(code)}/disable`, { method: "POST" });
+    toast("已停用 " + code);
+    loadInvites();
+  } catch (e) {
+    toast("停用失败:" + e.message, true);
   }
 }
 

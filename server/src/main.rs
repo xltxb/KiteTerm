@@ -8,13 +8,16 @@
 //!   KITE_LISTEN       默认 127.0.0.1:8787
 //!   KITE_DB           默认 ./kite-server.db
 //!   KITE_ADMIN_KEY    管理接口密钥(必填)
+//!   KITE_REGISTRATION 注册策略初值 open|invite|closed(默认 open;之后以管理后台设置为准)
 //!   S3_ENDPOINT / S3_BUCKET / S3_REGION / S3_ACCESS_KEY / S3_SECRET_KEY
 
+use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 use argon2::password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
-use axum::extract::{Path, State};
+use axum::extract::{ConnectInfo, Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -34,12 +37,22 @@ struct PlatformConfig {
     s3_secret_key: String,
     /// STS 模式:auto(默认,失败回退共享凭据)| require | off
     sts_mode: String,
+    /// 注册策略初值(仅在 DB 尚无设置时生效)
+    registration_default: String,
 }
 
 struct AppState {
     db: Mutex<Connection>,
     cfg: PlatformConfig,
+    /// 注册限流:IP → 最近注册尝试的时间戳(滑动窗口)
+    register_hits: Mutex<HashMap<String, Vec<i64>>>,
 }
+
+/// 注册限流:同一 IP 在窗口内的注册尝试上限(KITE_REGISTER_LIMIT 可调)
+const REGISTER_WINDOW_SECS: i64 = 3600;
+const REGISTER_MAX_PER_WINDOW: usize = 5;
+const PASSWORD_MIN_LEN: usize = 8;
+const PASSWORD_MAX_LEN: usize = 128;
 
 type ApiError = (StatusCode, Json<serde_json::Value>);
 
@@ -53,6 +66,148 @@ fn internal(e: impl std::fmt::Display) -> ApiError {
 
 fn now_ts() -> i64 {
     chrono::Utc::now().timestamp()
+}
+
+// ---- 注册校验 ----
+
+/// 邮箱基本结构校验:单个 @、本地段与域名段非空、域名含点且各段合法、无空白
+fn valid_email(email: &str) -> bool {
+    if email.len() > 254 || email.chars().any(|c| c.is_whitespace()) {
+        return false;
+    }
+    let parts: Vec<&str> = email.split('@').collect();
+    if parts.len() != 2 {
+        return false;
+    }
+    let (local, domain) = (parts[0], parts[1]);
+    if local.is_empty() || local.len() > 64 || domain.is_empty() || domain.len() > 255 {
+        return false;
+    }
+    if !domain.contains('.') {
+        return false;
+    }
+    domain
+        .split('.')
+        .all(|seg| !seg.is_empty() && !seg.starts_with('-') && !seg.ends_with('-')
+            && seg.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+}
+
+/// 口令强度:长度 + 至少两类字符 + 排除常见弱口令。返回 Some(原因) 表示不合格。
+fn password_issue(pw: &str) -> Option<String> {
+    let len = pw.chars().count();
+    if len < PASSWORD_MIN_LEN {
+        return Some(format!("密码至少 {PASSWORD_MIN_LEN} 位"));
+    }
+    if len > PASSWORD_MAX_LEN {
+        return Some(format!("密码最多 {PASSWORD_MAX_LEN} 位"));
+    }
+    let has_letter = pw.chars().any(|c| c.is_alphabetic());
+    let has_digit = pw.chars().any(|c| c.is_numeric());
+    let has_symbol = pw.chars().any(|c| !c.is_alphanumeric() && !c.is_whitespace());
+    let kinds = [has_letter, has_digit, has_symbol].iter().filter(|k| **k).count();
+    if kinds < 2 {
+        return Some("密码需包含字母、数字、符号中的至少两类".into());
+    }
+    if pw.chars().collect::<std::collections::HashSet<_>>().len() < 4 {
+        return Some("密码字符过于单一".into());
+    }
+    const WEAK: &[&str] = &[
+        "password", "password1", "password123", "12345678", "123456789", "1234567890",
+        "qwerty123", "admin123", "abc12345", "iloveyou", "letmein1", "welcome1",
+    ];
+    let lower = pw.to_lowercase();
+    if WEAK.contains(&lower.as_str()) {
+        return Some("密码过于常见,请更换".into());
+    }
+    None
+}
+
+// ---- 平台设置(DB 持久化,管理后台可改)----
+
+fn setting_get(conn: &Connection, key: &str, default: &str) -> String {
+    conn.query_row(
+        "SELECT value FROM platform_settings WHERE key = ?1",
+        [key],
+        |r| r.get::<_, String>(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
+    .unwrap_or_else(|| default.to_string())
+}
+
+fn setting_set(conn: &Connection, key: &str, value: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO platform_settings (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = ?2",
+        params![key, value],
+    )?;
+    Ok(())
+}
+
+/// 客户端 IP:优先反向代理头,回退连接地址
+fn client_ip(headers: &HeaderMap, peer: Option<SocketAddr>) -> String {
+    headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(',').next())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| headers.get("x-real-ip").and_then(|v| v.to_str().ok()).map(String::from))
+        .unwrap_or_else(|| peer.map(|p| p.ip().to_string()).unwrap_or_else(|| "unknown".into()))
+}
+
+fn register_limit() -> usize {
+    std::env::var("KITE_REGISTER_LIMIT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(REGISTER_MAX_PER_WINDOW)
+}
+
+/// 滑动窗口限流;超限返回 false
+fn rate_limit_ok(state: &AppState, ip: &str) -> bool {
+    let now = now_ts();
+    let mut hits = state.register_hits.lock().unwrap();
+    let entry = hits.entry(ip.to_string()).or_default();
+    entry.retain(|t| now - *t < REGISTER_WINDOW_SECS);
+    if entry.len() >= register_limit() {
+        return false;
+    }
+    entry.push(now);
+    // 顺带清理其它 IP 的过期记录,避免无限增长
+    if hits.len() > 1024 {
+        hits.retain(|_, v| {
+            v.retain(|t| now - *t < REGISTER_WINDOW_SECS);
+            !v.is_empty()
+        });
+    }
+    true
+}
+
+fn new_invite_code() -> String {
+    // 去掉易混字符(0/O/1/I/L),便于口头/手抄传达
+    const ALPHABET: &[u8] = b"ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+    let mut raw = [0u8; 12];
+    rand::thread_rng().fill_bytes(&mut raw);
+    let body: String = raw
+        .iter()
+        .map(|b| ALPHABET[*b as usize % ALPHABET.len()] as char)
+        .collect();
+    format!("{}-{}-{}", &body[0..4], &body[4..8], &body[8..12])
+}
+
+/// 签发登录令牌(注册与登录共用)
+fn issue_token(conn: &Connection, user_id: &str) -> Result<(String, i64), ApiError> {
+    let mut raw = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut raw);
+    let token: String = raw.iter().map(|b| format!("{b:02x}")).collect();
+    let expires_at = now_ts() + 30 * 24 * 3600;
+    conn.execute(
+        "INSERT INTO tokens (token, user_id, expires_at) VALUES (?1, ?2, ?3)",
+        params![token, user_id, expires_at],
+    )
+    .map_err(internal)?;
+    Ok((token, expires_at))
 }
 
 // ---- 数据模型 ----
@@ -69,6 +224,9 @@ struct UserOut {
 struct Credentials {
     email: String,
     password: String,
+    /// 仅 invite 模式需要
+    #[serde(default)]
+    invite_code: Option<String>,
 }
 
 struct AuthedUser {
@@ -110,34 +268,121 @@ async fn health() -> Json<serde_json::Value> {
     Json(json!({ "ok": true, "service": "kite-server" }))
 }
 
+/// 公开的注册策略:客户端据此决定是否展示邀请码输入、以及口令规则提示
+async fn register_policy(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let conn = state.db.lock().unwrap();
+    let mode = setting_get(&conn, "registration_mode", &state.cfg.registration_default);
+    Ok(Json(json!({
+        "mode": mode,
+        "passwordMinLength": PASSWORD_MIN_LEN,
+        "passwordRule": "至少 8 位,且包含字母、数字、符号中的至少两类",
+    })))
+}
+
 async fn register(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(body): Json<Credentials>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
+    // 限流放在最前:注册接口会通过 email_taken 泄露邮箱是否已注册,
+    // 必须先压制暴力枚举,再做其余校验
+    let ip = client_ip(&headers, Some(peer));
+    if !rate_limit_ok(&state, &ip) {
+        return Err(err(
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate_limited",
+            "注册过于频繁,请稍后再试",
+        ));
+    }
+
     let email = body.email.trim().to_lowercase();
-    if !email.contains('@') || email.len() < 5 {
+    if !valid_email(&email) {
         return Err(err(StatusCode::BAD_REQUEST, "invalid_email", "邮箱格式不正确"));
     }
-    if body.password.len() < 8 {
-        return Err(err(StatusCode::BAD_REQUEST, "weak_password", "密码至少 8 位"));
+    if let Some(reason) = password_issue(&body.password) {
+        return Err(err(StatusCode::BAD_REQUEST, "weak_password", &reason));
     }
+
+    let conn = state.db.lock().unwrap();
+    let mode = setting_get(&conn, "registration_mode", &state.cfg.registration_default);
+    if mode == "closed" {
+        return Err(err(StatusCode::FORBIDDEN, "registration_closed", "平台当前未开放注册"));
+    }
+
+    // 邀请码:invite 模式必填并校验有效性(未停用 / 未过期 / 未用尽)
+    let invite = body.invite_code.as_deref().map(str::trim).filter(|c| !c.is_empty());
+    if mode == "invite" {
+        let Some(code) = invite else {
+            return Err(err(StatusCode::BAD_REQUEST, "invite_required", "该平台需要邀请码才能注册"));
+        };
+        let row: Option<(i64, i64, i64, i64)> = conn
+            .query_row(
+                "SELECT max_uses, used_count, expires_at, disabled FROM invites WHERE code = ?1",
+                [code],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .optional()
+            .map_err(internal)?;
+        let Some((max_uses, used_count, expires_at, disabled)) = row else {
+            return Err(err(StatusCode::BAD_REQUEST, "invite_invalid", "邀请码无效"));
+        };
+        if disabled != 0 {
+            return Err(err(StatusCode::BAD_REQUEST, "invite_invalid", "邀请码已停用"));
+        }
+        if expires_at != 0 && expires_at < now_ts() {
+            return Err(err(StatusCode::BAD_REQUEST, "invite_expired", "邀请码已过期"));
+        }
+        if max_uses != 0 && used_count >= max_uses {
+            return Err(err(StatusCode::BAD_REQUEST, "invite_exhausted", "邀请码使用次数已用尽"));
+        }
+    }
+
     let salt = SaltString::generate(&mut OsRng);
     let hash = Argon2::default()
         .hash_password(body.password.as_bytes(), &salt)
         .map_err(internal)?
         .to_string();
     let id = uuid::Uuid::new_v4().to_string();
-    let conn = state.db.lock().unwrap();
-    let inserted = conn.execute(
-        "INSERT OR IGNORE INTO users (id, email, password_hash, sync_enabled, created_at)
-         VALUES (?1, ?2, ?3, 1, ?4)",
-        params![id, email, hash, now_ts()],
-    )
-    .map_err(internal)?;
+    let default_sync = setting_get(&conn, "default_sync_enabled", "1");
+    let inserted = conn
+        .execute(
+            "INSERT OR IGNORE INTO users (id, email, password_hash, sync_enabled, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, email, hash, if default_sync == "1" { 1 } else { 0 }, now_ts()],
+        )
+        .map_err(internal)?;
     if inserted == 0 {
         return Err(err(StatusCode::CONFLICT, "email_taken", "该邮箱已注册"));
     }
-    Ok((StatusCode::CREATED, Json(json!({ "userId": id }))))
+
+    // 记账邀请码用量(注册成功后才消费)
+    if mode == "invite" {
+        if let Some(code) = invite {
+            conn.execute("UPDATE invites SET used_count = used_count + 1 WHERE code = ?1", [code])
+                .map_err(internal)?;
+            conn.execute(
+                "INSERT INTO invite_uses (code, user_id, used_at) VALUES (?1, ?2, ?3)",
+                params![code, id, now_ts()],
+            )
+            .map_err(internal)?;
+        }
+    }
+
+    // 注册即登录:直接签发令牌,免去客户端再发一次登录请求
+    let (token, expires_at) = issue_token(&conn, &id)?;
+    let sync_enabled = default_sync == "1";
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({
+            "userId": id,
+            "token": token,
+            "expiresAt": expires_at,
+            "user": { "id": id, "email": email, "syncEnabled": sync_enabled },
+        })),
+    ))
 }
 
 async fn login(
@@ -164,15 +409,7 @@ async fn login(
     {
         return Err(err(StatusCode::UNAUTHORIZED, "bad_credentials", "邮箱或密码错误"));
     }
-    let mut raw = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut raw);
-    let token: String = raw.iter().map(|b| format!("{b:02x}")).collect();
-    let expires_at = now_ts() + 30 * 24 * 3600;
-    conn.execute(
-        "INSERT INTO tokens (token, user_id, expires_at) VALUES (?1, ?2, ?3)",
-        params![token, user_id, expires_at],
-    )
-    .map_err(internal)?;
+    let (token, expires_at) = issue_token(&conn, &user_id)?;
     Ok(Json(json!({
         "token": token,
         "expiresAt": expires_at,
@@ -360,6 +597,130 @@ async fn admin_ui() -> axum::response::Html<&'static str> {
     axum::response::Html(include_str!("admin.html"))
 }
 
+// ---- 注册策略与邀请码(管理接口)----
+
+async fn admin_get_settings(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    require_admin(&state, &headers)?;
+    let conn = state.db.lock().unwrap();
+    Ok(Json(json!({
+        "registrationMode": setting_get(&conn, "registration_mode", &state.cfg.registration_default),
+        "defaultSyncEnabled": setting_get(&conn, "default_sync_enabled", "1") == "1",
+    })))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AdminSettingsBody {
+    registration_mode: Option<String>,
+    default_sync_enabled: Option<bool>,
+}
+
+async fn admin_set_settings(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<AdminSettingsBody>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    require_admin(&state, &headers)?;
+    let conn = state.db.lock().unwrap();
+    if let Some(mode) = body.registration_mode {
+        if !["open", "invite", "closed"].contains(&mode.as_str()) {
+            return Err(err(StatusCode::BAD_REQUEST, "invalid_mode", "注册策略只能是 open/invite/closed"));
+        }
+        setting_set(&conn, "registration_mode", &mode).map_err(internal)?;
+    }
+    if let Some(on) = body.default_sync_enabled {
+        setting_set(&conn, "default_sync_enabled", if on { "1" } else { "0" }).map_err(internal)?;
+    }
+    Ok(Json(json!({
+        "registrationMode": setting_get(&conn, "registration_mode", &state.cfg.registration_default),
+        "defaultSyncEnabled": setting_get(&conn, "default_sync_enabled", "1") == "1",
+    })))
+}
+
+async fn admin_list_invites(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    require_admin(&state, &headers)?;
+    let conn = state.db.lock().unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT code, note, max_uses, used_count, expires_at, disabled, created_at
+             FROM invites ORDER BY created_at DESC",
+        )
+        .map_err(internal)?;
+    let invites: Vec<serde_json::Value> = stmt
+        .query_map([], |r| {
+            Ok(json!({
+                "code": r.get::<_, String>(0)?,
+                "note": r.get::<_, String>(1)?,
+                "maxUses": r.get::<_, i64>(2)?,
+                "usedCount": r.get::<_, i64>(3)?,
+                "expiresAt": r.get::<_, i64>(4)?,
+                "disabled": r.get::<_, i64>(5)? != 0,
+                "createdAt": r.get::<_, i64>(6)?,
+            }))
+        })
+        .map_err(internal)?
+        .collect::<Result<_, _>>()
+        .map_err(internal)?;
+    Ok(Json(json!({ "invites": invites })))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NewInviteBody {
+    #[serde(default)]
+    note: String,
+    /// 0 = 不限次数
+    #[serde(default)]
+    max_uses: i64,
+    /// 0 = 永不过期
+    #[serde(default)]
+    expires_in_days: i64,
+}
+
+async fn admin_create_invite(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<NewInviteBody>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    require_admin(&state, &headers)?;
+    let code = new_invite_code();
+    let expires_at = if body.expires_in_days > 0 {
+        now_ts() + body.expires_in_days * 86400
+    } else {
+        0
+    };
+    let conn = state.db.lock().unwrap();
+    conn.execute(
+        "INSERT INTO invites (code, note, max_uses, used_count, expires_at, disabled, created_at)
+         VALUES (?1, ?2, ?3, 0, ?4, 0, ?5)",
+        params![code, body.note, body.max_uses.max(0), expires_at, now_ts()],
+    )
+    .map_err(internal)?;
+    Ok(Json(json!({ "code": code, "expiresAt": expires_at, "maxUses": body.max_uses.max(0) })))
+}
+
+async fn admin_disable_invite(
+    State(state): State<Arc<AppState>>,
+    Path(code): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    require_admin(&state, &headers)?;
+    let conn = state.db.lock().unwrap();
+    let n = conn
+        .execute("UPDATE invites SET disabled = 1 WHERE code = ?1", [code.trim()])
+        .map_err(internal)?;
+    if n == 0 {
+        return Err(err(StatusCode::NOT_FOUND, "not_found", "邀请码不存在"));
+    }
+    Ok(Json(json!({ "ok": true })))
+}
+
 #[derive(Deserialize)]
 struct AdminSyncBody {
     enabled: bool,
@@ -429,6 +790,10 @@ async fn main() {
         s3_access_key: std::env::var("S3_ACCESS_KEY").expect("必须设置 S3_ACCESS_KEY"),
         s3_secret_key: std::env::var("S3_SECRET_KEY").expect("必须设置 S3_SECRET_KEY"),
         sts_mode: env_or("KITE_STS", "auto"),
+        registration_default: {
+            let m = env_or("KITE_REGISTRATION", "open");
+            if ["open", "invite", "closed"].contains(&m.as_str()) { m } else { "open".into() }
+        },
     };
 
     // 平台负责保证桶存在
@@ -463,21 +828,47 @@ async fn main() {
             user_id TEXT NOT NULL,
             expires_at INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS platform_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS invites (
+            code TEXT PRIMARY KEY,
+            note TEXT NOT NULL DEFAULT '',
+            max_uses INTEGER NOT NULL DEFAULT 0,
+            used_count INTEGER NOT NULL DEFAULT 0,
+            expires_at INTEGER NOT NULL DEFAULT 0,
+            disabled INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS invite_uses (
+            code TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            used_at INTEGER NOT NULL
+        );
         "#,
     )
     .expect("初始化表失败");
 
-    let state = Arc::new(AppState { db: Mutex::new(conn), cfg });
+    let state = Arc::new(AppState {
+        db: Mutex::new(conn),
+        cfg,
+        register_hits: Mutex::new(HashMap::new()),
+    });
     let app = Router::new()
         .route("/", get(admin_ui))
         .route("/admin", get(admin_ui))
         .route("/api/health", get(health))
         .route("/api/register", post(register))
+        .route("/api/register/policy", get(register_policy))
         .route("/api/login", post(login))
         .route("/api/logout", post(logout))
         .route("/api/me", get(me))
         .route("/api/sync/credentials", get(sync_credentials))
         .route("/api/admin/stats", get(admin_stats))
+        .route("/api/admin/settings", get(admin_get_settings).post(admin_set_settings))
+        .route("/api/admin/invites", get(admin_list_invites).post(admin_create_invite))
+        .route("/api/admin/invites/{code}/disable", post(admin_disable_invite))
         .route("/api/admin/users", get(admin_list_users))
         .route("/api/admin/users/{email}/sync", post(admin_set_sync))
         .route("/api/admin/users/{email}/revoke", post(admin_revoke))
@@ -487,5 +878,8 @@ async fn main() {
     let listen = env_or("KITE_LISTEN", "127.0.0.1:8787");
     println!("[server] listening on {listen}");
     let listener = tokio::net::TcpListener::bind(&listen).await.expect("bind 失败");
-    axum::serve(listener, app).await.expect("serve 失败");
+    // 需要 ConnectInfo 才能拿到客户端 IP 做注册限流
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
+        .await
+        .expect("serve 失败");
 }

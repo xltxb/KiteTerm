@@ -108,6 +108,7 @@ pub fn run() {
             commands::settings_get,
             commands::settings_save,
             commands::account_register,
+            commands::account_register_policy,
             commands::account_login,
             commands::account_logout,
             commands::account_current,
