@@ -191,6 +191,8 @@ export interface AppSettings {
   restoreSessions: boolean;
   autoReconnect: boolean;
   confirmOnQuit: boolean;
+  /** 终端里直接输入白话时,自动转交 AI 生成命令 */
+  naturalLanguageInput: boolean;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -201,4 +203,5 @@ export const DEFAULT_SETTINGS: AppSettings = {
   restoreSessions: true,
   autoReconnect: true,
   confirmOnQuit: false,
+  naturalLanguageInput: true,
 };

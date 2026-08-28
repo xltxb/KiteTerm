@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test": "node --experimental-strip-types src/lib/nlDetect.test.ts"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.9.0",

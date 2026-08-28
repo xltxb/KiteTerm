@@ -212,6 +212,13 @@ export function TerminalScreen() {
   const active = sessions.find((s) => s.id === activeId) ?? null;
   const setRightTab = useUiStore((s) => s.setRightTab);
   const explain = useAiStore((s) => s.explain);
+  const pendingAiInput = useSessionStore((s) => s.pendingAiInput);
+  const clearPendingAiInput = useSessionStore((s) => s.clearPendingAiInput);
+  const setNlEnabled = useSessionStore((s) => s.setNlEnabled);
+  const nlSetting = useUiStore((s) => s.settings.naturalLanguageInput);
+
+  // 设置开关同步给终端输入拦截逻辑
+  useEffect(() => { setNlEnabled(nlSetting); }, [nlSetting, setNlEnabled]);
 
   /** 把最近输出交给 AI 解释,并把右栏切到 AI 助手 */
   const explainOutput = () => {
@@ -328,6 +335,13 @@ export function TerminalScreen() {
       <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
         <div style={{ flex: 1, minWidth: 0, position: "relative", background: "#0a0a0b" }}>
           {cmdBarOpen && <AiCommandBar onClose={() => setCmdBarOpen(false)} />}
+          {pendingAiInput && (
+            <AiCommandBar
+              initialRequest={pendingAiInput.text}
+              replaceLineInSession={pendingAiInput.sessionId}
+              onClose={clearPendingAiInput}
+            />
+          )}
           {active ? (
             <>
               <XtermPane sessionId={active.id} />
