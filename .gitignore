@@ -1,9 +1,16 @@
-node_modules/
-dist/
-src-tauri/target/
-src-tauri/gen/
 .DS_Store
 *.local
+
+# 客户端
+node_modules/
+dist/
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
+tsconfig.tsbuildinfo
+
+# 管理系统
 server/target/
 kite-server.db
-design/tsconfig.tsbuildinfo
+
+# 一次性设计产物
+design/
