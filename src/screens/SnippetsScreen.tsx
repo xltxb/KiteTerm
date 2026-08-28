@@ -14,8 +14,8 @@ function SnippetModal({ edit, onClose }: { edit?: Snippet; onClose: () => void }
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h3 style={{ fontSize: 17, marginBottom: 16 }}>{edit ? "编辑片段" : "新建片段"}</h3>
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <h3 className="modal-title">{edit ? "编辑片段" : "新建片段"}</h3>
+        <div className="col gap-14">
           <TextInput label="名称" placeholder="重启网关" value={name} onChange={(e) => setName(e.target.value)} />
           <div>
             <label className="input-label">命令(支持 {"{{cursor}}"} 占位符)</label>
@@ -23,12 +23,12 @@ function SnippetModal({ edit, onClose }: { edit?: Snippet; onClose: () => void }
               value={command}
               onChange={(e) => setCommand(e.target.value)}
               placeholder="pm2 restart gateway"
-              style={{ width: "100%", height: 90, resize: "vertical", background: "var(--surface-sunken)", border: "1px solid var(--border-default)", borderRadius: 10, padding: 10, fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--text-strong)", outline: "none" }}
+              className="textarea"
             />
           </div>
           <TextInput label="标签(逗号分隔)" placeholder="生产, pm2" value={tags} onChange={(e) => setTags(e.target.value)} />
         </div>
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 20 }}>
+        <div className="modal-actions">
           <Button variant="ghost" onClick={onClose}>取消</Button>
           <Button
             variant="primary"
@@ -74,40 +74,40 @@ export function SnippetsScreen() {
 
   return (
     <div className="screen vscroll">
-      <div className="screen-inner" style={{ maxWidth: 960 }}>
+      <div className="screen-inner wide">
         <ScreenHeader eyebrow="SNIPPETS" title="命令片段">
-          <TextInput placeholder="搜索片段…" value={query} onChange={(e) => setQuery(e.target.value)} style={{ width: 220 }} />
+          <TextInput className="search" placeholder="搜索片段…" value={query} onChange={(e) => setQuery(e.target.value)} />
           <Button variant="primary" onClick={() => setShowNew(true)}>新建片段</Button>
         </ScreenHeader>
 
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 14 }}>
+        <div className="grid-2">
           {filtered.map((s) => (
-            <div key={s.id} className="card hover-card" style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 10 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ fontWeight: 700, fontSize: 14, color: "var(--text-strong)", flex: 1 }}>{s.name}</span>
-                <span style={{ fontSize: 11, color: "var(--text-faint)" }}>用过 {s.useCount} 次</span>
+            <div key={s.id} className="card hover-card col gap-10 pad-card">
+              <div className="row gap-8">
+                <span className="grow w-bold fs-md t-strong">{s.name}</span>
+                <span className="fs-xs t-faint">用过 {s.useCount} 次</span>
                 <div
-                  className="hover-row"
+                  className="icon-action sm"
                   onClick={() => setEditSnip(s)}
                   title="编辑"
-                  style={{ padding: 4, borderRadius: 6, cursor: "pointer", color: "var(--text-faint)" }}
                 >
                   <Pencil size={13} />
                 </div>
                 <div
-                  className="hover-row"
+                  className="icon-action sm"
                   onClick={() => { if (confirm(`删除片段「${s.name}」?`)) void deleteSnippet(s.id); }}
-                  style={{ padding: 4, borderRadius: 6, cursor: "pointer", color: "var(--text-faint)" }}
                 >
                   <Trash2 size={13} />
                 </div>
               </div>
-              <div style={{ fontFamily: "var(--font-mono)", fontSize: 12, lineHeight: 1.5, color: "var(--text-body)", background: "var(--surface-sunken)", border: "1px solid var(--border-subtle)", borderRadius: 10, padding: "10px 12px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              <div
+                className="mono fs-sm t-body r-md ellipsis lh-normal bg-sunken bd-subtle p-10"
+              >
                 {s.command}
               </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <div className="row gap-6">
                 {s.tags.map((t) => <span key={t} className="tag-pill">{t}</span>)}
-                <span style={{ flex: 1 }} />
+                <span className="spacer" />
                 <Button
                   variant="ghost"
                   onClick={async () => {
@@ -125,7 +125,7 @@ export function SnippetsScreen() {
         </div>
 
         {filtered.length === 0 && (
-          <div className="card" style={{ padding: "36px 20px", textAlign: "center", color: "var(--text-faint)", fontSize: 13 }}>
+          <div className="card empty-state boxed fs-md">
             没有匹配的片段
           </div>
         )}

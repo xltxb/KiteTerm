@@ -1,0 +1,39 @@
+/* ============================================================
+   Vela — Terminal palette
+   xterm 的配色不能直接吃 CSS 变量,由 src/theme/terminal.ts 在
+   运行时读取这里的值组装成 xterm theme。改配色只改这一处。
+
+   终端画布恒为深色(不随 data-theme 翻转),因此这里只引用与主题
+   无关的原始色阶(--slate-* / --azure-* / --cyan-* / --violet-*),
+   不要引用 --text-strong 之类会随主题变化的语义 token。
+   ============================================================ */
+
+:root {
+  /* 终端画布:比 --surface-sunken 再深一档的近黑,让输出文本浮起来 */
+  --term-bg:        #0a0a0b;
+  --term-fg:        var(--slate-300);
+  --term-cursor:    var(--cyan-400);
+  --term-selection: rgba(59, 110, 246, 0.32);
+
+  /* ANSI 16 色 —— 取自 Vela 色板,避免终端与界面撞色 */
+  --term-black:   var(--slate-900);
+  --term-red:     #ff6259;
+  --term-green:   #2ad07e;
+  --term-yellow:  #ffb648;
+  --term-blue:    var(--azure-400);
+  --term-magenta: var(--violet-400);
+  --term-cyan:    var(--cyan-300);
+  --term-white:   var(--slate-300);
+
+  --term-bright-black:   var(--slate-500);
+  --term-bright-red:     #ff9d97;
+  --term-bright-green:   #7be8b3;
+  --term-bright-yellow:  #ffd391;
+  --term-bright-blue:    var(--azure-300);
+  --term-bright-magenta: var(--violet-300);
+  --term-bright-cyan:    var(--cyan-200);
+  --term-bright-white:   #f4f7fc;
+
+  /* 界面里引用终端语汇的地方(AI 回复里的命令块、录制回放器) */
+  --term-code-fg: var(--cyan-200);
+}

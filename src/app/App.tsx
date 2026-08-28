@@ -77,21 +77,11 @@ export function App() {
   }, [setPalette, go]);
 
   return (
-    <div
-      style={{
-        display: "flex",
-        height: "100vh",
-        overflow: "hidden",
-        fontSize: 14,
-        background: "var(--surface-page)",
-        color: "var(--text-body)",
-        fontFamily: "var(--font-sans)",
-      }}
-    >
+    <div className="app-shell">
       <Sidebar />
-      <main style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+      <main className="app-main">
         {/* 终端界面始终挂载,避免切屏丢失 xterm DOM;其余界面按需渲染 */}
-        <div style={{ display: screen === "terminal" ? "flex" : "none", flexDirection: "column", height: "100%", overflow: "hidden" }}>
+        <div className="screen-slot" data-visible={screen === "terminal" ? "true" : "false"}>
           <TerminalScreen />
         </div>
         {screen === "hosts" && <HostsScreen />}

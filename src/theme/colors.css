@@ -79,6 +79,9 @@
   --surface-raised:  var(--slate-0);
   --surface-inverse: var(--slate-900);
   --surface-overlay: rgba(12, 14, 23, 0.45);
+  /* 悬停垫色:叠加在所在面之上,深浅主题各自朝"更近前景"的方向走。
+     不要拿 --surface-sunken 当悬停色 —— 深色主题里它比卡片更暗,悬停会往下陷。 */
+  --surface-hover:   rgba(16, 24, 48, 0.05);
 
   --border-subtle:   var(--slate-200);
   --border-default:  var(--slate-300);
@@ -125,6 +128,7 @@
   --surface-raised:  #1b2030;
   --surface-inverse: var(--slate-50);
   --surface-overlay: rgba(4, 6, 12, 0.66);
+  --surface-hover:   rgba(255, 255, 255, 0.04);
 
   --border-subtle:   rgba(255, 255, 255, 0.07);
   --border-default:  rgba(255, 255, 255, 0.13);

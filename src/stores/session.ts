@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { Terminal } from "@xterm/xterm";
 import { ipc } from "@/ipc";
 import { looksLikeNaturalLanguage, stripPrompt } from "@/lib/nlDetect";
+import { terminalTheme } from "@/theme/terminal";
 import type { SessionInfo } from "@/types";
 
 /**
@@ -102,17 +103,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       lineHeight: 1.25,
       cursorBlink: true,
       scrollback: 10_000,
-      theme: {
-        background: "#0a0a0b",
-        foreground: "#c4ccda",
-        cursor: "#2dcde6",
-        selectionBackground: "rgba(59,110,246,0.34)",
-        black: "#161a27", red: "#ff6259", green: "#2ad07e", yellow: "#ffb648",
-        blue: "#5e83fb", magenta: "#9f86fc", cyan: "#5fe1f3", white: "#c4ccda",
-        brightBlack: "#5b6478", brightRed: "#ff9d97", brightGreen: "#7be8b3",
-        brightYellow: "#ffd391", brightBlue: "#8facff", brightMagenta: "#c4b6ff",
-        brightCyan: "#93edfb", brightWhite: "#f4f7fc",
-      },
+      theme: terminalTheme(),
     });
     term.onData((data) => {
       // 白话直连:光标行是自然语言而非命令时,拦下回车交给 AI
