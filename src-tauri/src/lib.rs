@@ -1,5 +1,5 @@
 pub mod account;
-mod ai;
+pub mod ai;
 mod commands;
 pub mod db;
 pub mod error;
@@ -114,8 +114,10 @@ pub fn run() {
             commands::account_current,
             commands::platform_url_get,
             commands::platform_url_set,
-            commands::ai_get_config,
-            commands::ai_save_config,
+            commands::ai_get_settings,
+            commands::ai_save_provider,
+            commands::ai_delete_provider,
+            commands::ai_set_active,
             commands::ai_ask,
             commands::restore_targets,
             commands::app_quit,

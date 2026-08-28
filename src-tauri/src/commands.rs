@@ -444,26 +444,45 @@ pub fn platform_url_set(state: State<AppState>, url: String) -> Result<()> {
 // ---- AI 助手 ----
 
 #[tauri::command]
-pub fn ai_get_config(state: State<AppState>) -> Result<crate::ai::AiConfig> {
-    crate::ai::get_config(&state.db)
+pub fn ai_get_settings(state: State<AppState>) -> Result<crate::ai::AiSettings> {
+    crate::ai::get_settings(&state.db)
 }
 
 #[tauri::command]
-pub fn ai_save_config(
+pub fn ai_save_provider(
     state: State<AppState>,
-    model: String,
+    provider: crate::ai::AiProvider,
     api_key: Option<String>,
-) -> Result<()> {
-    crate::ai::save_config(&state.db, &state.vault, model, api_key)
+) -> Result<crate::ai::AiSettings> {
+    crate::ai::save_provider(&state.db, &state.vault, provider, api_key)
 }
 
+#[tauri::command]
+pub fn ai_delete_provider(state: State<AppState>, id: String) -> Result<crate::ai::AiSettings> {
+    crate::ai::delete_provider(&state.db, &id)
+}
+
+#[tauri::command]
+pub fn ai_set_active(state: State<AppState>, id: String) -> Result<crate::ai::AiSettings> {
+    crate::ai::set_active(&state.db, &id)
+}
+
+/// mode: chat(侧栏对话)| explain(解释终端输出)| command(自然语言转命令)
 #[tauri::command]
 pub async fn ai_ask(
     state: State<'_, AppState>,
     messages: Vec<crate::ai::ChatMessage>,
     terminal_context: String,
+    mode: Option<String>,
 ) -> Result<String> {
-    crate::ai::ask(&state.db, &state.vault, messages, terminal_context).await
+    crate::ai::ask(
+        &state.db,
+        &state.vault,
+        messages,
+        terminal_context,
+        mode.as_deref().unwrap_or("chat"),
+    )
+    .await
 }
 
 // ---- 会话恢复 ----

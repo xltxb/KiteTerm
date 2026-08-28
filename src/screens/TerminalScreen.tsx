@@ -6,18 +6,22 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import {
   Circle,
   Lock,
+  MessageCircleQuestion,
   PanelRight,
   Play,
   Plus,
   Search,
+  Sparkles,
   SquareTerminal,
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui";
+import { AiCommandBar } from "@/components/AiCommandBar";
 import { AiDock } from "@/components/AiDock";
 import { CastPlayer } from "@/components/CastPlayer";
+import { useAiStore } from "@/stores/ai";
 import { useDataStore } from "@/stores/data";
-import { getTerminal, useSessionStore } from "@/stores/session";
+import { getTerminal, getTerminalContext, useSessionStore } from "@/stores/session";
 import { useUiStore } from "@/stores/ui";
 import type { Recording } from "@/types";
 
@@ -203,8 +207,19 @@ export function TerminalScreen() {
   const { sessions, activeId, setActive, close, toggleRecording } = useSessionStore();
   const { rightPanelOpen, toggleRightPanel, setPalette, go } = useUiStore();
   const [searchOpen, setSearchOpen] = useState(false);
+  const [cmdBarOpen, setCmdBarOpen] = useState(false);
   const [, forceTick] = useState(0);
   const active = sessions.find((s) => s.id === activeId) ?? null;
+  const setRightTab = useUiStore((s) => s.setRightTab);
+  const explain = useAiStore((s) => s.explain);
+
+  /** 把最近输出交给 AI 解释,并把右栏切到 AI 助手 */
+  const explainOutput = () => {
+    if (!active) return;
+    setRightTab("ai");
+    if (!useUiStore.getState().rightPanelOpen) toggleRightPanel();
+    void explain(getTerminalContext(active.id));
+  };
 
   // REC 计时与延迟展示每秒刷新
   useEffect(() => {
@@ -224,10 +239,19 @@ export function TerminalScreen() {
       } else if (mod && (e.key === "t" || e.key === "T")) {
         e.preventDefault();
         setPalette(true);
+      } else if (mod && e.shiftKey && (e.key === "a" || e.key === "A")) {
+        // ⌘⇧A:自然语言生成命令
+        e.preventDefault();
+        setCmdBarOpen(true);
+      } else if (mod && !e.shiftKey && (e.key === "i" || e.key === "I") && active) {
+        // ⌘I:让 AI 解释最近的终端输出
+        e.preventDefault();
+        explainOutput();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, close, setPalette]);
 
   const dotColor = (state: string, isActive: boolean) =>
@@ -278,6 +302,24 @@ export function TerminalScreen() {
             <Circle size={15} fill={active.recording ? "currentColor" : "none"} />
           </div>
         )}
+        <div
+          onClick={() => setCmdBarOpen(true)}
+          className="hover-row"
+          title="AI 生成命令(⌘⇧A)"
+          style={{ padding: "6px 8px", marginBottom: 4, borderRadius: 8, cursor: "pointer", color: "var(--accent-text)" }}
+        >
+          <Sparkles size={15} />
+        </div>
+        {active && (
+          <div
+            onClick={explainOutput}
+            className="hover-row"
+            title="AI 解释最近输出(⌘I)"
+            style={{ padding: "6px 8px", marginBottom: 4, borderRadius: 8, cursor: "pointer", color: "var(--text-muted)" }}
+          >
+            <MessageCircleQuestion size={15} />
+          </div>
+        )}
         <div onClick={toggleRightPanel} className="hover-row" style={{ padding: "6px 8px", marginBottom: 4, borderRadius: 8, cursor: "pointer", color: "var(--text-muted)" }}>
           <PanelRight size={15} />
         </div>
@@ -285,6 +327,7 @@ export function TerminalScreen() {
 
       <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
         <div style={{ flex: 1, minWidth: 0, position: "relative", background: "#0a0a0b" }}>
+          {cmdBarOpen && <AiCommandBar onClose={() => setCmdBarOpen(false)} />}
           {active ? (
             <>
               <XtermPane sessionId={active.id} />

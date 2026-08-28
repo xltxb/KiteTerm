@@ -89,9 +89,12 @@ export function createTauriIpc(): KiteIpc {
     getSettings: () => invoke("settings_get"),
     saveSettings: (s) => invoke("settings_save", { settings: s }),
 
-    aiGetConfig: () => invoke("ai_get_config"),
-    aiSaveConfig: (model, apiKey) => invoke("ai_save_config", { model, apiKey }),
-    aiAsk: (messages, terminalContext) => invoke("ai_ask", { messages, terminalContext }),
+    aiGetSettings: () => invoke("ai_get_settings"),
+    aiSaveProvider: (provider, apiKey) => invoke("ai_save_provider", { provider, apiKey }),
+    aiDeleteProvider: (id) => invoke("ai_delete_provider", { id }),
+    aiSetActive: (id) => invoke("ai_set_active", { id }),
+    aiAsk: (messages, terminalContext, mode) =>
+      invoke("ai_ask", { messages, terminalContext, mode }),
 
     restoreTargets: () => invoke("restore_targets"),
     appQuit: () => invoke("app_quit"),
