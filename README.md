@@ -3,7 +3,7 @@
 自用优先的桌面 SSH 终端:远程连接、SFTP 传输、密钥管理、端口转发、服务器监控与端到端加密云同步。
 本仓库为《KiteTerm 产品需求与开发文档》与 UI 原型 `design/prototype.html` 的实现(设计系统:Vela Design System;
 原型提供 A 石墨沉浸 / B 命令中心 / C 工作台三个结构方案,已采用 **A**;
-应用图标源见 `design/icon.svg`,由 `pnpm tauri icon design/icon.svg` 生成 `src-tauri/icons/` 全套)。
+应用图标源见 `design/icon.svg`,由 `pnpm tauri icon design/icon.svg` 生成 `desktop/src-tauri/icons/` 全套)。
 
 ## 形态
 
@@ -29,8 +29,11 @@
 
 ## 开发
 
+客户端在 `desktop/`,管理系统在 `server/`,两者互不依赖、各自独立构建。
+根目录只放一层命令转发,下面的 `pnpm` 命令在仓库根和 `desktop/` 里都能跑。
+
 ```bash
-pnpm install
+pnpm install:desktop        # 等价于 pnpm -C desktop install
 
 # 桌面应用(需 Rust 工具链)—— 唯一的运行方式
 pnpm tauri dev
@@ -42,7 +45,7 @@ pnpm tauri build
 KITE_ADMIN_KEY=<管理密钥> \
 S3_ENDPOINT=http://127.0.0.1:19000 S3_BUCKET=vela-sync \
 S3_ACCESS_KEY=<ak> S3_SECRET_KEY=<sk> \
-cargo run --manifest-path server/Cargo.toml
+cargo run --manifest-path server/Cargo.toml   # 或 pnpm server
 # 可选:KITE_REGISTRATION=open|invite|closed 注册策略初值(之后以管理后台设置为准)
 #       KITE_REGISTER_LIMIT=5            同一 IP 每小时注册尝试上限
 # 应用内「同步」页默认平台地址 http://127.0.0.1:8787,可在“平台设置”修改
@@ -60,40 +63,53 @@ cargo run --manifest-path server/Cargo.toml
 >
 > ⚠️ 该开关用的是 `device.key` 文件密钥,**与钥匙串里那把不是同一个**。带开关跑过之后再用
 > 正常版本启动,同一个库里就会混着两批密钥的密文。应用启动时会自动做**设备密钥迁移**
-> (`src-tauri/src/rewrap.rs`):历史 `device.key` 作为解密兜底,把存量密文逐条改用当前设备
+> (`desktop/src-tauri/src/rewrap.rs`):历史 `device.key` 作为解密兜底,把存量密文逐条改用当前设备
 > 密钥重新加密,**全部成功才删除该文件**;有任何一条没搞定就保留文件、下次启动重试。
 > 因此不会再出现「解密失败(设备密钥不匹配?)」。
 
 ## 目录结构
 
+客户端与管理系统是两个顶层目录,零代码共享 —— 只通过 HTTP 接口往来。
+
 ```
-design/            # 一次性设计产物(不入库):UI 原型 prototype.html、应用图标 icon.svg、设计说明 NOTES.md
-src/
-  app.css          # 样式入口 —— 分层导入:token → base → components → utilities
-  app/             # 布局:Sidebar、CommandPalette(⌘K)
-  screens/         # 终端 / 主机 / 传输 / 转发 / 监控 / 密钥 / 片段 / 同步 / 设置
-    terminal/      #   终端屏拆分:XtermPane / SearchBar / AiFab / RightDock
-    hosts/         #   主机屏拆分:HostRow / HostModal / GroupsModal / PasswordModal
-    sync/          #   同步屏拆分:账户 / 范围 / 设备 / 加密 / 恢复短语等卡片
-  components/      # Button、Switch、Badge 等基础组件 + AI 面板(components/ai/)
-  lib/             # 无依赖工具:nlDetect(白话识别)、format(字节/时长格式化)
-  stores/          # ui / data / session / transfer / sync / monitor / ai
-  ipc/             # IPC 契约 + Tauri 实现(桌面端唯一实现)
-  theme/           # 设计系统四层:
-                   #   token      colors / typography / spacing / effects / motion / terminal
-                   #   base.css   reset 与元素默认样式
-                   #   components.css  语义组件类(外壳、卡片、按钮、对话…)
-                   #   utilities.css   排布/字号/颜色工具类(排在最后,可覆盖组件类)
-                   #   terminal.ts     读取 --term-* 变量组装 xterm 调色板
-src-tauri/src/
-  ssh.rs           # russh 会话、PTY、输出事件流
-  sftp.rs          # SFTP 列目录 + 传输队列(进度事件、重试)
-  forward.rs       # L 本地转发 / D 动态 SOCKS5(实时流量统计)
-  vault.rs         # 密钥生成(Ed25519/RSA4096)/导入/指纹,私钥加密落库
-  monitor.rs       # 经 SSH 采样 CPU/MEM/DISK/负载/网络(无需 agent)
-  recorder.rs      # asciicast v2 会话录制
-  sync.rs          # S3 兼容桶 E2E 加密快照同步
-  db.rs            # SQLite 模型(hosts/keys/snippets/forwards/recordings)
+package.json         # 只做命令转发(pnpm dev/build/tauri/test → desktop,pnpm server → server)
+design/              # 一次性设计产物(不入库):原型 prototype.html、图标 icon.svg、说明 NOTES.md
+
+desktop/                    ── 客户端(macOS / Windows 桌面端)
+  src/
+    app.css                 样式入口 —— 分层导入:token → base → components → utilities
+    app/                    布局:Sidebar、CommandPalette(⌘K)
+    screens/                终端 / 主机 / 传输 / 转发 / 监控 / 密钥 / 片段 / 同步 / 设置
+      terminal/               终端屏拆分:XtermPane / SearchBar / AiFab / RightDock
+      hosts/                  主机屏拆分:HostRow / HostModal / GroupsModal / PasswordModal
+      sync/                   同步屏拆分:账户 / 范围 / 设备 / 加密 / 恢复短语等卡片
+    components/             Button、Switch、Badge 等基础组件 + AI 面板(components/ai/)
+    lib/                    无依赖工具:nlDetect(白话识别)、format(字节/时长格式化)
+    stores/                 ui / data / session / transfer / sync / monitor / ai
+    ipc/                    IPC 契约 + Tauri 实现(桌面端唯一实现)
+    theme/                  设计系统四层:
+                              token           colors / typography / spacing / effects / motion / terminal
+                              base.css        reset 与元素默认样式
+                              components.css  语义组件类(外壳、卡片、按钮、对话…)
+                              utilities.css   排布/字号/颜色工具类(排在最后,可覆盖组件类)
+                              terminal.ts     读取 --term-* 变量组装 xterm 调色板
+  src-tauri/
+    src/ssh.rs              russh 会话、PTY、输出事件流
+    src/sftp.rs             SFTP 列目录 + 传输队列(进度事件、重试)
+    src/forward.rs          L 本地转发 / D 动态 SOCKS5(实时流量统计)
+    src/vault.rs            密钥生成(Ed25519/RSA4096)/导入/指纹,私钥经设备密钥加密落库
+    src/rewrap.rs           设备密钥迁移:历史 device.key 加密的存量数据换用当前密钥
+    src/monitor.rs          经 SSH 采样 CPU/MEM/DISK/负载/网络(无需 agent)
+    src/recorder.rs         asciicast v2 会话录制
+    src/sync.rs             S3 兼容桶 E2E 加密增量同步
+    src/db.rs               SQLite 模型(hosts/keys/snippets/forwards/recordings)
+    examples/               集成自检(见文末)
+
+server/                     ── 管理系统(Web)
+  Cargo.toml                独立 crate,与客户端零代码共享
+  src/main.rs               axum:账户注册/登录、注册策略与邀请码、令牌、同步授权、S3 凭据下发
+  src/sts.rs                STS AssumeRole(手写 SigV4),按用户前缀下发限权临时凭据
+  src/admin.html            内嵌 Web 管理控制台(include_str!,随二进制分发)
 ```
 
 ## 功能对照(PRD F1–F10)
@@ -133,8 +149,11 @@ src-tauri/src/
 前端用例:`pnpm test`(白话识别规则的正反例 —— 中文/英文意图句判为白话,已知命令、
 含管道或选项、路径、环境变量赋值一律判为命令)。
 
-集成自检(`src-tauri/examples/`,除 `rewrap_check` 外均需 `KITE_NO_KEYCHAIN=1` 以跳过系统钥匙串授权框):
-`ssh_check`(真实 SSH 栈 + TOFU)、
+集成自检(`desktop/src-tauri/examples/`)。`ai_check` / `sync_check` 用独立临时目录,加
+`KITE_NO_KEYCHAIN=1` 跳过钥匙串授权框;`ssh_check` 读真实应用数据目录,必须与应用同一把
+设备密钥,**不能加**该开关(每次重编译会弹一次授权框);`rewrap_check` 自带两种模式,无所谓。
+
+`ssh_check`(真实 SSH 栈 + TOFU;需先跑 `seed`)、
 `rewrap_check`(设备密钥迁移:构造钥匙串密钥与历史 `device.key` 并存的库,验证旧密文可经回退解开、
 迁移后改用当前密钥、全部成功才删旧文件、重复执行为空操作;不触碰系统钥匙串,可无人值守跑)、
 `ai_check`(三协议分发:各配一个模型,校验请求打到正确端点、带对应鉴权头、按各自格式解析响应,

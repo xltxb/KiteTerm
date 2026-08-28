@@ -1,32 +1,14 @@
 {
-  "name": "kite-term",
+  "name": "kiteterm",
   "private": true,
   "version": "0.1.0",
-  "type": "module",
+  "description": "KiteTerm — 桌面端 SSH 终端(desktop/)与管理系统(server/)",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && vite build",
-    "tauri": "tauri",
-    "test": "node --experimental-strip-types src/lib/nlDetect.test.ts"
-  },
-  "dependencies": {
-    "@tauri-apps/api": "^2.9.0",
-    "@tauri-apps/plugin-dialog": "^2.4.2",
-    "@xterm/addon-fit": "^0.10.0",
-    "@xterm/addon-search": "^0.15.0",
-    "@xterm/addon-webgl": "^0.18.0",
-    "@xterm/xterm": "^5.5.0",
-    "lucide-react": "^0.462.0",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "zustand": "^5.0.8"
-  },
-  "devDependencies": {
-    "@tauri-apps/cli": "^2.9.6",
-    "@types/react": "^18.3.12",
-    "@types/react-dom": "^18.3.1",
-    "@vitejs/plugin-react": "^4.3.4",
-    "typescript": "^5.6.3",
-    "vite": "^6.0.3"
+    "install:desktop": "pnpm -C desktop install",
+    "dev": "pnpm -C desktop dev",
+    "build": "pnpm -C desktop build",
+    "tauri": "pnpm -C desktop tauri",
+    "test": "pnpm -C desktop test",
+    "server": "cargo run --manifest-path server/Cargo.toml"
   }
 }
