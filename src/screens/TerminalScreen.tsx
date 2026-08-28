@@ -21,7 +21,12 @@ import { AiDock } from "@/components/AiDock";
 import { CastPlayer } from "@/components/CastPlayer";
 import { useAiStore } from "@/stores/ai";
 import { useDataStore } from "@/stores/data";
-import { getTerminal, getTerminalContext, useSessionStore } from "@/stores/session";
+import {
+  getTerminal,
+  getTerminalContext,
+  readCurrentInputLine,
+  useSessionStore,
+} from "@/stores/session";
 import { useUiStore } from "@/stores/ui";
 import type { Recording } from "@/types";
 
@@ -85,6 +90,68 @@ function XtermPane({ sessionId }: { sessionId: string }) {
   }, [sessionId, settings.terminalFontSize, settings.cursorBlink]);
 
   return <div ref={ref} className="vterm" style={{ position: "absolute", inset: 0, padding: "10px 4px 4px 14px", background: "#0a0a0b" }} />;
+}
+
+/**
+ * 终端内的 AI 触发按钮 —— 贴着输入区右下角悬浮。
+ * 当前行已经打了字就把那行交给 AI 翻译,空行则打开空的命令栏。
+ */
+function AiFab({ sessionId, onOpenEmpty }: { sessionId: string; onOpenEmpty: () => void }) {
+  const [hover, setHover] = useState(false);
+  const [hasText, setHasText] = useState(false);
+
+  // 悬停时才读当前行,决定提示文案(读 buffer 很轻量,但没必要每帧做)
+  const refresh = () => setHasText(readCurrentInputLine(sessionId).trim().length > 0);
+
+  const trigger = () => {
+    const line = readCurrentInputLine(sessionId).trim();
+    if (line) {
+      // 复用白话直连的流程:自动翻译并在采纳后替换该行
+      useSessionStore.setState({
+        pendingAiInput: { sessionId, text: line.replace(/^\?\s*/, "") },
+      });
+    } else {
+      onOpenEmpty();
+    }
+  };
+
+  return (
+    <div
+      onClick={trigger}
+      onMouseEnter={() => { setHover(true); refresh(); }}
+      onMouseLeave={() => setHover(false)}
+      title={hasText ? "把当前这行交给 AI(⌘⇧A)" : "用一句话让 AI 生成命令(⌘⇧A)"}
+      style={{
+        position: "absolute",
+        right: 16,
+        bottom: 14,
+        zIndex: 12,
+        height: 32,
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+        padding: hover ? "0 12px" : 0,
+        width: hover ? "auto" : 32,
+        justifyContent: "center",
+        borderRadius: 99,
+        cursor: "pointer",
+        color: hover ? "var(--text-on-accent)" : "var(--accent-text)",
+        background: hover ? "var(--accent)" : "var(--accent-subtle)",
+        border: `1px solid ${hover ? "var(--accent)" : "var(--accent-subtle-border)"}`,
+        boxShadow: hover ? "var(--glow-sm)" : "none",
+        transition: "var(--transition-colors), padding 140ms var(--ease-out)",
+        userSelect: "none",
+        whiteSpace: "nowrap",
+      }}
+    >
+      <Sparkles size={15} style={{ flex: "none" }} />
+      {hover && (
+        <span style={{ fontSize: 12, fontWeight: 600 }}>
+          {hasText ? "交给 AI" : "AI 生成命令"}
+        </span>
+      )}
+    </div>
+  );
 }
 
 function SearchBar({ sessionId, onClose }: { sessionId: string; onClose: () => void }) {
@@ -346,6 +413,7 @@ export function TerminalScreen() {
             <>
               <XtermPane sessionId={active.id} />
               {searchOpen && <SearchBar sessionId={active.id} onClose={() => setSearchOpen(false)} />}
+              <AiFab sessionId={active.id} onOpenEmpty={() => setCmdBarOpen(true)} />
             </>
           ) : (
             <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 14, color: "var(--text-faint)" }}>
