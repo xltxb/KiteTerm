@@ -147,6 +147,14 @@ impl Db {
         Ok(())
     }
 
+    /// 按前缀列出 kv 的键(设备密钥迁移时用来找出所有 `ai_key_*` 密文)
+    pub fn kv_keys_with_prefix(&self, prefix: &str) -> Result<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT key FROM kv WHERE key LIKE ?1 || '%'")?;
+        let rows = stmt.query_map([prefix], |r| r.get::<_, String>(0))?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
     pub fn kv_set(&self, key: &str, value: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -420,6 +428,13 @@ impl Db {
             [id],
             |r| r.get(0),
         )?)
+    }
+
+    /// 只换私钥密文,不动其它列 —— 设备密钥迁移时重新加密用
+    pub fn set_key_private_enc(&self, id: &str, blob: &[u8]) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("UPDATE keys SET private_key_enc = ?2 WHERE id = ?1", params![id, blob])?;
+        Ok(())
     }
 
     pub fn get_key_public(&self, id: &str) -> Result<String> {
