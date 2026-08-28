@@ -25,16 +25,35 @@ class H(BaseHTTPRequestHandler):
         }
         LOG.append(entry)
 
+        # 模型 id 用作场景开关,便于构造各种"拿不到正文"的真实响应形态
+        scenario = body.get("model", "")
+
         if self.path == "/v1/messages":  # anthropic
-            # 回一条带代码块的文本,验证前端代码块渲染路径
-            resp = {
-                "content": [{"type": "text", "text": "ANTHROPIC_OK\n```\nlsof -i :8080\n```"}],
-                "stop_reason": "end_turn",
-            }
+            if scenario == "only-thinking":
+                # 思考型模型把额度用光,只剩 thinking 块
+                resp = {"content": [{"type": "thinking", "thinking": "…"}], "stop_reason": "max_tokens"}
+            else:
+                # 回一条带代码块的文本,验证前端代码块渲染路径
+                resp = {
+                    "content": [{"type": "text", "text": "ANTHROPIC_OK\n```\nlsof -i :8080\n```"}],
+                    "stop_reason": "end_turn",
+                }
         elif self.path == "/v1/chat/completions":  # openai 兼容
-            resp = {"choices": [{"message": {"role": "assistant", "content": "OPENAI_OK"}}]}
+            if scenario == "array-content":  # 多模态数组形式
+                resp = {"choices": [{"message": {"content": [{"type": "text", "text": "OPENAI_OK"}]}}]}
+            elif scenario == "reasoning":  # 推理模型:content 为 null
+                resp = {"choices": [{"message": {"content": None, "reasoning_content": "OPENAI_OK"}}]}
+            elif scenario == "legacy":  # 旧 completions 风格
+                resp = {"choices": [{"text": "OPENAI_OK"}]}
+            elif scenario == "truncated":
+                resp = {"choices": [{"message": {"content": ""}, "finish_reason": "length"}]}
+            else:
+                resp = {"choices": [{"message": {"role": "assistant", "content": "OPENAI_OK"}}]}
         elif self.path == "/api/chat":  # ollama
-            resp = {"message": {"role": "assistant", "content": "OLLAMA_OK"}}
+            if scenario == "generate-style":
+                resp = {"response": "OLLAMA_OK"}
+            else:
+                resp = {"message": {"role": "assistant", "content": "OLLAMA_OK"}}
         elif self.path == "/__log":
             resp = LOG
         else:

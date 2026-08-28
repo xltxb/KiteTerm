@@ -127,5 +127,96 @@ async fn main() {
     assert!(after.providers.iter().all(|p| p.id != openai_id));
     println!("step6 模型删除 OK");
 
+    // 7) 响应形态兼容:曾经报「模型未返回文本内容」的几种真实形态都要能取出正文
+    let with_model = |name: &str, protocol: &str, model: &str| {
+        ai::save_provider(
+            &db,
+            &vault,
+            AiProvider {
+                id: String::new(),
+                name: name.into(),
+                protocol: protocol.into(),
+                base_url: MOCK.into(),
+                model: model.into(),
+                has_key: false,
+            },
+            Some("k".into()),
+        )
+        .unwrap();
+        ai::get_settings(&db).unwrap().providers.into_iter().find(|p| p.name == name).unwrap().id
+    };
+
+    for (name, model) in [
+        ("多模态数组", "array-content"),
+        ("推理模型", "reasoning"),
+        ("旧式补全", "legacy"),
+    ] {
+        let id = with_model(name, "openai", model);
+        ai::set_active(&db, &id).unwrap();
+        let r = ai::ask(&db, &vault, user("hi"), String::new(), "chat")
+            .await
+            .unwrap_or_else(|e| panic!("{name} 应能解析出正文: {e}"));
+        assert_eq!(r, "OPENAI_OK", "{name} 的正文提取不正确");
+    }
+    let id = with_model("Ollama generate", "ollama", "generate-style");
+    ai::set_active(&db, &id).unwrap();
+    let r = ai::ask(&db, &vault, user("hi"), String::new(), "chat").await.expect("ollama response 字段");
+    assert_eq!(r, "OLLAMA_OK");
+    println!("step7 响应形态兼容 OK");
+
+    // 8) 拿不到正文时,错误信息要能指出原因而不是一句空话
+    let id = with_model("只思考", "anthropic", "only-thinking");
+    ai::set_active(&db, &id).unwrap();
+    let err = ai::ask(&db, &vault, user("hi"), String::new(), "command")
+        .await
+        .expect_err("只有思考块应报错");
+    let msg = err.to_string();
+    assert!(msg.contains("思考") && msg.contains("max_tokens"), "错误应说明原因,实际: {msg}");
+
+    let id = with_model("被截断", "openai", "truncated");
+    ai::set_active(&db, &id).unwrap();
+    let err = ai::ask(&db, &vault, user("hi"), String::new(), "chat")
+        .await
+        .expect_err("空正文应报错");
+    assert!(err.to_string().contains("长度上限"), "错误应说明被截断,实际: {err}");
+    println!("step8 空正文的错误诊断 OK");
+
+    // 9) 接口地址规整:带 /v1 后缀会被去掉,避免拼成 /v1/v1/...
+    ai::save_provider(
+        &db,
+        &vault,
+        AiProvider {
+            id: String::new(),
+            name: "带 v1 后缀".into(),
+            protocol: "openai".into(),
+            base_url: format!("{MOCK}/v1/"),
+            model: "gpt-4o".into(),
+            has_key: false,
+        },
+        Some("k".into()),
+    )
+    .unwrap();
+    let p = ai::get_settings(&db).unwrap().providers.into_iter().find(|p| p.name == "带 v1 后缀").unwrap();
+    assert_eq!(p.base_url, MOCK, "末尾 /v1 应被规整掉");
+    ai::set_active(&db, &p.id).unwrap();
+    let r = ai::ask(&db, &vault, user("hi"), String::new(), "chat").await.expect("规整后应可用");
+    assert_eq!(r, "OPENAI_OK");
+
+    let bad = ai::save_provider(
+        &db,
+        &vault,
+        AiProvider {
+            id: String::new(),
+            name: "缺协议头".into(),
+            protocol: "openai".into(),
+            base_url: "api.example.com".into(),
+            model: "m".into(),
+            has_key: false,
+        },
+        None,
+    );
+    assert!(bad.is_err(), "缺少 http(s):// 应被拒绝");
+    println!("step9 接口地址规整 OK");
+
     println!("AI_CHECK_PASS");
 }
