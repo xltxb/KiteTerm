@@ -129,19 +129,6 @@ export function Sidebar() {
         label={dark ? "切换浅色" : "切换深色"}
         onClick={() => setSettings({ theme: dark ? "light" : "dark" })}
       />
-
-      <div
-        className={collapsed ? "row jcenter gap-10 bd-top" : "row gap-10 bd-top"}
-        style={{ margin: "8px 4px 4px 4px", paddingTop: 12 }}
-      >
-        <div className="avatar">L</div>
-        {!collapsed && (
-          <div className="col lh-tight">
-            <span className="fs-md w-semi t-strong">Lin</span>
-            <span className="fs-xs t-faint">Pro 工作区</span>
-          </div>
-        )}
-      </div>
     </aside>
   );
 }
