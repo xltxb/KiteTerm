@@ -415,19 +415,6 @@
   color: var(--text-faint);
 }
 
-.avatar {
-  width: 30px;
-  height: 30px;
-  flex: none;
-  border-radius: 99px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--accent-subtle);
-  color: var(--accent-text);
-  font-weight: var(--weight-bold);
-  font-size: 13px;
-}
 
 /* ---- 终端画布 ---- */
 /* 终端 + 右栏的横向容器:两栏等高,交给内部自己滚。
