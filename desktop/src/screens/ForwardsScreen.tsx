@@ -4,6 +4,7 @@ import { Button, ScreenHeader, Segmented, Switch, TextInput } from "@/components
 import { fmtBytes } from "@/lib/format";
 import { useDataStore } from "@/stores/data";
 import type { ForwardRule, ForwardType } from "@/types";
+import { confirmAction } from "@/lib/dialog";
 
 function ruleText(f: ForwardRule): string {
   if (f.type === "D") return `SOCKS5 · localhost:${f.localPort}`;
@@ -86,7 +87,7 @@ export function ForwardsScreen() {
               <Switch on={f.enabled} onChange={(on) => void toggleForward(f.id, on)} />
               <div
                 className="icon-btn sm plain"
-                onClick={() => { if (confirm("删除该转发规则?")) void deleteForward(f.id); }}
+                onClick={async () => { if (await confirmAction("删除该转发规则?", "删除转发规则")) await deleteForward(f.id); }}
               >
                 <Trash2 size={15} />
               </div>

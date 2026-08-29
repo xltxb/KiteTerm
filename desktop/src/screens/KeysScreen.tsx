@@ -3,6 +3,7 @@ import { KeyRound, Lock, ShieldCheck, Trash2 } from "lucide-react";
 import { Badge, Button, ScreenHeader, Segmented, TextInput } from "@/components/ui";
 import { useDataStore } from "@/stores/data";
 import { ipc } from "@/ipc";
+import { confirmAction } from "@/lib/dialog";
 
 function GenerateModal({ onClose }: { onClose: () => void }) {
   const generateKey = useDataStore((s) => s.generateKey);
@@ -142,7 +143,7 @@ export function KeysScreen() {
               </Button>
               <div
                 className="icon-btn sm plain"
-                onClick={() => { if (confirm(`删除密钥 ${k.name}?此操作不可恢复。`)) void deleteKey(k.id); }}
+                onClick={async () => { if (await confirmAction(`删除密钥 ${k.name}?此操作不可恢复。`, "删除密钥")) await deleteKey(k.id); }}
               >
                 <Trash2 size={16} />
               </div>

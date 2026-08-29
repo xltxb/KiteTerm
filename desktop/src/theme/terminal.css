@@ -3,19 +3,50 @@
    xterm 的配色不能直接吃 CSS 变量,由 src/theme/terminal.ts 在
    运行时读取这里的值组装成 xterm theme。改配色只改这一处。
 
-   终端画布恒为深色(不随 data-theme 翻转),因此这里只引用与主题
-   无关的原始色阶(--slate-* / --azure-* / --cyan-* / --violet-*),
-   不要引用 --text-strong 之类会随主题变化的语义 token。
+   终端跟随 data-theme:下面 :root 是浅色一档,[data-theme="dark"] 覆盖成深色。
+   两档都写死取值(而不是引用 --text-* 这类语义 token),因为 ANSI 十六色在深浅
+   底色上要各自挑一遍 —— 深色档那些亮色(#7be8b3 之类)放到白底上根本看不清。
+
+   xterm 的 theme 是创建时快照的,切主题后必须对已存在的实例重新 setOption,
+   见 stores/session.ts 的 retheme()。
    ============================================================ */
 
 :root {
-  /* 终端画布:比 --surface-sunken 再深一档的近黑,让输出文本浮起来 */
+  /* ---- 浅色:纸感底色 + 深色文本。ANSI 取各色的深档,保证白底可读 ---- */
+  --term-bg:        #fbfcfe;
+  --term-fg:        var(--slate-800);
+  --term-cursor:    var(--azure-600);
+  --term-selection: rgba(59, 110, 246, 0.20);
+
+  --term-black:   var(--slate-900);
+  --term-red:     #c62f26;
+  --term-green:   #0c7344;
+  --term-yellow:  #96600a;
+  --term-blue:    var(--azure-600);
+  --term-magenta: var(--violet-600);
+  --term-cyan:    var(--cyan-700);
+  --term-white:   var(--slate-400);
+
+  --term-bright-black:   var(--slate-600);
+  --term-bright-red:     #e04036;
+  --term-bright-green:   #0f9355;
+  --term-bright-yellow:  #b8781a;
+  --term-bright-blue:    var(--azure-500);
+  --term-bright-magenta: var(--violet-500);
+  --term-bright-cyan:    var(--cyan-600);
+  --term-bright-white:   var(--slate-200);
+
+  /* 界面里引用终端语汇的地方(AI 回复里的命令块、录制回放器) */
+  --term-code-fg: var(--cyan-800);
+}
+
+[data-theme="dark"] {
+  /* ---- 深色:比 --surface-sunken 再深一档的近黑,让输出文本浮起来 ---- */
   --term-bg:        #0a0a0b;
   --term-fg:        var(--slate-300);
   --term-cursor:    var(--cyan-400);
   --term-selection: rgba(59, 110, 246, 0.32);
 
-  /* ANSI 16 色 —— 取自 Vela 色板,避免终端与界面撞色 */
   --term-black:   var(--slate-900);
   --term-red:     #ff6259;
   --term-green:   #2ad07e;
@@ -34,6 +65,5 @@
   --term-bright-cyan:    var(--cyan-200);
   --term-bright-white:   #f4f7fc;
 
-  /* 界面里引用终端语汇的地方(AI 回复里的命令块、录制回放器) */
   --term-code-fg: var(--cyan-200);
 }

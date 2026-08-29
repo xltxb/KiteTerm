@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { ipc } from "@/ipc";
+import { retheme } from "@/stores/session";
 import { DEFAULT_SETTINGS, type AppSettings, type Screen } from "@/types";
 
 interface UiState {
@@ -20,6 +21,9 @@ interface UiState {
 
 function applyTheme(theme: "dark" | "light") {
   document.documentElement.setAttribute("data-theme", theme);
+  // 终端的配色是创建时快照的,不会跟着 data-theme 走 —— 属性落到 DOM 之后
+  // 立刻把存活的实例重新上色(此时 getComputedStyle 才拿得到新一档的值)
+  retheme();
 }
 
 export const useUiStore = create<UiState>((set, get) => ({

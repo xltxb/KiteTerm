@@ -16,6 +16,7 @@ import { useFeaturesStore } from "@/stores/features";
 import { useSessionStore } from "@/stores/session";
 import { useSyncStore } from "@/stores/sync";
 import { useUiStore } from "@/stores/ui";
+import { confirmAction } from "@/lib/dialog";
 
 export function App() {
   const { screen, setPalette, loadSettings, go } = useUiStore();
@@ -48,9 +49,9 @@ export function App() {
 
     // 退出前确认(后端拦截 CloseRequested 后询问)
     return ipc.onCloseRequested((n) => {
-      if (window.confirm(`还有 ${n} 个会话打开中,确认退出 KiteTerm?`)) {
-        void ipc.appQuit();
-      }
+      void confirmAction(`还有 ${n} 个会话打开中,确认退出 KiteTerm?`, "退出确认").then((ok) => {
+        if (ok) void ipc.appQuit();
+      });
     });
   }, [loadSettings, load, loadSync, loadFeatures]);
 
