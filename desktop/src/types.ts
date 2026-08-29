@@ -161,10 +161,15 @@ export interface AiSettings {
 export type AiMode = "chat" | "explain" | "command";
 
 /** 管理平台账户 */
-/** 管理平台下发的功能开关。known=false 表示从未成功拉到过 —— 此时一律全关。 */
+/** 管理平台下发的功能开关。
+ *
+ *  `enforced` 是门禁总闸(平台的 KITE_FEATURE_GATING),false 时下面三项恒为 true。
+ *  `known=false` 表示从未成功拉到过 —— 此时按未启用门禁处理,不限制任何功能。 */
 export interface Features {
-  /** 注册策略:open | invite | closed */
+  /** 注册策略:open | invite | closed。与门禁总闸无关,始终由平台准入政策决定 */
   registration: string;
+  /** 平台是否启用了功能门禁 */
+  enforced: boolean;
   login: boolean;
   sync: boolean;
   ai: boolean;

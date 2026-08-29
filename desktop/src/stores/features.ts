@@ -2,12 +2,14 @@ import { create } from "zustand";
 import { ipc } from "@/ipc";
 import type { Features } from "@/types";
 
-/** 从未拉到过时的兜底:全关。与 Rust 侧 Features::unknown 保持一致。 */
+/** 从未拉到过时的兜底:按未启用门禁处理,不限制任何功能。
+ *  与 Rust 侧 Features::unknown 保持一致。 */
 const UNKNOWN: Features = {
-  registration: "closed",
-  login: false,
-  sync: false,
-  ai: false,
+  registration: "open",
+  enforced: false,
+  login: true,
+  sync: true,
+  ai: true,
   passwordMinLength: 8,
   passwordRule: "",
   known: false,

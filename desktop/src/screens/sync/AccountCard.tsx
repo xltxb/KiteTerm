@@ -84,9 +84,7 @@ export function AccountCard() {
 
       {!loginOn && !registerOn && (
         <div className="alert alert-warning mb-12">
-          {features.known
-            ? "该平台已同时关闭登录与注册,请联系管理员。"
-            : "尚未连上管理平台 —— 在「设置 → 管理平台」填好地址后再试。"}
+          该平台已同时关闭登录与注册,请联系管理员。
         </div>
       )}
       {registerClosed && (
