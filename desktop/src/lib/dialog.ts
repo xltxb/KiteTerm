@@ -8,7 +8,7 @@
  *
  *  这里统一走 tauri-plugin-dialog 的原生对话框(Rust 侧 rfd 实现,与 WebView 无关)。
  *  代价是异步 —— 调用点需要 await。 */
-import { confirm as tauriConfirm, message as tauriMessage } from "@tauri-apps/plugin-dialog";
+import { confirm as tauriConfirm, message as tauriMessage, open as tauriOpen } from "@tauri-apps/plugin-dialog";
 
 /** 危险操作确认。确认返回 true,取消返回 false。 */
 export async function confirmAction(text: string, title = "请确认"): Promise<boolean> {
@@ -18,4 +18,10 @@ export async function confirmAction(text: string, title = "请确认"): Promise<
 /** 错误提示 */
 export async function showError(text: string, title = "出错了"): Promise<void> {
   await tauriMessage(text, { title, kind: "error" });
+}
+
+/** 选择一个本地目录。取消返回 null。 */
+export async function pickDirectory(defaultPath?: string): Promise<string | null> {
+  const picked = await tauriOpen({ directory: true, multiple: false, defaultPath });
+  return typeof picked === "string" ? picked : null;
 }
