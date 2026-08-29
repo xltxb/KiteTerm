@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Check, Pencil, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui";
 import { useDataStore } from "@/stores/data";
+import { confirmAction } from "@/lib/dialog";
 
 /** 分组管理:新建 / 重命名 / 删除(删除时组内主机迁到其他分组) */
 export function GroupsModal({ onClose }: { onClose: () => void }) {
@@ -76,12 +77,12 @@ export function GroupsModal({ onClose }: { onClose: () => void }) {
                     <Pencil size={14} />
                   </div>
                   <div
-                    onClick={() => {
+                    onClick={async () => {
                       const n = hostCount(g.id);
                       const msg = n > 0
                         ? `删除分组「${g.name}」?组内 ${n} 台主机会迁移到其他分组(不会被删除)。`
                         : `删除分组「${g.name}」?`;
-                      if (confirm(msg)) void run(() => deleteGroup(g.id));
+                      if (await confirmAction(msg, "删除分组")) void run(() => deleteGroup(g.id));
                     }}
                     title="删除"
                     className="icon-btn sm plain"

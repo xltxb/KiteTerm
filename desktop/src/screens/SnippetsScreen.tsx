@@ -5,6 +5,7 @@ import { useDataStore } from "@/stores/data";
 import { useSessionStore } from "@/stores/session";
 import { useUiStore } from "@/stores/ui";
 import type { Snippet } from "@/types";
+import { confirmAction } from "@/lib/dialog";
 
 function SnippetModal({ edit, onClose }: { edit?: Snippet; onClose: () => void }) {
   const saveSnippet = useDataStore((s) => s.saveSnippet);
@@ -95,7 +96,7 @@ export function SnippetsScreen() {
                 </div>
                 <div
                   className="icon-action sm"
-                  onClick={() => { if (confirm(`删除片段「${s.name}」?`)) void deleteSnippet(s.id); }}
+                  onClick={async () => { if (await confirmAction(`删除片段「${s.name}」?`, "删除片段")) await deleteSnippet(s.id); }}
                 >
                   <Trash2 size={13} />
                 </div>

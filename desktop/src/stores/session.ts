@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { Terminal } from "@xterm/xterm";
 import { ipc } from "@/ipc";
+import { confirmAction } from "@/lib/dialog";
 import { looksLikeNaturalLanguage, stripPrompt } from "@/lib/nlDetect";
 import { terminalTheme } from "@/theme/terminal";
 import type { SessionInfo } from "@/types";
@@ -13,6 +14,17 @@ const terminals = new Map<string, Terminal>();
 
 export function getTerminal(id: string): Terminal | undefined {
   return terminals.get(id);
+}
+
+/** 主题切换后重新给所有存活的终端上色。
+ *
+ *  xterm 的 theme 是创建时快照的 CSS 变量取值,不会自己跟着 data-theme 变 ——
+ *  后台标签页的实例也在这个表里,所以必须整表刷一遍,不能只刷当前挂载的那个。 */
+export function retheme(): void {
+  const theme = terminalTheme();
+  for (const term of terminals.values()) {
+    term.options.theme = theme;
+  }
 }
 
 /** 提取会话终端最近 maxLines 行输出(AI 助手上下文用) */
@@ -115,14 +127,19 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           return; // 回车不下发,原文留在行内 —— 用户取消也不丢输入
         }
       }
-      // 粘贴护栏:多行粘贴(含换行的整块输入)需确认,防止误执行
+      // 粘贴护栏:多行粘贴(含换行的整块输入)需确认,防止误执行。
+      // 确认框是异步的(见 lib/dialog.ts),所以要等确认后再下发,不能先写再问。
       const isPaste = data.length > 1 && /[\r\n]/.test(data);
       if (isPaste) {
         const lines = data.split(/\r\n?|\n/).filter((l) => l.length > 0).length;
         const preview = data.slice(0, 160).replace(/[\r\n]+/g, " ⏎ ");
-        if (!window.confirm(`将粘贴 ${lines} 行内容到终端(可能立即执行):\n\n${preview}\n\n确认粘贴?`)) {
-          return;
-        }
+        void confirmAction(
+          `将粘贴 ${lines} 行内容到终端(可能立即执行):\n\n${preview}\n\n确认粘贴?`,
+          "确认粘贴",
+        ).then((ok) => {
+          if (ok) void ipc.writeSession(info.id, data);
+        });
+        return;
       }
       void ipc.writeSession(info.id, data);
     });

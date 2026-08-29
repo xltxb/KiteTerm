@@ -14,6 +14,9 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+# WKWebView 不实现 JS 的 alert/confirm 面板(wry 的 UIDelegate 只做了文件选择等三项),
+# window.confirm 会不弹窗直接返回 false。确认框一律走这个插件的原生对话框。
+tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }

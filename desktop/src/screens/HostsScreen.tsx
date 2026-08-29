@@ -10,6 +10,7 @@ import { useDataStore } from "@/stores/data";
 import { useSessionStore } from "@/stores/session";
 import { useUiStore } from "@/stores/ui";
 import type { Host } from "@/types";
+import { confirmAction, showError } from "@/lib/dialog";
 
 export function HostsScreen() {
   const { groups, hosts, deleteHost } = useDataStore();
@@ -47,7 +48,7 @@ export function HostsScreen() {
         setPwError(null);
       } else if (msg.includes("HOSTKEY_CHANGED")) {
         const detail = msg.replace(/^.*HOSTKEY_CHANGED:\s*/, "");
-        if (window.confirm(detail + "\n\n信任新指纹并重试连接?")) {
+        if (await confirmAction(detail + "\n\n信任新指纹并重试连接?", "主机指纹已变更")) {
           await ipc.trustHostKey(h.id);
           setConnecting(null);
           return connect(h, password);
@@ -55,7 +56,7 @@ export function HostsScreen() {
       } else if (password !== undefined) {
         setPwError(msg);
       } else {
-        alert("连接失败: " + msg);
+        void showError(msg, "连接失败");
       }
     } finally {
       setConnecting(null);
@@ -88,7 +89,7 @@ export function HostsScreen() {
                     connecting={connecting === h.id}
                     onConnect={() => void connect(h)}
                     onEdit={() => setEditHost(h)}
-                    onDelete={() => { if (confirm(`删除主机 ${h.name}?`)) void deleteHost(h.id); }}
+                    onDelete={async () => { if (await confirmAction(`删除主机 ${h.name}?`, "删除主机")) await deleteHost(h.id); }}
                   />
                 ))}
               </div>

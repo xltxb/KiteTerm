@@ -4,6 +4,7 @@ import { Button } from "@/components/ui";
 import { ProviderForm } from "@/components/ai/ProviderForm";
 import { useAiStore } from "@/stores/ai";
 import type { AiProvider } from "@/types";
+import { confirmAction } from "@/lib/dialog";
 
 /** 模型列表 + 增删改切换 */
 export function ProviderPanel({ onClose }: { onClose: () => void }) {
@@ -79,9 +80,9 @@ export function ProviderPanel({ onClose }: { onClose: () => void }) {
               <div
                 className="icon-action sm"
                 title="删除"
-                onClick={(e) => {
+                onClick={async (e) => {
                   e.stopPropagation();
-                  if (confirm(`删除模型「${p.name}」?`)) void deleteProvider(p.id);
+                  if (await confirmAction(`删除模型「${p.name}」?`, "删除模型")) await deleteProvider(p.id);
                 }}
               >
                 <Trash2 size={13} />

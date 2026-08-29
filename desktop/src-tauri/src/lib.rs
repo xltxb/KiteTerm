@@ -23,6 +23,8 @@ use commands::AppState;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // 原生对话框:WKWebView 的 window.confirm/alert 在本运行时是哑的(见 Cargo.toml 注释)
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let data_dir = app
                 .path()
