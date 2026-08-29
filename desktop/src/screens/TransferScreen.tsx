@@ -8,15 +8,18 @@ import {
   FileCode,
   FileText,
   Folder,
+  FolderOpen,
   Laptop,
   Server,
   Upload,
 } from "lucide-react";
-import { Badge, Progress } from "@/components/ui";
+import { Badge, Button, Progress } from "@/components/ui";
 import { ipc } from "@/ipc";
 import { fmtBytes } from "@/lib/format";
+import { pickDirectory } from "@/lib/dialog";
 import { useSessionStore } from "@/stores/session";
 import { useTransferStore } from "@/stores/transfer";
+import { useUiStore } from "@/stores/ui";
 import type { FileEntry, TransferJob } from "@/types";
 
 function fileIcon(f: FileEntry) {
@@ -41,29 +44,49 @@ function jobMeta(j: TransferJob): { text: string; tone: string } {
   }
 }
 
+/** 一侧的文件面板。`path` 为 null 表示这一端还没选定 —— 此时不列目录,
+ *  而是把 `chooser` 交出来让用户先挑。 */
 function FilePane({
   title,
   icon,
   path,
   files,
   selected,
+  chooser,
   onSelect,
   onOpenDir,
+  onClose,
 }: {
   title: string;
   icon: React.ReactNode;
-  path: string;
+  path: string | null;
   files: FileEntry[];
   selected: string | null;
+  chooser: React.ReactNode;
   onSelect: (name: string | null) => void;
   onOpenDir: (name: string) => void;
+  onClose: () => void;
 }) {
+  if (path === null) {
+    return (
+      <div className="card col grow clip">
+        <div className="row gap-8 pad-tight bd-bottom">
+          {icon}
+          <span className="w-bold fs-md t-strong">{title}</span>
+        </div>
+        <div className="grow scroll vscroll">{chooser}</div>
+      </div>
+    );
+  }
   return (
     <div className="card col grow clip">
       <div className="row gap-8 pad-tight bd-bottom">
         {icon}
         <span className="w-bold fs-md t-strong">{title}</span>
-        <span className="mono fs-xs t-faint ellipsis">{path}</span>
+        <span className="mono fs-xs t-faint ellipsis grow">{path}</span>
+        <span className="fs-xs t-faint clickable nowrap" onClick={onClose} title="重新选择">
+          更换
+        </span>
       </div>
       <div className="vscroll grow scroll">
         <div
@@ -103,18 +126,113 @@ function joinPath(base: string, name: string): string {
   return base.replace(/\/+$/, "") + "/" + name;
 }
 
+/** 两端都没选好时,传输箭头是灰的 */
+function ArrowButton({
+  enabled,
+  title,
+  onClick,
+  children,
+}: {
+  enabled: boolean;
+  title: string;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      onClick={() => enabled && onClick()}
+      title={title}
+      className="row jcenter r-full"
+      style={{
+        width: 36,
+        height: 36,
+        cursor: enabled ? "pointer" : "not-allowed",
+        background: enabled ? "var(--accent)" : "var(--surface-card)",
+        border: enabled ? "none" : "1px solid var(--border-default)",
+        color: enabled ? "var(--text-on-accent)" : "var(--text-faint)",
+        boxShadow: enabled ? "var(--glow-sm)" : "none",
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
 export function TransferScreen() {
-  const { sessions, activeId } = useSessionStore();
-  const active = sessions.find((s) => s.id === activeId) ?? sessions[0] ?? null;
+  const sessions = useSessionStore((s) => s.sessions);
+  const go = useUiStore((s) => s.go);
   const t = useTransferStore();
 
+  // 只接事件与拉队列 —— 两端都等用户选
   useEffect(() => {
-    void t.init(active?.id ?? null);
+    void t.init();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active?.id]);
+  }, []);
 
+  // 选中的主机断开后,把远端一侧退回未选状态,免得对着一个已死的会话操作
+  useEffect(() => {
+    if (t.remoteSessionId && !sessions.some((s) => s.id === t.remoteSessionId)) {
+      t.closePane("remote");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessions, t.remoteSessionId]);
+
+  const remote = sessions.find((s) => s.id === t.remoteSessionId) ?? null;
+  const ready = t.localPath !== null && t.remoteSessionId !== null;
   const runningCount = t.jobs.filter((j) => j.state === "running").length;
   const queuedCount = t.jobs.filter((j) => j.state === "queued").length;
+
+  const localChooser = (
+    <div className="col gap-12 pad-card">
+      <div className="fs-sm t-faint lh-relaxed">选择本地的源/目标目录。</div>
+      <div className="row gap-8 wrap">
+        <Button
+          variant="primary"
+          onClick={async () => {
+            const dir = await pickDirectory();
+            if (dir) await t.openLocal(dir);
+          }}
+        >
+          <FolderOpen size={14} />选择目录…
+        </Button>
+        <Button variant="secondary" onClick={() => void t.openLocal()}>
+          用主目录
+        </Button>
+      </div>
+    </div>
+  );
+
+  const remoteChooser = (
+    <div className="col gap-12 pad-card">
+      {sessions.length === 0 ? (
+        <>
+          <div className="fs-sm t-faint lh-relaxed">
+            还没有已连接的主机。先去主机列表建立一个会话,再回来选。
+          </div>
+          <div>
+            <Button variant="secondary" onClick={() => go("hosts")}>浏览主机</Button>
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="fs-sm t-faint lh-relaxed">选择要传输的主机:</div>
+          <div className="col gap-8">
+            {sessions.map((sn) => (
+              <div key={sn.id} className="pick-card" onClick={() => void t.openRemote(sn.id)}>
+                <span className={sn.state === "connected" ? "dot-lg dot-ok" : "dot-lg dot-warn"} />
+                <div className="grow lh-snug">
+                  <div className="fs-md w-semi t-strong">{sn.hostName}</div>
+                  <div className="mono fs-xs t-faint">
+                    {sn.user}@{sn.addr}:{sn.port}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
 
   return (
     <div className="col grow gap-16 clip py-24 px-28">
@@ -124,10 +242,10 @@ export function TransferScreen() {
           <h1 className="screen-title fs-xl">文件传输</h1>
         </div>
         <span className="spacer" />
-        {active ? (
-          <Badge color="accent" dot>{active.hostName} 已连接</Badge>
+        {ready ? (
+          <Badge color="accent" dot>本地 ↔ {remote?.hostName}</Badge>
         ) : (
-          <Badge color="neutral">未连接 — 先从主机列表建立会话</Badge>
+          <Badge color="neutral">先选定两端</Badge>
         )}
       </div>
 
@@ -138,46 +256,37 @@ export function TransferScreen() {
           path={t.localPath}
           files={t.localFiles}
           selected={t.localSel}
+          chooser={localChooser}
           onSelect={(n) => t.select("local", n)}
-          onOpenDir={(n) => void t.setLocalPath(active?.id ?? null, joinPath(t.localPath, n))}
+          onOpenDir={(n) => void t.setLocalPath(joinPath(t.localPath ?? "/", n))}
+          onClose={() => t.closePane("local")}
         />
         <div className="col fnone jcenter acenter gap-10" style={{ width: 56 }}>
-          <div
-            onClick={() => active && t.localSel && void t.upload(active.id)}
-            title="上传所选"
-            className="row jcenter r-full clickable"
-            style={{
-              width: 36, height: 36,
-              background: active && t.localSel ? "var(--accent)" : "var(--surface-card)",
-              border: active && t.localSel ? "none" : "1px solid var(--border-default)",
-              color: active && t.localSel ? "var(--text-on-accent)" : "var(--text-faint)",
-              boxShadow: active && t.localSel ? "var(--glow-sm)" : "none",
-            }}
+          <ArrowButton
+            enabled={ready && !!t.localSel}
+            title={ready ? "上传所选" : "先选定两端"}
+            onClick={() => void t.upload()}
           >
             <ArrowRight size={16} />
-          </div>
-          <div
-            onClick={() => active && t.remoteSel && void t.download(active.id)}
-            title="下载所选"
-            className="row jcenter r-full clickable"
-            style={{
-              width: 36, height: 36,
-              background: active && t.remoteSel ? "var(--accent)" : "var(--surface-card)",
-              border: active && t.remoteSel ? "none" : "1px solid var(--border-default)",
-              color: active && t.remoteSel ? "var(--text-on-accent)" : "var(--text-muted)",
-            }}
+          </ArrowButton>
+          <ArrowButton
+            enabled={ready && !!t.remoteSel}
+            title={ready ? "下载所选" : "先选定两端"}
+            onClick={() => void t.download()}
           >
             <ArrowLeft size={16} />
-          </div>
+          </ArrowButton>
         </div>
         <FilePane
-          title={active?.hostName ?? "远端"}
+          title={remote?.hostName ?? "远端"}
           icon={<Server size={15} />}
-          path={t.remotePath}
+          path={t.remoteSessionId ? t.remotePath : null}
           files={t.remoteFiles}
           selected={t.remoteSel}
+          chooser={remoteChooser}
           onSelect={(n) => t.select("remote", n)}
-          onOpenDir={(n) => void t.setRemotePath(active?.id ?? null, joinPath(t.remotePath, n))}
+          onOpenDir={(n) => void t.setRemotePath(joinPath(t.remotePath, n))}
+          onClose={() => t.closePane("remote")}
         />
       </div>
 
