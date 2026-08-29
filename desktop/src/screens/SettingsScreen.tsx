@@ -49,7 +49,13 @@ function PlatformCard() {
       await ipc.platformUrlSet(url.trim());
       await refresh();
       const now = useFeaturesStore.getState().features;
-      setMsg(now.known ? "已连上平台,功能开关已更新" : "保存了,但没连上平台 —— 地址对吗?平台在跑吗?");
+      setMsg(
+        now.known
+          ? now.enforced
+            ? "已连上平台,功能开关已更新"
+            : "已连上平台。该平台未启用功能门禁,四项功能均可用"
+          : "保存了,但没连上平台 —— 地址对吗?平台在跑吗?",
+      );
     } catch (e) {
       setMsg(String(e).replace(/^[A-Za-z_]+:\s*/, ""));
     } finally {
@@ -93,9 +99,11 @@ function PlatformCard() {
         <div className="grow lh-snug">
           <div className="w-semi fs-md t-strong">功能开关</div>
           <div className="fs-sm t-faint">
-            {features.known
-              ? "以下为平台当前下发的状态,关闭的功能在本机隐藏入口。"
-              : "尚未从平台拉到开关 —— 未获授权前一律按关闭处理。填好上面的地址再点「连接」。"}
+            {!features.known
+              ? "尚未连上管理平台 —— 按「未启用门禁」处理,四项功能均可用。"
+              : features.enforced
+                ? "该平台已启用功能门禁,以下为当前下发的状态,关闭的功能在本机隐藏入口。"
+                : "该平台未启用功能门禁(部署配置 KITE_FEATURE_GATING),四项功能均可用。"}
           </div>
         </div>
         <div className="row gap-8 wrap jend" style={{ maxWidth: 300 }}>

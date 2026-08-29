@@ -21,24 +21,27 @@ fn scratch(name: &str) -> std::path::PathBuf {
 async fn main() {
     let db = Db::open(scratch("dev")).unwrap();
 
-    // 1) 从未拉取过 —— 一律全关,且 known=false(界面据此区分「平台关的」与「还没连上」)
+    // 1) 从未拉取过 —— 按「未启用门禁」处理,四项全开;known=false 供界面区分文案
     let f = features::cached(&db);
     assert!(!f.known, "从未拉取时 known 应为 false");
-    assert!(!f.login && !f.sync && !f.ai, "从未拉取时应全关");
-    assert_eq!(f.registration, "closed", "从未拉取时注册也应视为关闭");
-    println!("step1 首次未知 → 全关 OK");
+    assert!(!f.enforced, "从未拉取时应视为未启用门禁");
+    assert!(f.login && f.sync && f.ai, "未启用门禁 → 不限制任何功能");
+    println!("step1 首次未知 → 不做门禁 OK");
 
-    // 2) 指向一个不存在的平台:仍是全关,且不应 panic 或报错
+    // 2) 指向一个不存在的平台:同上,且不应 panic 或报错
     account::set_platform_url(&db, "http://127.0.0.1:1").unwrap();
     let f = features::refresh(&db).await.expect("平台不可达不该返回 Err");
-    assert!(!f.known && !f.ai, "不可达且无缓存 → 全关");
-    println!("step2 平台不可达且无缓存 → 全关 OK");
+    assert!(!f.known && f.ai, "不可达且无缓存 → 不做门禁");
+    println!("step2 平台不可达且无缓存 → 不做门禁 OK");
 
     // 3) 指向真实平台:拉到并落缓存
     account::set_platform_url(&db, PLATFORM).unwrap();
     let f = features::refresh(&db).await.expect("应能拉到");
     assert!(f.known, "拉到后 known 应为 true");
-    println!("step3 下发 registration={} login={} sync={} ai={}", f.registration, f.login, f.sync, f.ai);
+    println!(
+        "step3 下发 enforced={} registration={} login={} sync={} ai={}",
+        f.enforced, f.registration, f.login, f.sync, f.ai
+    );
 
     let cached = features::cached(&db);
     assert_eq!(cached.login, f.login, "缓存应与下发一致");

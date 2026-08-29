@@ -39,6 +39,15 @@ struct PlatformConfig {
     sts_mode: String,
     /// 注册策略初值(仅在 DB 尚无设置时生效)
     registration_default: String,
+    /// 功能门禁总闸(KITE_FEATURE_GATING,默认 off)。
+    ///
+    /// off:登录/云同步/AI 助手三项开关全部失效 —— 客户端不隐藏任何入口,
+    ///     服务端也不据此拦截。平台只当账户与凭据的中枢,不管功能可见性。
+    /// on: 三项开关生效,由管理控制台逐项开关并下发。
+    ///
+    /// 之所以做成部署配置而不是控制台开关:它决定的是这套管控要不要存在,
+    /// 属于部署形态,不该被日常运维误点。
+    feature_gating: bool,
 }
 
 struct AppState {
@@ -270,8 +279,14 @@ async fn health() -> Json<serde_json::Value> {
 
 /// 全局功能开关。注册用三档 registration_mode 表达(closed 即关),
 /// 其余是布尔;默认全开 —— 平台没显式关过的功能就是可用的。
-fn feature_on(conn: &Connection, feature: &str) -> bool {
+/// 单项开关的原始值(不看总闸)—— 管理控制台展示用
+fn feature_raw(conn: &Connection, feature: &str) -> bool {
     setting_get(conn, &format!("feature_{feature}"), "1") == "1"
+}
+
+/// 生效值:总闸关闭时一律视为开启 —— 不启用门禁就等于什么都不限制
+fn feature_on(state: &AppState, conn: &Connection, feature: &str) -> bool {
+    !state.cfg.feature_gating || feature_raw(conn, feature)
 }
 
 /// 客户端据此决定哪些入口可见。**免鉴权** —— 客户端未登录时也要能拿到,
@@ -281,10 +296,12 @@ async fn features(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let conn = state.db.lock().unwrap();
     Ok(Json(json!({
+        // 注册策略是平台自己的准入政策,与功能门禁无关,总闸关掉也照样生效
         "registration": setting_get(&conn, "registration_mode", &state.cfg.registration_default),
-        "login": feature_on(&conn, "login"),
-        "sync": feature_on(&conn, "sync"),
-        "ai": feature_on(&conn, "ai"),
+        "enforced": state.cfg.feature_gating,
+        "login": feature_on(&state, &conn, "login"),
+        "sync": feature_on(&state, &conn, "sync"),
+        "ai": feature_on(&state, &conn, "ai"),
         "passwordMinLength": PASSWORD_MIN_LEN,
         "passwordRule": "至少 8 位,且包含字母、数字、符号中的至少两类",
     })))
@@ -433,7 +450,7 @@ async fn login(
     }
     // 开关校验放在口令校验之后:先把凭据不对的挡掉,避免通过错误信息区分
     // 「密码错」和「登录已关」而泄露邮箱是否存在
-    if !feature_on(&conn, "login") {
+    if !feature_on(&state, &conn, "login") {
         return Err(err(StatusCode::FORBIDDEN, "LOGIN_DISABLED", "平台当前已关闭登录"));
     }
     let (token, expires_at) = issue_token(&conn, &user_id)?;
@@ -477,7 +494,7 @@ async fn sync_credentials(
     let user = authenticate(&state, &headers)?;
     {
         let conn = state.db.lock().unwrap();
-        if !feature_on(&conn, "sync") {
+        if !feature_on(&state, &conn, "sync") {
             return Err(err(
                 StatusCode::FORBIDDEN,
                 "SYNC_DISABLED",
@@ -650,9 +667,10 @@ fn settings_payload(conn: &Connection, state: &AppState) -> serde_json::Value {
     json!({
         "registrationMode": setting_get(conn, "registration_mode", &state.cfg.registration_default),
         "defaultSyncEnabled": setting_get(conn, "default_sync_enabled", "1") == "1",
-        "featureLogin": feature_on(conn, "login"),
-        "featureSync": feature_on(conn, "sync"),
-        "featureAi": feature_on(conn, "ai"),
+        "featureGating": state.cfg.feature_gating,
+        "featureLogin": feature_raw(conn, "login"),
+        "featureSync": feature_raw(conn, "sync"),
+        "featureAi": feature_raw(conn, "ai"),
     })
 }
 
@@ -845,6 +863,10 @@ async fn main() {
         s3_access_key: std::env::var("S3_ACCESS_KEY").expect("必须设置 S3_ACCESS_KEY"),
         s3_secret_key: std::env::var("S3_SECRET_KEY").expect("必须设置 S3_SECRET_KEY"),
         sts_mode: env_or("KITE_STS", "auto"),
+        feature_gating: matches!(
+            env_or("KITE_FEATURE_GATING", "off").to_ascii_lowercase().as_str(),
+            "on" | "1" | "true"
+        ),
         registration_default: {
             let m = env_or("KITE_REGISTRATION", "open");
             if ["open", "invite", "closed"].contains(&m.as_str()) { m } else { "open".into() }

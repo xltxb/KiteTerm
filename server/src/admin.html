@@ -50,6 +50,9 @@
             cursor:pointer;user-select:none;white-space:nowrap;transition:all .14s cubic-bezier(.16,1,.3,1)}
   .seg-item:hover{color:var(--text)}
   .seg-item[data-active="true"]{background:var(--card);color:var(--azure-3)}
+  .pill{font-size:11px;padding:2px 9px;border-radius:99px;border:1px solid var(--border);color:var(--muted)}
+  .pill.ok{background:rgba(42,208,126,.14);border-color:rgba(42,208,126,.35);color:#2ad07e}
+  .pill.warn{background:rgba(255,182,72,.14);border-color:rgba(255,182,72,.35);color:#ffb648}
   .feat{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--muted);cursor:pointer}
   .switch{position:relative;width:40px;height:24px;border-radius:99px;background:var(--sunken);
           border:1px solid var(--border-md);cursor:pointer;transition:all .14s;flex:none;padding:0}
@@ -124,6 +127,7 @@
     <div class="card" style="margin-bottom:16px">
       <div class="toolbar" style="border-bottom:none;flex-wrap:wrap;gap:20px">
         <span style="font-size:13px;font-weight:700;color:var(--text-strong)">功能开关</span>
+        <span class="pill" id="gating-state">—</span>
         <label class="feat">登录
           <button class="switch" id="feat-login" onclick="toggleFeature('featureLogin','登录')"><span class="thumb"></span></button>
         </label>
@@ -198,6 +202,7 @@ let USERS = [];
 let SETTINGS = {
   registrationMode: "open",
   defaultSyncEnabled: true,
+  featureGating: false,
   featureLogin: true,
   featureSync: true,
   featureAi: true,
@@ -285,6 +290,19 @@ function renderSettings() {
   $("feat-login").dataset.on = String(!!SETTINGS.featureLogin);
   $("feat-sync").dataset.on = String(!!SETTINGS.featureSync);
   $("feat-ai").dataset.on = String(!!SETTINGS.featureAi);
+  // 总闸由部署配置 KITE_FEATURE_GATING 决定,控制台只读 —— 关掉时下面三个开关不起作用,
+  // 必须说明白,否则运维会以为点了没反应
+  const gating = !!SETTINGS.featureGating;
+  $("gating-state").textContent = gating ? "门禁已启用" : "门禁未启用";
+  $("gating-state").className = "pill " + (gating ? "ok" : "warn");
+  $("gating-hint").innerHTML = gating
+    ? "总闸 <code>KITE_FEATURE_GATING=on</code> 已开启,下面三个开关生效。"
+    : "总闸未开启(<code>KITE_FEATURE_GATING</code> 默认 <code>off</code>)——"
+      + " <b>下面三个开关当前不起作用</b>,客户端四项功能全部可用。"
+      + "要启用逐项管控,请以 <code>KITE_FEATURE_GATING=on</code> 重启平台。";
+  ["feat-login", "feat-sync", "feat-ai"].forEach((id) => {
+    $(id).style.opacity = gating ? "1" : "0.45";
+  });
   $("invite-section").classList.toggle("hidden", SETTINGS.registrationMode !== "invite");
 }
 
