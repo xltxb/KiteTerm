@@ -79,6 +79,16 @@ export function KtForward(props: IconProps) {
   );
 }
 
+/** 证书 / SSL 盾牌 */
+export function KtCerts(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M12 3 l7 3 v5 c0 4.2 -2.8 7.3 -7 8.5 c-4.2 -1.2 -7 -4.3 -7 -8.5 V6 z" />
+      <path d="M9 12 l2 2 l4 -4" />
+    </Icon>
+  );
+}
+
 /** 监控 / 心跳 */
 export function KtMonitor(props: IconProps) {
   return (
