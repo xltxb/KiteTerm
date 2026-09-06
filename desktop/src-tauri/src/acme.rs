@@ -12,10 +12,11 @@ use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 
 use instant_acme::{
-    Account, AuthorizationStatus, ChallengeType, Identifier, LetsEncrypt, NewAccount, NewOrder,
-    OrderStatus, RetryPolicy, ZeroSsl,
+    Account, AccountCredentials, AuthorizationStatus, ChallengeType, Identifier, LetsEncrypt,
+    NewAccount, NewOrder, OrderStatus, RetryPolicy, RevocationRequest, ZeroSsl,
 };
 use rcgen::{CertificateParams, KeyPair};
+use rustls_pki_types::CertificateDer;
 use x509_parser::pem::parse_x509_pem;
 
 use crate::db::{CertRow, Db};
@@ -72,24 +73,33 @@ pub fn confirm_dns(manager: &CertManager, cert_id: &str) {
     }
 }
 
-/// 失败时落库为 error 状态(尽力而为,忽略落库自身的错误)
+/// 失败时落库为 error 状态(尽力而为,忽略落库自身的错误)。
+/// 若该 cert_id 已存在(续期失败场景),保留原有到期时间与证书材料,仅改 state,
+/// 避免一次失败的续期把仍然有效的证书数据清空。
 #[allow(dead_code)]
 fn upsert_error(db: &Db, cert_id: &str, req: &IssueRequest, created_at: &str) {
-    let row = CertRow {
-        id: cert_id.to_string(),
-        domains: req.domains.clone(),
-        challenge: req.challenge.clone(),
-        ca: req.ca.clone(),
-        host_id: req.host_id.clone(),
-        deploy_path: req.deploy_path.clone(),
-        reload_cmd: req.reload_cmd.clone(),
-        not_after: 0,
-        auto_renew: true,
-        state: "error".to_string(),
-        account_key_enc: None,
-        cert_pem: None,
-        chain_pem: None,
-        created_at: created_at.to_string(),
+    let row = match db.get_cert_full(cert_id) {
+        Ok(mut existing) => {
+            existing.state = "error".to_string();
+            existing
+        }
+        Err(_) => CertRow {
+            id: cert_id.to_string(),
+            domains: req.domains.clone(),
+            challenge: req.challenge.clone(),
+            ca: req.ca.clone(),
+            host_id: req.host_id.clone(),
+            deploy_path: req.deploy_path.clone(),
+            reload_cmd: req.reload_cmd.clone(),
+            not_after: 0,
+            auto_renew: true,
+            state: "error".to_string(),
+            account_key_enc: None,
+            cert_pem: None,
+            chain_pem: None,
+            key_pem_enc: None,
+            created_at: created_at.to_string(),
+        },
     };
     let _ = db.upsert_cert(&row);
 }
@@ -149,7 +159,7 @@ async fn sftp_upload(handle: &Handle<ClientHandler>, path: &str, data: &[u8]) ->
     Ok(())
 }
 
-/// ACME 签发状态机:HTTP-01 经 SSH 放置校验文件,DNS-01 手动等待确认,五步进度事件。
+/// ACME 签发:生成新 cert_id 后跑签发内核。首次签发入口。
 ///
 /// 步骤:Place(账户/订单/放置校验)→ Verify(CA 校验)→ Sign(签发)→ Upload(上传)→ Reload(重载)。
 #[allow(dead_code)]
@@ -161,13 +171,30 @@ pub async fn issue(
     manager: Arc<CertManager>,
     req: IssueRequest,
 ) -> Result<CertInfo> {
+    let cert_id = uuid::Uuid::new_v4().to_string();
+    let created_at = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
+    run_issue(app, db, vault, sessions, manager, req, cert_id, created_at).await
+}
+
+/// 签发内核:issue(新 cert_id)与 renew(沿用已存 cert_id/created_at)共用,避免重复五步流程。
+///
+/// 步骤:Place(账户/订单/放置校验)→ Verify(CA 校验)→ Sign(签发)→ Upload(上传)→ Reload(重载)。
+#[allow(dead_code)]
+#[allow(clippy::too_many_arguments)]
+async fn run_issue(
+    app: AppHandle,
+    db: Arc<Db>,
+    vault: Arc<Vault>,
+    sessions: Arc<SessionManager>,
+    manager: Arc<CertManager>,
+    req: IssueRequest,
+    cert_id: String,
+    created_at: String,
+) -> Result<CertInfo> {
     // 0. 门禁:必须有活动会话,否则不做任何 ACME 网络工作
     sessions
         .get_handle(&req.host_id)
         .map_err(|_| AppError("ERR_NO_SESSION".to_string()))?;
-
-    let cert_id = uuid::Uuid::new_v4().to_string();
-    let created_at = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
 
     // 任一可失败步骤:出错则发 error 事件、落库 error、返回 Err。
     // 宏在此定义,可引用外层的 app/cert_id/db/req/created_at。
@@ -374,6 +401,8 @@ pub async fn issue(
     emit_progress(&app, &cert_id, Step::Reload, "ok", None);
 
     // 9. 成功落库(state=active),返回 CertInfo
+    // 私钥 PEM 经 vault 加密后落库,供后续 deploy 重新上传(含部署到其他主机)
+    let key_pem_enc = step_try!(Step::Sign, vault.encrypt(privkey_pem.as_bytes()));
     let row = CertRow {
         id: cert_id.clone(),
         domains: req.domains.clone(),
@@ -388,6 +417,7 @@ pub async fn issue(
         account_key_enc: Some(account_key_enc),
         cert_pem: Some(leaf_pem),
         chain_pem: Some(chain_pem),
+        key_pem_enc: Some(key_pem_enc),
         created_at: created_at.clone(),
     };
     db.upsert_cert(&row)?;
@@ -405,6 +435,194 @@ pub async fn issue(
         state: "active".to_string(),
         created_at,
     })
+}
+
+/// 从已存 CertRow 重建 IssueRequest(纯函数,便于单测续期参数还原)
+#[allow(dead_code)]
+pub fn req_from_row(row: &CertRow) -> IssueRequest {
+    IssueRequest {
+        domains: row.domains.clone(),
+        challenge: row.challenge.clone(),
+        ca: row.ca.clone(),
+        host_id: row.host_id.clone(),
+        deploy_path: row.deploy_path.clone(),
+        reload_cmd: row.reload_cmd.clone(),
+    }
+}
+
+/// 续期:用库中已存参数重建 IssueRequest 后重跑签发内核,沿用原 cert_id 与 created_at 就地更新。
+/// 要求该 host 有活跃会话(内核门禁 get_handle → ERR_NO_SESSION)。
+#[allow(dead_code)]
+pub async fn renew(
+    app: AppHandle,
+    db: Arc<Db>,
+    vault: Arc<Vault>,
+    sessions: Arc<SessionManager>,
+    manager: Arc<CertManager>,
+    cert_id: &str,
+) -> Result<CertInfo> {
+    let row = db.get_cert_full(cert_id)?;
+    let req = req_from_row(&row);
+    run_issue(app, db, vault, sessions, manager, req, row.id, row.created_at).await
+}
+
+/// 尽力发起 ACME 网络吊销(需账户凭据 + 叶证书)。失败由调用方忽略。
+#[allow(dead_code)]
+async fn try_acme_revoke(vault: &Vault, acct_enc: &[u8], leaf_pem: &str) -> Result<()> {
+    // 还原账户凭据(vault 解密 → AccountCredentials)
+    let cred_json = vault.decrypt(acct_enc)?;
+    let credentials: AccountCredentials = serde_json::from_slice(&cred_json)
+        .map_err(|e| AppError(format!("解析账户凭据失败: {e}")))?;
+    let account = Account::builder()
+        .map_err(|e| AppError(format!("构建 ACME 账户失败: {e}")))?
+        .from_credentials(credentials)
+        .await
+        .map_err(|e| AppError(format!("恢复 ACME 账户失败: {e}")))?;
+    // 叶证书 PEM → DER
+    let (_, pem) = parse_x509_pem(leaf_pem.as_bytes())
+        .map_err(|e| AppError(format!("解析叶证书 PEM 失败: {e}")))?;
+    let der = CertificateDer::from(pem.contents);
+    account
+        .revoke(&RevocationRequest {
+            certificate: &der,
+            reason: None,
+        })
+        .await
+        .map_err(|e| AppError(format!("ACME 吊销请求失败: {e}")))?;
+    Ok(())
+}
+
+/// 吊销:尽力调 ACME revoke(有账户凭据 + 叶证书时),网络吊销失败仅记录、不阻断,最终始终本地删除。
+#[allow(dead_code)]
+pub async fn revoke(db: Arc<Db>, vault: Arc<Vault>, cert_id: &str) -> Result<()> {
+    if let Ok(row) = db.get_cert_full(cert_id) {
+        if let (Some(acct_enc), Some(leaf_pem)) =
+            (row.account_key_enc.as_ref(), row.cert_pem.as_ref())
+        {
+            if let Err(e) = try_acme_revoke(&vault, acct_enc, leaf_pem).await {
+                // 尽力而为:网络吊销失败不影响本地删除
+                eprintln!("ACME 吊销失败(忽略,继续本地删除): {e}");
+            }
+        }
+    }
+    db.delete_cert(cert_id)
+}
+
+/// 部署/重新部署:取已存证书链与私钥(vault 解密),门禁目标 host 会话,SFTP 上传 + 重载。
+/// 支持把同一张证书部署到 host_id 指定的任意主机(deploy-to-other-host)。
+///
+/// 注:私钥经 vault 加密存于 key_pem_enc,故本函数比 brief 里的签名多需 `vault` 参数用于解密;
+/// 否则无法拿到私钥,也就无法部署到其他主机。
+#[allow(dead_code)]
+pub async fn deploy(
+    app: AppHandle,
+    db: Arc<Db>,
+    vault: Arc<Vault>,
+    sessions: Arc<SessionManager>,
+    cert_id: &str,
+    host_id: &str,
+) -> Result<()> {
+    let row = db.get_cert_full(cert_id)?;
+    let chain_pem = row
+        .chain_pem
+        .clone()
+        .ok_or_else(|| AppError("证书链缺失,无法部署".to_string()))?;
+    let key_enc = row
+        .key_pem_enc
+        .clone()
+        .ok_or_else(|| AppError("私钥缺失,无法部署".to_string()))?;
+    let privkey_pem = vault.decrypt(&key_enc)?;
+
+    // 门禁:目标 host 必须有活跃会话
+    let handle = sessions
+        .get_handle(host_id)
+        .map_err(|_| AppError("ERR_NO_SESSION".to_string()))?;
+
+    // Upload:证书链到 deploy_path,私钥到同目录 privkey.pem
+    emit_progress(&app, cert_id, Step::Upload, "running", None);
+    let privkey_path = sibling_path(&row.deploy_path, "privkey.pem");
+    if let Err(e) = sftp_upload(&handle, &row.deploy_path, chain_pem.as_bytes()).await {
+        let msg = e.to_string();
+        emit_progress(&app, cert_id, Step::Upload, "error", Some(&msg));
+        return Err(AppError(msg));
+    }
+    if let Err(e) = sftp_upload(&handle, &privkey_path, &privkey_pem).await {
+        let msg = e.to_string();
+        emit_progress(&app, cert_id, Step::Upload, "error", Some(&msg));
+        return Err(AppError(msg));
+    }
+    emit_progress(&app, cert_id, Step::Upload, "ok", None);
+
+    // Reload:重载服务
+    emit_progress(&app, cert_id, Step::Reload, "running", None);
+    let reload_cmd = if row.reload_cmd.trim().is_empty() {
+        DEFAULT_RELOAD_CMD.to_string()
+    } else {
+        row.reload_cmd.clone()
+    };
+    let reload_full = format!("{reload_cmd} 2>&1 && echo __RELOAD_OK__");
+    let out = match ssh::exec_capture(&handle, &reload_full).await {
+        Ok(o) => o,
+        Err(e) => {
+            let msg = e.to_string();
+            emit_progress(&app, cert_id, Step::Reload, "error", Some(&msg));
+            return Err(AppError(msg));
+        }
+    };
+    if !out.contains("__RELOAD_OK__") {
+        let msg = format!("服务重载失败: {}", out.trim());
+        emit_progress(&app, cert_id, Step::Reload, "error", Some(&msg));
+        return Err(AppError(msg));
+    }
+    emit_progress(&app, cert_id, Step::Reload, "ok", None);
+    Ok(())
+}
+
+/// 续期守护:仿 ssh::spawn_latency_loop。每 12h 扫全部证书,对开启自动续期且进入续期窗口
+/// (≤30 天到期)者尝试续期。单张证书失败只落状态(仍有效→expiring,已过期→error)并 emit,
+/// 绝不 panic 整个任务;成功由 renew 就地更新为 active。
+#[allow(dead_code)]
+pub fn spawn_renew_loop(
+    app: AppHandle,
+    db: Arc<Db>,
+    vault: Arc<Vault>,
+    sessions: Arc<SessionManager>,
+    manager: Arc<CertManager>,
+) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(Duration::from_secs(12 * 3600));
+        loop {
+            ticker.tick().await;
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            let certs = db.list_certs().unwrap_or_default();
+            for c in certs {
+                if !c.auto_renew || !renew_due(c.not_after, now_ms) {
+                    continue;
+                }
+                let res = renew(
+                    app.clone(),
+                    db.clone(),
+                    vault.clone(),
+                    sessions.clone(),
+                    manager.clone(),
+                    &c.id,
+                )
+                .await;
+                if let Err(e) = res {
+                    // 续期失败:仍有效标 expiring,已过期标 error;保留既有材料(get_cert_full)
+                    if let Ok(mut row) = db.get_cert_full(&c.id) {
+                        row.state = if row.not_after > now_ms {
+                            "expiring".to_string()
+                        } else {
+                            "error".to_string()
+                        };
+                        let _ = db.upsert_cert(&row);
+                    }
+                    emit_progress(&app, &c.id, Step::Sign, "error", Some(&e.to_string()));
+                }
+            }
+        }
+    });
 }
 
 #[allow(dead_code)]
@@ -492,6 +710,34 @@ mod tests {
             "/etc/nginx/ssl/example.com/privkey.pem"
         );
         assert_eq!(sibling_path("fullchain.pem", "privkey.pem"), "privkey.pem");
+    }
+
+    #[test]
+    fn req_from_row_roundtrips_params() {
+        let row = CertRow {
+            id: "cid".into(),
+            domains: vec!["a.example.com".into(), "b.example.com".into()],
+            challenge: "http-01".into(),
+            ca: "letsencrypt".into(),
+            host_id: "host-1".into(),
+            deploy_path: "/etc/nginx/ssl/fullchain.pem".into(),
+            reload_cmd: "sudo nginx -s reload".into(),
+            not_after: 123,
+            auto_renew: true,
+            state: "active".into(),
+            account_key_enc: None,
+            cert_pem: None,
+            chain_pem: None,
+            key_pem_enc: None,
+            created_at: "2026-01-01 00:00".into(),
+        };
+        let req = req_from_row(&row);
+        assert_eq!(req.domains, row.domains);
+        assert_eq!(req.challenge, "http-01");
+        assert_eq!(req.ca, "letsencrypt");
+        assert_eq!(req.host_id, "host-1");
+        assert_eq!(req.deploy_path, "/etc/nginx/ssl/fullchain.pem");
+        assert_eq!(req.reload_cmd, "sudo nginx -s reload");
     }
 
     #[test]

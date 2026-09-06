@@ -28,6 +28,8 @@ pub struct CertRow {
     pub account_key_enc: Option<Vec<u8>>,
     pub cert_pem: Option<String>,
     pub chain_pem: Option<String>,
+    /// 证书私钥 PEM,经 vault 加密后落库(供重新部署到同主机/其他主机)
+    pub key_pem_enc: Option<Vec<u8>>,
     pub created_at: String,
 }
 
@@ -127,7 +129,7 @@ impl Db {
                 deploy_path TEXT NOT NULL DEFAULT '', reload_cmd TEXT NOT NULL DEFAULT '',
                 not_after INTEGER NOT NULL DEFAULT 0, auto_renew INTEGER NOT NULL DEFAULT 1,
                 state TEXT NOT NULL DEFAULT 'active',
-                account_key_enc BLOB, cert_pem TEXT, chain_pem TEXT,
+                account_key_enc BLOB, cert_pem TEXT, chain_pem TEXT, key_pem_enc BLOB,
                 created_at TEXT NOT NULL
             );
             "#,
@@ -673,7 +675,7 @@ impl Db {
         let conn = self.conn.lock().unwrap();
         let row = conn.query_row(
             "SELECT id, domains, challenge, ca, host_id, deploy_path, reload_cmd,
-                    not_after, auto_renew, state, account_key_enc, cert_pem, chain_pem, created_at
+                    not_after, auto_renew, state, account_key_enc, cert_pem, chain_pem, key_pem_enc, created_at
              FROM certs WHERE id = ?1",
             [id],
             |r| {
@@ -692,7 +694,8 @@ impl Db {
                     account_key_enc: r.get(10)?,
                     cert_pem: r.get(11)?,
                     chain_pem: r.get(12)?,
-                    created_at: r.get(13)?,
+                    key_pem_enc: r.get(13)?,
+                    created_at: r.get(14)?,
                 })
             },
         )?;
@@ -704,11 +707,11 @@ impl Db {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT INTO certs (id, domains, challenge, ca, host_id, deploy_path, reload_cmd,
-                                 not_after, auto_renew, state, account_key_enc, cert_pem, chain_pem, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                                 not_after, auto_renew, state, account_key_enc, cert_pem, chain_pem, key_pem_enc, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
              ON CONFLICT(id) DO UPDATE SET
                 domains=?2, challenge=?3, ca=?4, host_id=?5, deploy_path=?6, reload_cmd=?7,
-                not_after=?8, auto_renew=?9, state=?10, account_key_enc=?11, cert_pem=?12, chain_pem=?13",
+                not_after=?8, auto_renew=?9, state=?10, account_key_enc=?11, cert_pem=?12, chain_pem=?13, key_pem_enc=?14",
             params![
                 row.id,
                 serde_json::to_string(&row.domains).unwrap(),
@@ -723,6 +726,7 @@ impl Db {
                 row.account_key_enc,
                 row.cert_pem,
                 row.chain_pem,
+                row.key_pem_enc,
                 row.created_at,
             ],
         )?;
