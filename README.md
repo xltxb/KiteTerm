@@ -46,17 +46,28 @@ KITE_ADMIN_KEY=<管理密钥> \
 S3_ENDPOINT=http://127.0.0.1:19000 S3_BUCKET=vela-sync \
 S3_ACCESS_KEY=<ak> S3_SECRET_KEY=<sk> \
 cargo run --manifest-path server/Cargo.toml   # 或 pnpm server
-# 可选:KITE_FEATURE_GATING=on|off       功能门禁总闸,默认 off(关闭时三项开关不起作用)
+# 可选:KITE_FEATURE_GATING=on|off       功能门禁总闸,默认 off(关闭时产品开关全部失效,安全策略类不受影响)
 #       KITE_REGISTRATION=open|invite|closed 注册策略初值(之后以管理后台设置为准)
 #       KITE_REGISTER_LIMIT=5            同一 IP 每小时注册尝试上限
+#       S3_PREFIX / S3_PATH_STYLE / KITE_STS=auto|require|off  存储配置的其余初值
+#       KITE_SMTP_HOST/PORT/USER/PASS/FROM  邮箱验证码发信配置;不设置 HOST 时验证码只打进服务端日志
+# 以上 S3_* 与 KITE_STS 仅在数据库尚无存储配置时生效 —— 控制台「S3 存储」页保存后以 DB 为准,不再读环境变量
 # 应用内「同步」页默认平台地址 http://127.0.0.1:8787,可在“平台设置”修改
-# Web 管理控制台:http://127.0.0.1:8787/admin(输入管理密钥)——
-#   功能开关(登录 / 云同步 / AI 助手)、注册策略(开放/仅邀请码/关闭)、邀请码生成与停用、新用户默认同步开关、
-#   用户列表/搜索、同步启停开关、强制下线(吊销令牌)、按用户查看存储用量、平台统计
+# Web 管理控制台:http://127.0.0.1:8787/admin(输入管理密钥)—— 三个页签:
+#   用户与同步:用户列表/搜索、同步启停开关、强制下线(吊销令牌)、按用户存储用量、
+#     手工标记邮箱已验证、重置某用户 2FA、注册策略与邀请码、新用户默认同步开关、平台统计
+#   S3 存储:端点/区域/桶/密钥/前缀/Path-style/STS 模式六项 + 保存即热生效 + 连通性测试
+#   功能开关:11 项两类(见下文「功能开关」一节)
+# 账户 API:POST /api/register、GET /api/register/policy、POST /api/login、POST /api/logout、
+#   GET /api/me、GET /api/sync/credentials、GET /api/features、
+#   POST /api/verify-email、POST /api/verify-email/resend、
+#   POST /api/2fa/setup、POST /api/2fa/enable、POST /api/2fa/disable
 # 管理 API(X-Admin-Key):GET /api/admin/stats、GET|POST /api/admin/settings、
+#   GET|POST /api/admin/storage、POST /api/admin/storage/test、
 #   GET|POST /api/admin/invites、POST /api/admin/invites/{code}/disable、
 #   GET /api/admin/users、POST /api/admin/users/{email}/sync {enabled}、
-#   POST /api/admin/users/{email}/revoke、GET /api/admin/users/{email}/usage
+#   POST /api/admin/users/{email}/revoke、GET /api/admin/users/{email}/usage、
+#   POST /api/admin/users/{email}/verify、POST /api/admin/users/{email}/2fa/reset
 ```
 
 > 开发提示:`pnpm tauri dev` 建议加 `KITE_NO_KEYCHAIN=1`。每次重新编译都会产生新二进制,
@@ -140,28 +151,42 @@ server/                     ── 管理系统(Web)
   邮箱结构校验 + 口令强度规则(长度、字符种类、常见弱口令黑名单,前后端同规则)、确认密码与实时强度提示;
   按 IP 滑动窗口限流(前置于校验以防邮箱枚举);新用户默认同步开关可配;注册成功即签发令牌免二次登录 ✅
 
-**功能开关**:注册 / 登录 / 云同步 / AI 助手四项由管理平台统一下发,管理控制台可随时开关。
+**功能开关**:11 项由管理平台统一下发,管理控制台「功能开关」页可随时改,分两类:
 
-- **总闸(部署配置)**:`KITE_FEATURE_GATING=on|off`,**默认 `off`**。关闭时登录/云同步/AI
-  三项开关全部失效 —— 客户端不隐藏任何入口,服务端也不据此拦截,平台只当账户与凭据的中枢。
-  做成部署配置而非控制台开关,是因为它决定这套管控要不要存在,属于部署形态,不该被日常运维误点;
-  控制台会把总闸状态显示出来并置灰那三个开关,免得以为"点了没反应"。
+| 开关 | 类别 | 默认 | 受总闸约束 | 拦截点 / 客户端行为 |
+|---|---|---|---|---|
+| `login` | 产品开关 | 开 | 是 | 服务端:`/api/login` 返回 403 `LOGIN_DISABLED`(校验放在口令校验**之后**,避免用错误信息区分「密码错」与「登录已关」而泄露邮箱是否存在) |
+| `sync` | 产品开关 | 开 | 是 | 服务端:`/api/sync/credentials` 返回 403 `SYNC_DISABLED` |
+| `ai` | 产品开关 | 开 | 是 | 仅客户端:隐藏 AI 图标/FAB/右栏页签/`⌘⇧A`/`⌘I`,无服务端调用 |
+| `key_sync` | 产品开关 | 开 | 是 | 客户端:密钥「随云同步」置灰,同步范围强制不含 keys |
+| `recording_sync` | 产品开关 | 开 | 是 | 客户端:录制同步范围置灰(该范围默认本身也是关的) |
+| `ai_command` | 产品开关(AI 子项) | 开 | 是 | 客户端:白话识别/命令生成隐藏,与 `ai` 取与 |
+| `ai_diagnose` | 产品开关(AI 子项) | 开 | 是 | 客户端:失败输出诊断提示隐藏,与 `ai` 取与 |
+| `ai_summary` | 产品开关(AI 子项) | 开 | 是 | 客户端:输出摘要模式(`⌘⇧S`)隐藏,与 `ai` 取与 |
+| `email_verify` | 安全策略 | 关 | 否(恒生效) | 服务端:`/api/sync/credentials` 返回 403 `EMAIL_UNVERIFIED`;未验证邮箱仍可登录,只是拿不到同步凭据 |
+| `totp_required` | 安全策略 | 关 | 否(恒生效) | 服务端:登录返回 401 `TOTP_REQUIRED`/`TOTP_SETUP_REQUIRED`,同步返回 403 `TOTP_SETUP_REQUIRED`,尝试关闭本人 2FA 返回 403 `TOTP_ENFORCED` |
+| `multi_device` | 安全策略 | 开 | 否(恒生效) | 服务端:关闭时登录成功即吊销该用户其余设备已持有的令牌 |
+
+- 8 个「产品开关」受总闸约束;3 个「安全策略」(邮箱验证、强制 2FA、多设备)不受总闸影响,始终按各自设置生效。
+- **总闸(部署配置)**:`KITE_FEATURE_GATING=on|off`,**默认 `off`**。关闭时上表 8 个产品开关
+  全部失效(视为恒开)—— 客户端不隐藏任何入口,服务端也不据此拦截,平台只当账户与凭据的中枢;
+  3 个安全策略照常生效。做成部署配置而非控制台开关,是因为它决定这套管控要不要存在,属于部署形态,
+  不该被日常运维误点;控制台会把总闸状态显示出来并置灰那些受约束的开关,免得以为"点了没反应"。
   注册策略是平台自己的准入政策,**与总闸无关,总闸关掉也照样生效**。
 - **下发**:公开接口 `GET /api/features`(免鉴权 —— 否则「登录开关」自身就没法下发)。
-  客户端启动时先读本地缓存上屏,再后台拉一次刷新。
+  客户端启动时先读本地缓存上屏,再后台拉一次刷新,此后每 **60 秒**轮询一次(全应用只起一个定时器)。
 - **取值顺序**:能连上平台 → 用刚拉到的并落缓存;连不上但有缓存 → 沿用上次下发的
   (断网既不该把已被管控的机器一键解锁,也不该把没被管控的机器忽然锁上);
-  **连不上且从未拉到过 → 按未启用门禁处理,四项全开**。
+  **连不上且从未拉到过 → 按未启用门禁处理**,8 个产品开关全开,3 个安全策略按各自默认值
+  (邮箱验证、强制 2FA 默认关,多设备默认开)。
   最后一条是刻意的:没配过平台的纯本地用户不该被一套他从未启用的管控挡住。
 - 「设置 → 管理平台」里可随时改平台地址并立即重新拉取,页面同时显示总闸与各项状态。
 - **关闭时的表现**:客户端隐藏入口(侧栏同步项、终端 AI 图标与 FAB、右栏 AI 页签、
   `⌘⇧A` / `⌘I` 快捷键、设置里的相关项),并在够得着的地方说明是平台关的还是尚未连上平台。
-- **服务端一并拦截**:登录关闭时 `/api/login` 返回 403 `LOGIN_DISABLED`(校验放在口令校验**之后**,
-  避免通过错误信息区分「密码错」与「登录已关」而泄露邮箱是否存在);云同步关闭时
-  `/api/sync/credentials` 返回 403 `SYNC_DISABLED`,已持有的令牌同样拿不到凭据。
 - **AI 助手只能靠客户端遵守** —— 它完全跑在本地、没有对应的服务端调用。同理,「装了客户端
   但不配平台地址」也绕得过门禁。桌面端二进制在用户手里,这是**产品管控,不是安全边界**;
-  真正需要强约束的能力必须放到服务端 —— 登录与云同步没有平台放行就是用不了。
+  真正需要强约束的能力必须放到服务端 —— 登录与云同步没有平台放行就是用不了,邮箱验证/强制 2FA
+  同理由服务端拦截。
 - 粒度为**全局开关**;云同步另有既存的按用户开关,两者取与(全局关则一律关)。
 
 **安全**:known_hosts 指纹校验(TOFU,首连记录;指纹变更即中断连接并告警,需显式「信任新指纹」后重试)。
@@ -170,6 +195,9 @@ server/                     ── 管理系统(Web)
 - 监控采样命令面向 Linux 远端(/proc);macOS 远端显示离线
 - Keychain 不可用的平台回退应用数据目录 0600 文件
 - MinIO 的 STS AssumeRole 需以非 root 服务账号运行平台(root 不可 AssumeRole)
+- S3 secret 与 TOTP 密钥明文存 SQLite(与此前明文环境变量同强度)
+- 未配 SMTP 时验证码打服务端日志,管理员可在控制台手工标记已验证
+- 录制同步整文件读入内存单次 PUT,无分片
 
 前端用例:`pnpm test`(白话识别规则的正反例 —— 中文/英文意图句判为白话,已知命令、
 含管道或选项、路径、环境变量赋值一律判为命令)。

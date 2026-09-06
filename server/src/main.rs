@@ -9,8 +9,11 @@
 //!   KITE_DB           默认 ./kite-server.db
 //!   KITE_ADMIN_KEY    管理接口密钥(必填)
 //!   KITE_REGISTRATION 注册策略初值 open|invite|closed(默认 open;之后以管理后台设置为准)
-//!   S3_ENDPOINT / S3_BUCKET / S3_REGION / S3_ACCESS_KEY / S3_SECRET_KEY / S3_PREFIX / S3_PATH_STYLE
+//!   KITE_FEATURE_GATING 功能门禁总闸 on|off(默认 off;关闭时产品开关全部失效,安全策略类不受影响)
+//!   KITE_REGISTER_LIMIT 同一 IP 每小时注册尝试上限(默认 5)
+//!   S3_ENDPOINT / S3_BUCKET / S3_REGION / S3_ACCESS_KEY / S3_SECRET_KEY / S3_PREFIX / S3_PATH_STYLE / KITE_STS
 //!       —— 仅作存储配置初值;控制台「S3 存储」页保存后以 DB 为准,不再读环境变量。
+//!       KITE_STS 取值 auto|require|off(默认 auto),控制 STS 限权凭据的下发策略。
 //!   KITE_SMTP_HOST / KITE_SMTP_PORT / KITE_SMTP_USER / KITE_SMTP_PASS / KITE_SMTP_FROM
 //!       —— 邮箱验证码发信配置;未设置 KITE_SMTP_HOST 时验证码只打进服务端日志。
 
