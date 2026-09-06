@@ -9,7 +9,8 @@
 //!   KITE_DB           默认 ./kite-server.db
 //!   KITE_ADMIN_KEY    管理接口密钥(必填)
 //!   KITE_REGISTRATION 注册策略初值 open|invite|closed(默认 open;之后以管理后台设置为准)
-//!   S3_ENDPOINT / S3_BUCKET / S3_REGION / S3_ACCESS_KEY / S3_SECRET_KEY
+//!   S3_ENDPOINT / S3_BUCKET / S3_REGION / S3_ACCESS_KEY / S3_SECRET_KEY / S3_PREFIX / S3_PATH_STYLE
+//!       —— 仅作存储配置初值;控制台「S3 存储」页保存后以 DB 为准,不再读环境变量。
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -27,17 +28,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 mod features;
+mod storage;
 mod sts;
 
 struct PlatformConfig {
     admin_key: String,
-    s3_endpoint: String,
-    s3_bucket: String,
-    s3_region: String,
-    s3_access_key: String,
-    s3_secret_key: String,
-    /// STS 模式:auto(默认,失败回退共享凭据)| require | off
-    sts_mode: String,
     /// 注册策略初值(仅在 DB 尚无设置时生效)
     registration_default: String,
     /// 功能门禁总闸(KITE_FEATURE_GATING,默认 off)。
@@ -54,6 +49,10 @@ struct PlatformConfig {
 struct AppState {
     db: Mutex<Connection>,
     cfg: PlatformConfig,
+    /// S3 存储配置:运行期可热改(管理控制台保存后立即生效,无需重启)
+    storage: std::sync::RwLock<storage::StorageConfig>,
+    /// 当前生效配置的来源:"db" | "env",供控制台展示
+    storage_source: Mutex<&'static str>,
     /// 注册限流:IP → 最近注册尝试的时间戳(滑动窗口)
     register_hits: Mutex<HashMap<String, Vec<i64>>>,
 }
@@ -481,6 +480,14 @@ async fn sync_credentials(
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let user = authenticate(&state, &headers)?;
+    let cfg = state.storage.read().unwrap().clone();
+    if !cfg.is_configured() {
+        return Err(err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "STORAGE_UNCONFIGURED",
+            "平台尚未配置存储,请联系管理员",
+        ));
+    }
     {
         let conn = state.db.lock().unwrap();
         if !features::effective(&conn, state.cfg.feature_gating, "sync") {
@@ -498,14 +505,15 @@ async fn sync_credentials(
             "该账户的云同步已被平台停用,请联系管理员",
         ));
     }
-    let prefix = format!("users/{}", user.id);
-    if state.cfg.sts_mode != "off" {
+    let prefix = cfg.user_prefix(&user.id);
+    if cfg.sts_mode != "off" {
         match sts::assume_role_for_user(
-            &state.cfg.s3_endpoint,
-            &state.cfg.s3_region,
-            &state.cfg.s3_access_key,
-            &state.cfg.s3_secret_key,
-            &state.cfg.s3_bucket,
+            &cfg.endpoint,
+            &cfg.region,
+            &cfg.access_key,
+            &cfg.secret_key,
+            &cfg.bucket,
+            &cfg.prefix,
             &user.id,
             3600,
         )
@@ -513,29 +521,31 @@ async fn sync_credentials(
         {
             Ok(t) => {
                 return Ok(Json(json!({
-                    "endpoint": state.cfg.s3_endpoint,
-                    "bucket": state.cfg.s3_bucket,
-                    "region": state.cfg.s3_region,
+                    "endpoint": cfg.endpoint,
+                    "bucket": cfg.bucket,
+                    "region": cfg.region,
                     "accessKey": t.access_key,
                     "secretKey": t.secret_key,
                     "sessionToken": t.session_token,
                     "expiration": t.expiration,
                     "prefix": prefix,
+                    "pathStyle": cfg.path_style,
                 })));
             }
-            Err(e) if state.cfg.sts_mode == "require" => {
+            Err(e) if cfg.sts_mode == "require" => {
                 return Err(err(StatusCode::BAD_GATEWAY, "sts_error", &e));
             }
             Err(e) => eprintln!("[server] STS 失败,回退共享凭据: {e}"),
         }
     }
     Ok(Json(json!({
-        "endpoint": state.cfg.s3_endpoint,
-        "bucket": state.cfg.s3_bucket,
-        "region": state.cfg.s3_region,
-        "accessKey": state.cfg.s3_access_key,
-        "secretKey": state.cfg.s3_secret_key,
+        "endpoint": cfg.endpoint,
+        "bucket": cfg.bucket,
+        "region": cfg.region,
+        "accessKey": cfg.access_key,
+        "secretKey": cfg.secret_key,
         "prefix": prefix,
+        "pathStyle": cfg.path_style,
     })))
 }
 
@@ -552,6 +562,7 @@ async fn admin_stats(
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     require_admin(&state, &headers)?;
+    let cfg = state.storage.read().unwrap().clone();
     let conn = state.db.lock().unwrap();
     let total: i64 = conn.query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0)).map_err(internal)?;
     let enabled: i64 = conn
@@ -564,10 +575,11 @@ async fn admin_stats(
         "users": total,
         "syncEnabled": enabled,
         "activeTokens": tokens,
-        "bucket": state.cfg.s3_bucket,
-        "endpoint": state.cfg.s3_endpoint,
+        "bucket": cfg.bucket,
+        "endpoint": cfg.endpoint,
         // 控制台据此显示凭据模式徽章(STS 限权 / 共享回退)
-        "stsMode": state.cfg.sts_mode,
+        "stsMode": cfg.sts_mode,
+        "storageConfigured": cfg.is_configured(),
     })))
 }
 
@@ -586,21 +598,6 @@ async fn admin_revoke(
         )
         .map_err(internal)?;
     Ok(Json(json!({ "ok": true, "revoked": n })))
-}
-
-fn platform_bucket(cfg: &PlatformConfig) -> Result<Box<s3::Bucket>, ApiError> {
-    let region = s3::Region::Custom { region: cfg.s3_region.clone(), endpoint: cfg.s3_endpoint.clone() };
-    let creds = s3::creds::Credentials::new(
-        Some(&cfg.s3_access_key),
-        Some(&cfg.s3_secret_key),
-        None,
-        None,
-        None,
-    )
-    .map_err(internal)?;
-    Ok(s3::Bucket::new(&cfg.s3_bucket, region, creds)
-        .map_err(internal)?
-        .with_path_style())
 }
 
 /// 该用户前缀下的对象数与字节数
@@ -623,11 +620,12 @@ async fn admin_usage(
     let Some(user_id) = user_id else {
         return Err(err(StatusCode::NOT_FOUND, "not_found", "用户不存在"));
     };
-    let bucket = platform_bucket(&state.cfg)?;
+    let cfg = state.storage.read().unwrap().clone();
+    let bucket = cfg.bucket().map_err(|e| err(StatusCode::BAD_GATEWAY, "S3_ERROR", &e))?;
     let pages = bucket
-        .list(format!("users/{user_id}/"), None)
+        .list(format!("{}/", cfg.user_prefix(&user_id)), None)
         .await
-        .map_err(|e| err(StatusCode::BAD_GATEWAY, "s3_error", &e.to_string()))?;
+        .map_err(|e| err(StatusCode::BAD_GATEWAY, "S3_ERROR", &e.to_string()))?;
     let (mut objects, mut bytes) = (0u64, 0u64);
     for page in pages {
         for obj in page.contents {
@@ -640,6 +638,68 @@ async fn admin_usage(
 
 async fn admin_ui() -> axum::response::Html<&'static str> {
     axum::response::Html(include_str!("admin.html"))
+}
+
+// ---- S3 存储配置(管理接口)----
+
+async fn admin_get_storage(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Result<Json<serde_json::Value>, ApiError> {
+    require_admin(&state, &headers)?;
+    let cfg = state.storage.read().unwrap().clone();
+    let source = *state.storage_source.lock().unwrap();
+    Ok(Json(cfg.public_json(source)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StorageBody {
+    endpoint: String,
+    #[serde(default)] region: String,
+    bucket: String,
+    #[serde(default)] prefix: String,
+    access_key: String,
+    /// 空 = 沿用已保存的 secret
+    #[serde(default)] secret_key: String,
+    #[serde(default = "storage_true")] path_style: bool,
+    #[serde(default = "storage_auto")] sts_mode: String,
+}
+fn storage_true() -> bool { true }
+fn storage_auto() -> String { "auto".into() }
+
+fn storage_from_body(state: &AppState, body: StorageBody) -> Result<storage::StorageConfig, ApiError> {
+    let current = state.storage.read().unwrap().clone();
+    let secret = if body.secret_key.is_empty() { current.secret_key } else { body.secret_key };
+    let cfg = storage::StorageConfig {
+        endpoint: body.endpoint, region: if body.region.is_empty() { "us-east-1".into() } else { body.region },
+        bucket: body.bucket, prefix: body.prefix, access_key: body.access_key, secret_key: secret,
+        path_style: body.path_style, sts_mode: body.sts_mode,
+    }.normalized();
+    if !cfg.endpoint.starts_with("http://") && !cfg.endpoint.starts_with("https://") {
+        return Err(err(StatusCode::BAD_REQUEST, "INVALID_ENDPOINT", "Endpoint 须以 http:// 或 https:// 开头"));
+    }
+    if cfg.bucket.is_empty() || cfg.access_key.is_empty() || cfg.secret_key.is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "INVALID_STORAGE", "Bucket、Access Key、Secret 不能为空"));
+    }
+    Ok(cfg)
+}
+
+/// 保存并热生效:之后的凭据下发、用量统计、STS 都用新配置
+async fn admin_set_storage(State(state): State<Arc<AppState>>, headers: HeaderMap, Json(body): Json<StorageBody>) -> Result<Json<serde_json::Value>, ApiError> {
+    require_admin(&state, &headers)?;
+    let cfg = storage_from_body(&state, body)?;
+    {
+        let conn = state.db.lock().unwrap();
+        storage::save(&conn, &cfg).map_err(internal)?;
+    }
+    *state.storage.write().unwrap() = cfg.clone();
+    *state.storage_source.lock().unwrap() = "db";
+    Ok(Json(cfg.public_json("db")))
+}
+
+/// 用表单里的值(未保存)探测;secret 留空则用已保存的
+async fn admin_test_storage(State(state): State<Arc<AppState>>, headers: HeaderMap, Json(body): Json<StorageBody>) -> Result<Json<storage::ProbeReport>, ApiError> {
+    require_admin(&state, &headers)?;
+    let cfg = storage_from_body(&state, body)?;
+    Ok(Json(storage::probe(&cfg).await))
 }
 
 // ---- 注册策略与邀请码(管理接口)----
@@ -846,12 +906,6 @@ fn env_or(key: &str, default: &str) -> String {
 async fn main() {
     let cfg = PlatformConfig {
         admin_key: std::env::var("KITE_ADMIN_KEY").expect("必须设置 KITE_ADMIN_KEY"),
-        s3_endpoint: std::env::var("S3_ENDPOINT").expect("必须设置 S3_ENDPOINT"),
-        s3_bucket: env_or("S3_BUCKET", "vela-sync"),
-        s3_region: env_or("S3_REGION", "us-east-1"),
-        s3_access_key: std::env::var("S3_ACCESS_KEY").expect("必须设置 S3_ACCESS_KEY"),
-        s3_secret_key: std::env::var("S3_SECRET_KEY").expect("必须设置 S3_SECRET_KEY"),
-        sts_mode: env_or("KITE_STS", "auto"),
         feature_gating: matches!(
             env_or("KITE_FEATURE_GATING", "off").to_ascii_lowercase().as_str(),
             "on" | "1" | "true"
@@ -861,23 +915,6 @@ async fn main() {
             if ["open", "invite", "closed"].contains(&m.as_str()) { m } else { "open".into() }
         },
     };
-
-    // 平台负责保证桶存在
-    {
-        let region = s3::Region::Custom { region: cfg.s3_region.clone(), endpoint: cfg.s3_endpoint.clone() };
-        let creds = s3::creds::Credentials::new(
-            Some(&cfg.s3_access_key),
-            Some(&cfg.s3_secret_key),
-            None,
-            None,
-            None,
-        )
-        .expect("S3 凭据无效");
-        match s3::Bucket::create_with_path_style(&cfg.s3_bucket, region, creds, Default::default()).await {
-            Ok(_) => println!("[server] 桶 {} 已就绪", cfg.s3_bucket),
-            Err(e) => println!("[server] 建桶跳过(可能已存在): {e}"),
-        }
-    }
 
     let conn = Connection::open(env_or("KITE_DB", "kite-server.db")).expect("打开数据库失败");
     conn.execute_batch(
@@ -916,9 +953,24 @@ async fn main() {
     )
     .expect("初始化表失败");
 
+    let (storage_cfg, source) = { storage::load(&conn) };
+    if storage_cfg.is_configured() {
+        match storage_cfg.bucket() {
+            Ok(b) => match b.put_object(&format!("{}.kite-init", storage_cfg.prefix), b"").await {
+                Ok(_) => { let _ = b.delete_object(&format!("{}.kite-init", storage_cfg.prefix)).await; println!("[server] 存储 {} 可用({source})", storage_cfg.bucket); }
+                Err(e) => println!("[server] 存储探测失败({source}),先启动再到控制台修正: {e}"),
+            },
+            Err(e) => println!("[server] 存储配置无效: {e}"),
+        }
+    } else {
+        println!("[server] 存储尚未配置 —— 到控制台「S3 存储」页填写");
+    }
+
     let state = Arc::new(AppState {
         db: Mutex::new(conn),
         cfg,
+        storage: std::sync::RwLock::new(storage_cfg),
+        storage_source: Mutex::new(source),
         register_hits: Mutex::new(HashMap::new()),
     });
     let app = Router::new()
@@ -934,6 +986,8 @@ async fn main() {
         .route("/api/features", get(features))
         .route("/api/admin/stats", get(admin_stats))
         .route("/api/admin/settings", get(admin_get_settings).post(admin_set_settings))
+        .route("/api/admin/storage", get(admin_get_storage).post(admin_set_storage))
+        .route("/api/admin/storage/test", post(admin_test_storage))
         .route("/api/admin/invites", get(admin_list_invites).post(admin_create_invite))
         .route("/api/admin/invites/{code}/disable", post(admin_disable_invite))
         .route("/api/admin/users", get(admin_list_users))

@@ -1,6 +1,6 @@
 //! STS AssumeRole(SigV4 手工签名)— 向 S3 兼容存储(MinIO 等)换取
 //! 按用户前缀收敛的临时凭据。凭据带 session policy:仅允许操作
-//! arn:aws:s3:::{bucket}/users/{uid}/* 与对应前缀的 ListBucket。
+//! arn:aws:s3:::{bucket}/{prefix}users/{uid}/* 与对应前缀的 ListBucket。
 
 use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
@@ -38,20 +38,20 @@ fn urlencode(s: &str) -> String {
     out
 }
 
-fn session_policy(bucket: &str, user_id: &str) -> String {
+fn session_policy(bucket: &str, prefix: &str, user_id: &str) -> String {
     serde_json::json!({
         "Version": "2012-10-17",
         "Statement": [
             {
                 "Effect": "Allow",
                 "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
-                "Resource": [format!("arn:aws:s3:::{bucket}/users/{user_id}/*")]
+                "Resource": [format!("arn:aws:s3:::{bucket}/{prefix}users/{user_id}/*")]
             },
             {
                 "Effect": "Allow",
                 "Action": ["s3:ListBucket"],
                 "Resource": [format!("arn:aws:s3:::{bucket}")],
-                "Condition": { "StringLike": { "s3:prefix": [format!("users/{user_id}/*")] } }
+                "Condition": { "StringLike": { "s3:prefix": [format!("{prefix}users/{user_id}/*")] } }
             }
         ]
     })
@@ -73,10 +73,11 @@ pub async fn assume_role_for_user(
     access_key: &str,
     secret_key: &str,
     bucket: &str,
+    prefix: &str,
     user_id: &str,
     duration_secs: u32,
 ) -> Result<TempCreds, String> {
-    let policy = session_policy(bucket, user_id);
+    let policy = session_policy(bucket, prefix, user_id);
     let body = format!(
         "Action=AssumeRole&Version=2011-06-15&DurationSeconds={duration_secs}\
          &RoleArn={}&RoleSessionName={}&Policy={}",
