@@ -33,6 +33,7 @@ mod features;
 mod mail;
 mod storage;
 mod sts;
+mod totp;
 
 struct PlatformConfig {
     admin_key: String,
@@ -233,6 +234,9 @@ struct Credentials {
     /// 仅 invite 模式需要
     #[serde(default)]
     invite_code: Option<String>,
+    /// 已绑定双因素认证的账户登录时必填
+    #[serde(default)]
+    totp: Option<String>,
 }
 
 struct AuthedUser {
@@ -421,13 +425,15 @@ async fn register(
         });
     }
 
+    let totp_setup_required = features::raw(&conn, "totp_required");
     Ok((
         StatusCode::CREATED,
         Json(json!({
             "userId": id,
             "token": token,
             "expiresAt": expires_at,
-            "user": { "id": id, "email": email, "syncEnabled": sync_enabled, "emailVerified": !need_verify },
+            "totpSetupRequired": totp_setup_required,
+            "user": { "id": id, "email": email, "syncEnabled": sync_enabled, "emailVerified": !need_verify, "totpEnabled": false },
         })),
     ))
 }
@@ -438,15 +444,15 @@ async fn login(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let email = body.email.trim().to_lowercase();
     let conn = state.db.lock().unwrap();
-    let row: Option<(String, String, i64, i64)> = conn
+    let row: Option<(String, String, i64, i64, Option<String>, i64)> = conn
         .query_row(
-            "SELECT id, password_hash, sync_enabled, email_verified FROM users WHERE email = ?1",
+            "SELECT id, password_hash, sync_enabled, email_verified, totp_secret, totp_enabled FROM users WHERE email = ?1",
             [&email],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
         )
         .optional()
         .map_err(internal)?;
-    let Some((user_id, hash, sync_enabled, email_verified)) = row else {
+    let Some((user_id, hash, sync_enabled, email_verified, totp_secret, totp_enabled)) = row else {
         return Err(err(StatusCode::UNAUTHORIZED, "bad_credentials", "邮箱或密码错误"));
     };
     let parsed = PasswordHash::new(&hash).map_err(internal)?;
@@ -461,11 +467,24 @@ async fn login(
     if !features::effective(&conn, state.cfg.feature_gating, "login") {
         return Err(err(StatusCode::FORBIDDEN, "LOGIN_DISABLED", "平台当前已关闭登录"));
     }
+    if totp_enabled != 0 {
+        let Some(code) = body.totp.as_deref().filter(|c| !c.trim().is_empty()) else {
+            return Err(err(StatusCode::UNAUTHORIZED, "TOTP_REQUIRED", "请输入动态验证码"));
+        };
+        if !totp::verify(totp_secret.as_deref().unwrap_or(""), code, now_ts()) {
+            return Err(err(StatusCode::UNAUTHORIZED, "TOTP_INVALID", "动态验证码错误"));
+        }
+    }
     let (token, expires_at) = issue_token(&conn, &user_id)?;
+    // 多设备登录关闭:新登录挤掉其它设备的令牌
+    if !features::raw(&conn, "multi_device") {
+        conn.execute("DELETE FROM tokens WHERE user_id = ?1 AND token != ?2", params![user_id, token]).map_err(internal)?;
+    }
+    let totp_setup_required = features::raw(&conn, "totp_required") && totp_enabled == 0;
     Ok(Json(json!({
-        "token": token,
-        "expiresAt": expires_at,
-        "user": { "id": user_id, "email": email, "syncEnabled": sync_enabled != 0, "emailVerified": email_verified != 0 },
+        "token": token, "expiresAt": expires_at, "totpSetupRequired": totp_setup_required,
+        "user": { "id": user_id, "email": email, "syncEnabled": sync_enabled != 0,
+                  "emailVerified": email_verified != 0, "totpEnabled": totp_enabled != 0 },
     })))
 }
 
@@ -527,6 +546,9 @@ async fn sync_credentials(
         }
         if features::raw(&conn, "email_verify") && !user.email_verified {
             return Err(err(StatusCode::FORBIDDEN, "EMAIL_UNVERIFIED", "请先完成邮箱验证"));
+        }
+        if features::raw(&conn, "totp_required") && !user.totp_enabled {
+            return Err(err(StatusCode::FORBIDDEN, "TOTP_SETUP_REQUIRED", "平台要求绑定双因素认证后才能同步"));
         }
     }
     if !user.sync_enabled {
@@ -658,6 +680,65 @@ fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError> 
         return Err(err(StatusCode::UNAUTHORIZED, "unauthorized", "管理密钥错误"));
     }
     Ok(())
+}
+
+// ---- 双因素认证 ----
+
+/// 生成待确认的密钥(不启用);再次调用会换新密钥
+async fn totp_setup(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Result<Json<serde_json::Value>, ApiError> {
+    let user = authenticate(&state, &headers)?;
+    if user.totp_enabled {
+        return Err(err(StatusCode::CONFLICT, "TOTP_ALREADY_ENABLED", "已绑定双因素认证,如需更换请先解绑"));
+    }
+    let secret = totp::new_secret();
+    let conn = state.db.lock().unwrap();
+    conn.execute("UPDATE users SET totp_secret = ?2 WHERE id = ?1", params![user.id, secret]).map_err(internal)?;
+    Ok(Json(json!({ "secret": secret, "otpauthUrl": totp::otpauth_url(&secret, &user.email) })))
+}
+
+fn user_totp_secret(conn: &Connection, user_id: &str) -> Result<Option<String>, ApiError> {
+    conn.query_row("SELECT totp_secret FROM users WHERE id = ?1", [user_id], |r| r.get::<_, Option<String>>(0))
+        .map_err(internal)
+}
+
+/// 用当前验证码确认绑定
+async fn totp_enable(State(state): State<Arc<AppState>>, headers: HeaderMap, Json(body): Json<CodeBody>) -> Result<Json<serde_json::Value>, ApiError> {
+    let user = authenticate(&state, &headers)?;
+    let conn = state.db.lock().unwrap();
+    let Some(secret) = user_totp_secret(&conn, &user.id)? else {
+        return Err(err(StatusCode::BAD_REQUEST, "TOTP_NOT_PENDING", "请先生成密钥"));
+    };
+    if !totp::verify(&secret, &body.code, now_ts()) {
+        return Err(err(StatusCode::BAD_REQUEST, "TOTP_INVALID", "动态验证码错误"));
+    }
+    conn.execute("UPDATE users SET totp_enabled = 1 WHERE id = ?1", [&user.id]).map_err(internal)?;
+    Ok(Json(json!({ "ok": true, "totpEnabled": true })))
+}
+
+/// 解绑须验证码;平台强制 2FA 时不允许解绑
+async fn totp_disable(State(state): State<Arc<AppState>>, headers: HeaderMap, Json(body): Json<CodeBody>) -> Result<Json<serde_json::Value>, ApiError> {
+    let user = authenticate(&state, &headers)?;
+    let conn = state.db.lock().unwrap();
+    if features::raw(&conn, "totp_required") {
+        return Err(err(StatusCode::FORBIDDEN, "TOTP_ENFORCED", "平台强制双因素认证,不能解绑"));
+    }
+    let secret = user_totp_secret(&conn, &user.id)?.unwrap_or_default();
+    if !user.totp_enabled || !totp::verify(&secret, &body.code, now_ts()) {
+        return Err(err(StatusCode::BAD_REQUEST, "TOTP_INVALID", "动态验证码错误"));
+    }
+    conn.execute("UPDATE users SET totp_enabled = 0, totp_secret = NULL WHERE id = ?1", [&user.id]).map_err(internal)?;
+    Ok(Json(json!({ "ok": true, "totpEnabled": false })))
+}
+
+/// 管理员重置(用户丢了验证器):清掉密钥并吊销令牌,下次登录重新绑定
+async fn admin_reset_totp(State(state): State<Arc<AppState>>, Path(email): Path<String>, headers: HeaderMap) -> Result<Json<serde_json::Value>, ApiError> {
+    require_admin(&state, &headers)?;
+    let conn = state.db.lock().unwrap();
+    let email = email.trim().to_lowercase();
+    let n = conn.execute("UPDATE users SET totp_enabled = 0, totp_secret = NULL WHERE email = ?1", [&email]).map_err(internal)?;
+    if n == 0 { return Err(err(StatusCode::NOT_FOUND, "not_found", "用户不存在")); }
+    conn.execute("DELETE FROM tokens WHERE user_id IN (SELECT id FROM users WHERE email = ?1)", [&email]).map_err(internal)?;
+    Ok(Json(json!({ "ok": true })))
 }
 
 async fn admin_stats(
@@ -1115,6 +1196,9 @@ async fn main() {
         .route("/api/verify-email", post(verify_email))
         .route("/api/verify-email/resend", post(resend_verification))
         .route("/api/sync/credentials", get(sync_credentials))
+        .route("/api/2fa/setup", post(totp_setup))
+        .route("/api/2fa/enable", post(totp_enable))
+        .route("/api/2fa/disable", post(totp_disable))
         .route("/api/features", get(features))
         .route("/api/admin/stats", get(admin_stats))
         .route("/api/admin/settings", get(admin_get_settings).post(admin_set_settings))
@@ -1127,6 +1211,7 @@ async fn main() {
         .route("/api/admin/users/{email}/revoke", post(admin_revoke))
         .route("/api/admin/users/{email}/usage", get(admin_usage))
         .route("/api/admin/users/{email}/verify", post(admin_verify_user))
+        .route("/api/admin/users/{email}/2fa/reset", post(admin_reset_totp))
         .with_state(state);
 
     let listen = env_or("KITE_LISTEN", "127.0.0.1:8787");

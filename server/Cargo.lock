@@ -140,6 +140,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "base32"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "022dfe9eb35f19ebbcb51e0b40a5ab759f46ad60cadf7297e0bd085afb50e076"
+
+[[package]]
 name = "base64"
 version = "0.21.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -929,6 +935,7 @@ version = "0.1.0"
 dependencies = [
  "argon2",
  "axum",
+ "base32",
  "chrono",
  "hex",
  "hmac",
@@ -939,6 +946,7 @@ dependencies = [
  "rust-s3",
  "serde",
  "serde_json",
+ "sha1",
  "sha2",
  "tokio",
  "uuid",
@@ -1677,6 +1685,17 @@ dependencies = [
  "itoa",
  "ryu",
  "serde",
+]
+
+[[package]]
+name = "sha1"
+version = "0.10.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a978451301f4db1d02937a4ab3ccce137717b81826e79b7d49ffe3244a13c3b8"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.2.17",
+ "digest",
 ]
 
 [[package]]
