@@ -172,3 +172,7 @@
 
 /* 加载中的图标(配 lucide 的 Loader2) */
 .spin { animation: vspin 0.9s linear infinite; }
+
+/* 2FA 绑定二维码:唯一允许写死颜色的地方 —— 二维码扫描依赖黑白对比度和
+   四周留白(quiet zone),深色主题下透明/暗色背景会让扫描失败,必须固定为白底 */
+.qr { border-radius: var(--radius-md); background: #fff; padding: 4px; }
