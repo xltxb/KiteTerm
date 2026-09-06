@@ -331,7 +331,7 @@ export function CertsScreen() {
 
         <div className="row gap-8 fs-sm t-faint mt-12">
           <RefreshCw size={13} />
-          到期前 30 天自动续期并重载服务;账户密钥与证书随主机配置端到端加密同步。
+          到期前 30 天自动续期并重载服务;证书与私钥仅保存在本机。
         </div>
       </div>
 
