@@ -67,6 +67,32 @@ impl Default for Detector {
     }
 }
 
+/// 一次传输所需的上下文:通道 + 进度回调 + 收方向用的下载目录 + 发方向用的待发文件列表。
+/// `download_dir` 仅 `Detected::Receive` 时有意义,`files` 仅 `Detected::Send` 时有意义。
+pub struct RunCtx<'a, C: ZChannel, P: ProgressSink> {
+    pub chan: &'a mut C,
+    pub sink: &'a P,
+    pub download_dir: std::path::PathBuf,
+    pub files: Option<Vec<std::path::PathBuf>>,
+}
+
+/// 按探测结果分发到接收或发送状态机的统一入口:探测阶段(Task 7)确定 `mode` 后,
+/// 调用方在此处二选一驱动 `receive::receive` 或 `send::send`。
+pub async fn run<C: ZChannel, P: ProgressSink>(
+    mode: Detected,
+    ctx: RunCtx<'_, C, P>,
+) -> std::io::Result<()> {
+    match mode {
+        Detected::Receive => receive::receive(ctx.chan, ctx.sink, &ctx.download_dir)
+            .await
+            .map(|_| ()),
+        Detected::Send => {
+            let files = ctx.files.unwrap_or_default();
+            send::send(ctx.chan, ctx.sink, &files).await
+        }
+    }
+}
+
 /// 测试用桩件:内存双向管道 `MemChannel` 与记录进度调用的 `RecordingSink`。
 /// 标记为 `pub(crate)` 以便 Task 4/5 的接收/发送状态机测试复用。
 #[cfg(test)]
@@ -232,5 +258,103 @@ mod tests {
         let mut buf = [0u8; 8];
         let n = a.read(&mut buf).await.unwrap();
         assert_eq!(n, 0);
+    }
+
+    /// 回环测试专用临时目录:同 send.rs/receive.rs 的 TmpDir 写法,Drop 时递归删除,
+    /// 避免为测试引入 tempfile 依赖。
+    struct TmpDir(std::path::PathBuf);
+    impl TmpDir {
+        fn new() -> Self {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let pid = std::process::id();
+            let path = std::env::temp_dir().join(format!("kiteterm-zmodem-loopback-{pid}-{id}"));
+            std::fs::create_dir_all(&path).unwrap();
+            TmpDir(path)
+        }
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+    impl Drop for TmpDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// 生成确定性伪随机内容(xorshift64,按长度播种):有意避免全零/重复模式,
+    /// 这样截断、偏移或子包边界类 bug 会体现为具体字节不符,而不是被"巧合正确"掩盖。
+    fn pattern_bytes(len: usize) -> Vec<u8> {
+        let mut state: u64 = 0x9E3779B97F4A7C15 ^ (len as u64).wrapping_add(1);
+        let mut out = Vec::with_capacity(len);
+        for _ in 0..len {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            out.push((state & 0xFF) as u8);
+        }
+        out
+    }
+
+    /// 端到端回环:`send`/`receive` 状态机通过 `MemChannel::pair()` 真实互通,不借助任何
+    /// 脚本化对端,是 send 与 receive 第一次真刀真枪对打——包括中途 ZRPOS 回退在内的完整
+    /// 协议路径都要跑通。覆盖 0/1/1023/1024/1025 字节与 10MB 六种大小,逐字节断言收发相等。
+    ///
+    /// 握手复用说明:`send` 的前置条件是"远端 ZRINIT 已被上游探测阶段(Task 7)消费",
+    /// 而 `receive` 一进入就会主动发 ZRINIT。回环里没有探测阶段替 send 吃掉这个 ZRINIT,
+    /// 但 `send_impl` 等 ZRPOS/ZSKIP 的循环对非 ZRPOS/ZSKIP 帧一律 `continue` 忽略
+    /// (含重复 ZRINIT,见 send.rs 注释"其它帧(重复 ZRINIT 等)忽略,继续等"),
+    /// 所以这个"多出来"的 ZRINIT 会被自然吞掉,`run` 无需再额外消费它。
+    ///
+    /// 结束语义说明:`receive` 收发完 ZFIN/OO 后仍会再读一次通道以确认 EOF(Ok(0))才返回;
+    /// 真实传输里这靠对端进程退出/管道关闭触发。回环里让 send/receive 各自把自己那一端
+    /// `MemChannel` 的所有权 move 进各自的 async 块(而不是从外层借用),使其在 `run` 返回、
+    /// 该 async 块结束时随作用域自然 Drop,从而让对端的 read 拿到 Ok(0)——这与
+    /// receive.rs/send.rs 里脚本化 `sender`/`peer` 闭包"归还通道"的写法是同一手法。
+    #[tokio::test]
+    async fn loopback() {
+        for &size in &[0usize, 1, 1023, 1024, 1025, 10 * 1024 * 1024] {
+            let (a, b) = MemChannel::pair();
+
+            let src_dir = TmpDir::new();
+            let dst_dir = TmpDir::new();
+            let content = pattern_bytes(size);
+            let src_path = src_dir.path().join("payload.bin");
+            std::fs::write(&src_path, &content).unwrap();
+            let dst_dir_path = dst_dir.path().to_path_buf();
+
+            let recv_sink = RecordingSink::new();
+            let send_sink = RecordingSink::new();
+
+            let recv_task = async move {
+                let mut a = a;
+                let ctx = RunCtx {
+                    chan: &mut a,
+                    sink: &recv_sink,
+                    download_dir: dst_dir_path,
+                    files: None,
+                };
+                run(Detected::Receive, ctx).await
+            };
+            let send_task = async move {
+                let mut b = b;
+                let ctx = RunCtx {
+                    chan: &mut b,
+                    sink: &send_sink,
+                    download_dir: std::path::PathBuf::new(),
+                    files: Some(vec![src_path]),
+                };
+                run(Detected::Send, ctx).await
+            };
+
+            let (recv_result, send_result) = tokio::join!(recv_task, send_task);
+            recv_result.unwrap_or_else(|e| panic!("size={size}: receive failed: {e}"));
+            send_result.unwrap_or_else(|e| panic!("size={size}: send failed: {e}"));
+
+            let got = std::fs::read(dst_dir.path().join("payload.bin")).unwrap();
+            assert_eq!(got.len(), size, "size={size}: 长度不符");
+            assert_eq!(got, content, "size={size}: 内容不符");
+        }
     }
 }
