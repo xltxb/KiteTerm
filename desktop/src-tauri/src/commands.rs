@@ -224,6 +224,12 @@ pub async fn session_open(
     Ok(info)
 }
 
+/// 打开本地终端(本机 PTY 跑默认 shell),不参与启动恢复
+#[tauri::command]
+pub fn local_session_open(app: AppHandle, state: State<AppState>) -> Result<SessionInfo> {
+    crate::local::open_local_session(app, state.sessions.clone())
+}
+
 /// 主机密钥指纹变更后,用户确认信任:清除旧记录,下次连接 TOFU 重新记录
 #[tauri::command]
 pub fn trust_host_key(state: State<AppState>, host_id: String) -> Result<()> {

@@ -41,6 +41,8 @@ url = "2"
 keyring = { version = "3", features = ["apple-native", "windows-native"] }
 zeroize = "1"
 whoami = "1"
+# 本地终端的伪终端(macOS openpty / Windows ConPTY)
+portable-pty = "0.9"
 
 [profile.release]
 codegen-units = 1
