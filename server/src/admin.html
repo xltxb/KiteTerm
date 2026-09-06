@@ -127,6 +127,27 @@
         display:flex;align-items:center;justify-content:center;box-shadow:var(--glow-sm)}
   .hidden{display:none !important}
   #login-box{max-width:420px;margin:14vh auto 0;padding:28px}
+  .tabs{display:inline-flex;gap:4px;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:4px;margin:18px 0}
+  .tab{display:flex;align-items:center;gap:8px;padding:7px 16px;border-radius:9px;font-size:13px;font-weight:600;cursor:pointer;color:var(--muted);transition:all .14s}
+  .tab:hover{color:var(--text)}
+  .tab[data-active="true"]{background:var(--accent-subtle);color:var(--accent-text)}
+  .tab svg{flex:none}
+  .form-grid{display:grid;grid-template-columns:2fr 1fr;gap:14px 16px}
+  .field label{display:block;font-size:11.5px;font-weight:600;color:var(--muted);margin-bottom:6px}
+  .field .input{width:100%}
+  .split{display:flex;align-items:center;gap:12px;margin-top:8px;padding-top:14px;border-top:1px solid var(--border)}
+  .split .title{font-weight:600;font-size:13px;color:var(--text-strong)}
+  .split .desc{font-size:11.5px;color:var(--faint)}
+  .feat-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start}
+  .feat-card{padding:8px 20px}
+  .feat-head{display:flex;align-items:center;gap:8px;padding:14px 0 6px}
+  .feat-head .name{font-size:13px;font-weight:700;color:var(--text-strong)}
+  .feat-row{display:flex;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--border)}
+  .feat-row[data-dim="true"]{opacity:.45}
+  .icon-chip{width:34px;height:34px;flex:none;border-radius:10px;background:var(--accent-subtle);color:var(--accent-text);display:flex;align-items:center;justify-content:center}
+  .badge.neutral{background:var(--sunken);color:var(--muted)}
+  .probe{font-size:12px;line-height:1.7;margin-top:12px;color:var(--muted)}
+  .probe .ok{color:var(--success-t)} .probe .bad{color:var(--danger-t)}
 </style>
 </head>
 <body>
@@ -160,83 +181,133 @@
       <button class="btn ghost" onclick="logout()">退出</button>
     </div>
 
-    <div class="stats">
-      <div class="card stat"><div class="label">Users 总用户</div><div class="num" id="st-users">—</div><div class="sub" id="st-endpoint"></div></div>
-      <div class="card stat"><div class="label">Sync Enabled 同步放开</div><div class="num" id="st-enabled">—</div><div class="sub">停用账户将无法获取存储凭据</div></div>
-      <div class="card stat"><div class="label">Active Tokens 活跃令牌</div><div class="num" id="st-tokens">—</div><div class="sub">强制下线会吊销该用户全部令牌</div></div>
+    <div class="tabs" id="tabs">
+      <div class="tab" data-tab="users" onclick="switchTab('users')">用户与同步</div>
+      <div class="tab" data-tab="storage" onclick="switchTab('storage')">S3 存储</div>
+      <div class="tab" data-tab="features" onclick="switchTab('features')">功能开关</div>
     </div>
 
-    <!-- 功能开关 -->
-    <div class="card" style="margin-bottom:16px">
-      <div class="toolbar" style="border-bottom:none;flex-wrap:wrap;gap:20px">
-        <span style="font-size:13px;font-weight:700;color:var(--text-strong)">功能开关</span>
-        <span class="pill" id="gating-state">—</span>
-        <label class="feat">登录
-          <button class="switch" id="feat-login" onclick="toggleFeature('featureLogin','登录')"><span class="thumb"></span></button>
-        </label>
-        <label class="feat">云同步
-          <button class="switch" id="feat-sync" onclick="toggleFeature('featureSync','云同步')"><span class="thumb"></span></button>
-        </label>
-        <label class="feat">AI 助手
-          <button class="switch" id="feat-ai" onclick="toggleFeature('featureAi','AI 助手')"><span class="thumb"></span></button>
-        </label>
-        <span style="flex:1"></span>
+    <!-- ===== 用户与同步 ===== -->
+    <div id="tab-users">
+      <div class="stats">
+        <div class="card stat"><div class="label">Users 总用户</div><div class="num" id="st-users">—</div><div class="sub" id="st-endpoint"></div></div>
+        <div class="card stat"><div class="label">Sync Enabled 同步放开</div><div class="num" id="st-enabled">—</div><div class="sub">停用账户将无法获取存储凭据</div></div>
+        <div class="card stat"><div class="label">Active Tokens 活跃令牌</div><div class="num" id="st-tokens">—</div><div class="sub">强制下线会吊销该用户全部令牌</div></div>
       </div>
-      <div style="border-top:1px solid var(--border);padding:10px 16px;font-size:12px;color:var(--muted);line-height:1.7">
-        <div id="gating-hint" style="margin-bottom:4px;color:var(--text)"></div>
-        客户端启动时拉取 <code>/api/features</code> 并缓存;关闭的功能在客户端隐藏入口。
-        登录与云同步在服务端一并拦截,AI 助手完全跑在客户端本地、无对应服务端调用,
-        因此只能靠客户端遵守 —— 它是产品管控,不是安全边界。
-        <br>注册开关即下方「注册策略」的<b>关闭注册</b>。
-      </div>
-    </div>
 
-    <!-- 注册策略 -->
-    <div class="card" style="margin-bottom:16px">
-      <div class="toolbar" style="border-bottom:none;flex-wrap:wrap;gap:14px">
-        <span style="font-size:13px;font-weight:700;color:var(--text-strong)">注册策略</span>
-        <div class="seg" id="reg-mode">
-          <div class="seg-item" data-mode="open" onclick="setRegMode('open')">开放注册</div>
-          <div class="seg-item" data-mode="invite" onclick="setRegMode('invite')">仅邀请码</div>
-          <div class="seg-item" data-mode="closed" onclick="setRegMode('closed')">关闭注册</div>
+      <div class="card">
+        <div class="toolbar">
+          <input id="search" class="input" style="width:260px" placeholder="搜索邮箱 / 用户 ID…" oninput="render()">
+          <span style="flex:1"></span>
+          <span class="mono" id="bucket-info"></span>
+          <span class="badge accent" id="sts-badge"><span class="dot"></span>—</span>
         </div>
-        <span style="flex:1"></span>
-        <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--muted);cursor:pointer">
-          新用户默认放开同步
-          <button class="switch" id="default-sync" onclick="toggleDefaultSync()"><span class="thumb"></span></button>
-        </label>
-      </div>
-      <div id="invite-section" class="hidden" style="border-top:1px solid var(--border);padding:14px 16px">
-        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px">
-          <input id="inv-note" class="input" style="width:180px" placeholder="备注(可选)">
-          <input id="inv-uses" class="input" style="width:130px" type="number" min="0" placeholder="可用次数 0=不限">
-          <input id="inv-days" class="input" style="width:130px" type="number" min="0" placeholder="有效天数 0=永久">
-          <button class="btn primary" onclick="createInvite()">生成邀请码</button>
+        <div style="overflow-x:auto">
+          <table>
+            <thead><tr>
+              <th>用户</th><th>注册时间</th><th>状态</th><th>存储用量</th><th>同步</th><th style="text-align:right">操作</th>
+            </tr></thead>
+            <tbody id="rows"></tbody>
+          </table>
         </div>
-        <div id="invite-list"></div>
+      </div>
+      <div class="muted-note">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg>
+        <span>同步开关即时生效:停用后该账户下一次同步请求被拒(<code>SYNC_DISABLED</code>),客户端提示联系管理员;强制下线吊销该用户全部登录令牌。
+        桶内均为用户主密码派生密钥加密的密文,平台与管理员均无法解读。</span>
       </div>
     </div>
 
-    <div class="card">
-      <div class="toolbar">
-        <input id="search" class="input" style="width:260px" placeholder="搜索邮箱 / 用户 ID…" oninput="render()">
-        <span style="flex:1"></span>
-        <span class="mono" id="bucket-info"></span>
-        <span class="badge accent" id="sts-badge"><span class="dot"></span>—</span>
+    <!-- ===== S3 存储 ===== -->
+    <div id="tab-storage" class="hidden">
+      <div class="card" style="padding:20px 22px;margin-bottom:16px">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px">
+          <div class="icon-chip"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/></svg></div>
+          <div style="flex:1;line-height:1.3">
+            <div style="font-weight:700;font-size:14.5px;color:var(--text-strong)">S3 兼容存储</div>
+            <div style="font-size:12px;color:var(--faint)">同步数据的唯一后端;支持 AWS S3 / Cloudflare R2 / MinIO</div>
+          </div>
+          <span class="badge neutral" id="s3-state"><span class="dot"></span>—</span>
+        </div>
+        <div class="form-grid">
+          <div class="field"><label>Endpoint</label><input class="input" id="s3-endpoint" placeholder="https://s3.example.com"></div>
+          <div class="field"><label>Region</label><input class="input" id="s3-region" placeholder="us-east-1"></div>
+          <div class="field"><label>Bucket</label><input class="input" id="s3-bucket" placeholder="vela-sync"></div>
+          <div class="field"><label>路径前缀(可选)</label><input class="input" id="s3-prefix" placeholder="prod/"></div>
+          <div class="field"><label>Access Key ID</label><input class="input" id="s3-ak" placeholder="AKIA…"></div>
+          <div class="field"><label>Secret Access Key</label><input class="input" id="s3-sk" type="password" placeholder="留空 = 沿用已保存的"></div>
+        </div>
+        <div class="split">
+          <div style="flex:1"><div class="title">Path-style 寻址</div><div class="desc">MinIO / 自建网关需开启;AWS S3 / R2 保持关闭</div></div>
+          <button class="switch" id="s3-path" onclick="flip('s3-path')"><span class="thumb"></span></button>
+        </div>
+        <div class="split">
+          <div style="flex:1"><div class="title">STS 限权凭据下发</div><div class="desc">为每个用户签发仅限 <code>users/{uid}/*</code> 前缀的临时凭据(1h);关闭则回退共享凭据</div></div>
+          <div class="seg" id="s3-sts">
+            <div class="seg-item" data-mode="auto" onclick="setSts('auto')">自动回退</div>
+            <div class="seg-item" data-mode="require" onclick="setSts('require')">强制</div>
+            <div class="seg-item" data-mode="off" onclick="setSts('off')">关闭</div>
+          </div>
+        </div>
+        <div id="probe" class="probe hidden"></div>
+        <div style="display:flex;gap:10px;margin-top:18px">
+          <button class="btn" id="s3-test" onclick="testStorage()">测试连接</button>
+          <button class="btn primary" onclick="saveStorage()">保存配置</button>
+          <span style="flex:1"></span>
+          <span class="mono" id="s3-source"></span>
+        </div>
       </div>
-      <div style="overflow-x:auto">
-        <table>
-          <thead><tr>
-            <th>用户</th><th>注册时间</th><th>存储用量</th><th>同步</th><th style="text-align:right">操作</th>
-          </tr></thead>
-          <tbody id="rows"></tbody>
-        </table>
+      <div class="muted-note" style="margin-top:0">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg>
+        <span>建议 IAM 权限最小化:<code>GetObject / PutObject / DeleteObject / ListBucket</code> 且限定该桶;更换桶或凭据不影响已有密文,客户端下次同步自动指向新地址。保存即热生效,无需重启。</span>
       </div>
     </div>
-    <div class="muted-note">
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg>
-      <span>同步开关即时生效:停用后该账户下一次同步请求被拒(<code>SYNC_DISABLED</code>),客户端提示联系管理员;强制下线吊销该用户全部登录令牌。
-      桶内均为用户主密码派生密钥加密的密文,平台与管理员均无法解读。</span>
+
+    <!-- ===== 功能开关 ===== -->
+    <div id="tab-features" class="hidden">
+      <div class="card" style="margin-bottom:16px">
+        <div class="toolbar" style="border-bottom:none;gap:14px;flex-wrap:wrap">
+          <span style="font-size:13px;font-weight:700;color:var(--text-strong)">门禁总闸</span>
+          <span class="pill" id="gating-state">—</span>
+          <span style="flex:1"></span>
+          <span style="font-size:13px;font-weight:700;color:var(--text-strong)">注册策略</span>
+          <div class="seg" id="reg-mode">
+            <div class="seg-item" data-mode="open" onclick="setRegMode('open')">开放注册</div>
+            <div class="seg-item" data-mode="invite" onclick="setRegMode('invite')">仅邀请码</div>
+            <div class="seg-item" data-mode="closed" onclick="setRegMode('closed')">关闭注册</div>
+          </div>
+        </div>
+        <div id="gating-hint" style="border-top:1px solid var(--border);padding:10px 16px;font-size:12px;color:var(--muted);line-height:1.7"></div>
+        <div id="invite-section" class="hidden" style="border-top:1px solid var(--border);padding:14px 16px">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+            <input id="inv-note" class="input" style="width:180px" placeholder="备注(可选)">
+            <input id="inv-uses" class="input" style="width:130px" type="number" min="0" placeholder="可用次数 0=不限">
+            <input id="inv-days" class="input" style="width:130px" type="number" min="0" placeholder="有效天数 0=永久">
+            <button class="btn primary" onclick="createInvite()">生成邀请码</button>
+          </div>
+          <div id="invite-list"></div>
+        </div>
+      </div>
+      <div class="feat-grid">
+        <div class="card feat-card">
+          <div class="feat-head"><span class="name">登录与注册</span></div>
+          <div id="feat-auth"></div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:16px">
+          <div class="card feat-card">
+            <div class="feat-head"><span class="name">云同步</span></div>
+            <div id="feat-sync"></div>
+          </div>
+          <div class="card feat-card">
+            <div class="feat-head"><span class="name">AI 功能</span><span style="flex:1"></span><span class="badge" id="ai-badge"><span class="dot"></span>—</span></div>
+            <div id="feat-ai"></div>
+          </div>
+        </div>
+      </div>
+      <div class="muted-note">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg>
+        <span>开关经 <code>/api/features</code> 下发,客户端启动与每 60 s 拉取一次,变更在下一次拉取内生效。「产品开关」受门禁总闸约束;「安全策略」(注册、邮箱验证、强制 2FA、多设备)始终生效并由服务端拦截。</span>
+      </div>
     </div>
   </div>
 </div>
@@ -253,6 +324,9 @@ let SETTINGS = {
   featureSync: true,
   featureAi: true,
 };
+let TAB = localStorage.getItem("kite_admin_tab") || "users";
+let STORAGE = null;      // /api/admin/storage 回包
+let S3_FORM = { pathStyle: true, stsMode: "auto" };
 const $ = (id) => document.getElementById(id);
 
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -327,10 +401,11 @@ function logout() {
 
 async function refresh(manual) {
   try {
-    const [stats, users, settings] = await Promise.all([
+    const [stats, users, settings, storage] = await Promise.all([
       api("/api/admin/stats"),
       api("/api/admin/users"),
       api("/api/admin/settings"),
+      api("/api/admin/storage"),
     ]);
     $("st-users").textContent = stats.users;
     $("st-enabled").textContent = stats.syncEnabled;
@@ -342,10 +417,13 @@ async function refresh(manual) {
     $("sts-badge").innerHTML = '<span class="dot"></span>' + esc(stsLabel);
     USERS = users.users;
     SETTINGS = settings;
+    STORAGE = storage;
     renderSettings();
+    renderStorage();
     render();
     if (settings.registrationMode === "invite") loadInvites();
     if (manual === true) toast("已刷新", false, "refresh-cw");
+    switchTab(TAB);
   } catch (e) {
     toast("加载失败:" + e.message, true);
   }
@@ -355,24 +433,117 @@ function renderSettings() {
   document.querySelectorAll("#reg-mode .seg-item").forEach((el) => {
     el.dataset.active = String(el.dataset.mode === SETTINGS.registrationMode);
   });
-  $("default-sync").dataset.on = String(!!SETTINGS.defaultSyncEnabled);
-  $("feat-login").dataset.on = String(!!SETTINGS.featureLogin);
-  $("feat-sync").dataset.on = String(!!SETTINGS.featureSync);
-  $("feat-ai").dataset.on = String(!!SETTINGS.featureAi);
-  // 总闸由部署配置 KITE_FEATURE_GATING 决定,控制台只读 —— 关掉时下面三个开关不起作用,
+  // 总闸由部署配置 KITE_FEATURE_GATING 决定,控制台只读 —— 关掉时产品开关不起作用,
   // 必须说明白,否则运维会以为点了没反应
   const gating = !!SETTINGS.featureGating;
   $("gating-state").textContent = gating ? "门禁已启用" : "门禁未启用";
   $("gating-state").className = "pill " + (gating ? "ok" : "warn");
   $("gating-hint").innerHTML = gating
-    ? "总闸 <code>KITE_FEATURE_GATING=on</code> 已开启,下面三个开关生效。"
+    ? "总闸 <code>KITE_FEATURE_GATING=on</code> 已开启,下面的产品开关生效。"
     : "总闸未开启(<code>KITE_FEATURE_GATING</code> 默认 <code>off</code>)——"
-      + " <b>下面三个开关当前不起作用</b>,客户端四项功能全部可用。"
+      + " <b>下面的产品开关当前不起作用</b>,客户端相关功能全部可用。"
       + "要启用逐项管控,请以 <code>KITE_FEATURE_GATING=on</code> 重启平台。";
-  ["feat-login", "feat-sync", "feat-ai"].forEach((id) => {
-    $(id).style.opacity = gating ? "1" : "0.45";
-  });
   $("invite-section").classList.toggle("hidden", SETTINGS.registrationMode !== "invite");
+  renderFeatures();
+}
+
+function switchTab(t) {
+  TAB = t; localStorage.setItem("kite_admin_tab", t);
+  document.querySelectorAll("#tabs .tab").forEach((el) => (el.dataset.active = String(el.dataset.tab === t)));
+  ["users", "storage", "features"].forEach((k) => $("tab-" + k).classList.toggle("hidden", k !== t));
+}
+function flip(id) { const b = $(id); b.dataset.on = String(b.dataset.on !== "true"); if (id === "s3-path") S3_FORM.pathStyle = b.dataset.on === "true"; }
+function setSts(mode) { S3_FORM.stsMode = mode; document.querySelectorAll("#s3-sts .seg-item").forEach((el) => (el.dataset.active = String(el.dataset.mode === mode))); }
+
+function renderStorage() {
+  const s = STORAGE;
+  $("s3-endpoint").value = s.endpoint; $("s3-region").value = s.region; $("s3-bucket").value = s.bucket;
+  $("s3-prefix").value = s.prefix; $("s3-ak").value = s.accessKey; $("s3-sk").value = "";
+  $("s3-sk").placeholder = s.hasSecret ? "留空 = 沿用已保存的" : "必填";
+  S3_FORM = { pathStyle: !!s.pathStyle, stsMode: s.stsMode || "auto" };
+  $("s3-path").dataset.on = String(S3_FORM.pathStyle); setSts(S3_FORM.stsMode);
+  $("s3-state").className = "badge " + (s.configured ? "ok" : "warn");
+  $("s3-state").innerHTML = '<span class="dot"></span>' + (s.configured ? "已配置" : "未配置");
+  $("s3-source").textContent = s.source === "db" ? "来源:控制台保存" : "来源:环境变量初值(尚未在控制台保存)";
+  $("probe").classList.add("hidden");
+}
+function storageBody() {
+  return { endpoint: $("s3-endpoint").value.trim(), region: $("s3-region").value.trim(), bucket: $("s3-bucket").value.trim(),
+    prefix: $("s3-prefix").value.trim(), accessKey: $("s3-ak").value.trim(), secretKey: $("s3-sk").value,
+    pathStyle: S3_FORM.pathStyle, stsMode: S3_FORM.stsMode };
+}
+async function testStorage() {
+  const btn = $("s3-test"); btn.disabled = true; btn.textContent = "测试中…";
+  try {
+    const r = await api("/api/admin/storage/test", { method: "POST", body: JSON.stringify(storageBody()) });
+    const line = (name, v) => `<div class="${v ? "bad" : "ok"}">${v ? "✗" : "✓"} ${name}${v ? ":" + esc(v) : ""}</div>`;
+    $("probe").innerHTML = line("ListBucket", r.list) + line("PutObject", r.put) + line("DeleteObject", r.delete)
+      + (S3_FORM.stsMode !== "off" ? line("STS AssumeRole", r.sts) : "") + `<div>耗时 ${r.latencyMs} ms</div>`;
+    $("probe").classList.remove("hidden");
+    toast(r.ok ? "连接成功:读写与 ListBucket 权限正常 · " + r.latencyMs + "ms" : "连接测试未通过,见下方明细", !r.ok, r.ok ? "check" : "alert-circle");
+  } catch (e) { toast("测试失败:" + e.message, true); }
+  finally { btn.disabled = false; btn.textContent = "测试连接"; }
+}
+async function saveStorage() {
+  try {
+    STORAGE = await api("/api/admin/storage", { method: "POST", body: JSON.stringify(storageBody()) });
+    renderStorage(); toast("存储配置已保存并热生效", false, "check"); refresh();
+  } catch (e) { toast("保存失败:" + e.message, true); }
+}
+
+// ---- 功能开关卡片(数据驱动) ----
+const FEATURE_CARDS = {
+  "feat-auth": [
+    ["featureLogin", "登录", "关闭后已有账户无法登录,注册不受影响", true],
+    ["featureEmailVerify", "邮箱验证", "注册后须验证邮箱才能开始同步(未配 SMTP 时验证码打在服务端日志)", false],
+    ["featureTotpRequired", "双因素认证(强制)", "所有账户登录必须绑定 TOTP,未绑定者不能同步", false],
+    ["featureMultiDevice", "多设备登录", "关闭后同一账户仅允许一台设备在线,新登录挤掉旧令牌", false],
+  ],
+  "feat-sync": [
+    ["featureSync", "云同步(全局)", "关闭后所有客户端同步暂停,数据保留", true],
+    ["defaultSyncEnabled", "新用户默认放开同步", "关闭则新注册账户需管理员手动放开", false],
+    ["featureKeySync", "允许密钥同步", "关闭后客户端密钥项强制「仅本地」", true],
+    ["featureRecordingSync", "允许会话录制同步", "关闭后录制文件不再上传", true],
+  ],
+  "feat-ai": [
+    ["featureAi", "启用 AI 功能(总开关)", "关闭后客户端隐藏全部 AI 入口,子项失效", true],
+    ["featureAiCommand", "命令补全与解释", "终端内白话转命令、⌘⇧A 命令栏", true],
+    ["featureAiDiagnose", "错误诊断", "命令失败时分析输出给出修复建议(⌘I)", true],
+    ["featureAiSummary", "输出摘要", "长输出一键生成摘要(⌘⇧S)", true],
+  ],
+};
+
+function renderFeatures() {
+  const gating = !!SETTINGS.featureGating;
+  for (const [box, rows] of Object.entries(FEATURE_CARDS)) {
+    $(box).innerHTML = rows.map(([key, label, desc, gated]) => {
+      const dim = gated && !gating;
+      const sub = box === "feat-ai" && key !== "featureAi" && !SETTINGS.featureAi;
+      return `<div class="feat-row" data-dim="${dim || sub}">
+        <div style="flex:1;line-height:1.4"><div style="font-weight:600;font-size:13px;color:var(--text-strong)">${label}</div>
+        <div style="font-size:11.5px;color:var(--faint)">${desc}${gated ? "" : " · 安全策略,不受总闸影响"}</div></div>
+        <button class="switch" data-on="${!!SETTINGS[key]}" onclick="toggleSetting('${key}','${label}')"><span class="thumb"></span></button>
+      </div>`;
+    }).join("");
+  }
+  $("ai-badge").className = "badge " + (SETTINGS.featureAi ? "ok" : "neutral");
+  $("ai-badge").innerHTML = '<span class="dot"></span>' + (SETTINGS.featureAi ? "已启用" : "已关闭");
+}
+
+async function toggleSetting(key, label) {
+  try {
+    SETTINGS = await api("/api/admin/settings", { method: "POST", body: JSON.stringify({ [key]: !SETTINGS[key] }) });
+    renderSettings(); toast(label + ":" + (SETTINGS[key] ? "已开启" : "已关闭"), false, SETTINGS[key] ? "check" : "ban");
+  } catch (e) { toast("设置失败:" + e.message, true); }
+}
+async function verifyUser(email) {
+  try { await api(`/api/admin/users/${encodeURIComponent(email)}/verify`, { method: "POST" }); toast("已标记 " + email + " 邮箱为已验证"); refresh(); }
+  catch (e) { toast("操作失败:" + e.message, true); }
+}
+async function resetTotp(email) {
+  if (!confirm(`重置 ${email} 的双因素认证?其全部登录令牌将被吊销,下次登录重新绑定。`)) return;
+  try { await api(`/api/admin/users/${encodeURIComponent(email)}/2fa/reset`, { method: "POST" }); toast("已重置 " + email + " 的 2FA", false, "log-out"); refresh(); }
+  catch (e) { toast("操作失败:" + e.message, true); }
 }
 
 async function setRegMode(mode) {
@@ -384,32 +555,6 @@ async function setRegMode(mode) {
     renderSettings();
     toast("注册策略已改为:" + ({ open: "开放注册", invite: "仅邀请码", closed: "关闭注册" }[mode]));
     if (mode === "invite") loadInvites();
-  } catch (e) {
-    toast("设置失败:" + e.message, true);
-  }
-}
-
-async function toggleFeature(key, label) {
-  try {
-    SETTINGS = await api("/api/admin/settings", {
-      method: "POST",
-      body: JSON.stringify({ [key]: !SETTINGS[key] }),
-    });
-    renderSettings();
-    toast(label + ":" + (SETTINGS[key] ? "已开启" : "已关闭"));
-  } catch (e) {
-    toast("设置失败:" + e.message, true);
-  }
-}
-
-async function toggleDefaultSync() {
-  try {
-    SETTINGS = await api("/api/admin/settings", {
-      method: "POST",
-      body: JSON.stringify({ defaultSyncEnabled: !SETTINGS.defaultSyncEnabled }),
-    });
-    renderSettings();
-    toast("新用户默认同步:" + (SETTINGS.defaultSyncEnabled ? "放开" : "停用"));
   } catch (e) {
     toast("设置失败:" + e.message, true);
   }
@@ -495,6 +640,12 @@ function render() {
         <div class="mono">${u.id}</div>
       </td>
       <td style="color:var(--muted);white-space:nowrap">${fmtTime(u.createdAt)}</td>
+      <td>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          ${u.emailVerified ? "" : `<span class="badge warn"><span class="dot"></span>邮箱未验证</span>`}
+          <span class="badge ${u.totpEnabled ? "accent" : "neutral"}"><span class="dot"></span>${u.totpEnabled ? "2FA 已绑定" : "无 2FA"}</span>
+        </div>
+      </td>
       <td class="usage-cell">
         <button class="btn ghost" style="height:26px;padding:0 10px;font-size:11.5px" onclick="loadUsage('${u.email}', this)">查看</button>
       </td>
@@ -505,13 +656,14 @@ function render() {
         </div>
       </td>
       <td style="text-align:right">
+        ${u.emailVerified ? "" : `<button class="btn ghost" style="height:28px" onclick="verifyUser('${u.email}')">标记已验证</button>`}${u.totpEnabled ? `<button class="btn ghost" style="height:28px" onclick="resetTotp('${u.email}')">重置 2FA</button>` : ""}
         <button class="btn danger-ghost" style="height:28px" onclick="revoke('${u.email}')">强制下线</button>
       </td>
     </tr>`
     )
     .join("");
   if (rows.length === 0) {
-    $("rows").innerHTML = `<tr><td colspan="5" style="text-align:center;color:var(--faint);padding:28px">没有匹配的用户</td></tr>`;
+    $("rows").innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--faint);padding:28px">没有匹配的用户</td></tr>`;
   }
 }
 
