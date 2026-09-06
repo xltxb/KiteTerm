@@ -5,6 +5,7 @@ pub mod db;
 pub mod error;
 pub mod features;
 mod forward;
+mod zmodem;
 mod local;
 pub mod models;
 mod monitor;
@@ -105,6 +106,8 @@ pub fn run() {
             commands::transfer_enqueue,
             commands::transfer_list,
             commands::transfer_retry,
+            commands::zmodem_send_files,
+            commands::zmodem_cancel,
             commands::recording_start,
             commands::recording_stop,
             commands::recording_list,

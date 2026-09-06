@@ -1,5 +1,6 @@
 import { ChevronDown, Minus, Plus } from "lucide-react";
 import { ScreenHeader, Segmented, Switch } from "@/components/ui";
+import { pickDirectory } from "@/lib/dialog";
 import { useFeaturesStore } from "@/stores/features";
 import { useUiStore } from "@/stores/ui";
 
@@ -86,6 +87,35 @@ export function SettingsScreen() {
               <Switch on={settings[b.key]} onChange={(on) => setSettings({ [b.key]: on })} />
             </div>
           ))}
+        </div>
+
+        <div className="card pad-band mb-16">
+          <div className="settings-section-title">传输</div>
+          <div className="settings-row">
+            <div className="grow lh-snug">
+              <div className="w-semi fs-md t-strong">下载目录</div>
+              <div className="fs-sm t-faint">{settings.downloadDir || "系统下载目录"}</div>
+            </div>
+            <div className="row gap-10">
+              {settings.downloadDir && (
+                <span
+                  className="fs-sm t-faint clickable nowrap"
+                  onClick={() => setSettings({ downloadDir: "" })}
+                >
+                  恢复默认
+                </span>
+              )}
+              <span
+                className="fs-sm t-accent clickable nowrap"
+                onClick={async () => {
+                  const dir = await pickDirectory();
+                  if (dir) setSettings({ downloadDir: dir });
+                }}
+              >
+                更改…
+              </span>
+            </div>
+          </div>
         </div>
 
         <div className="card pad-band">

@@ -216,6 +216,7 @@ pub async fn session_open(
         state.db.clone(),
         state.vault.clone(),
         state.sessions.clone(),
+        state.transfers.clone(),
         &host_id,
         password,
     )
@@ -288,6 +289,19 @@ pub fn transfer_enqueue(
 #[tauri::command]
 pub fn transfer_list(state: State<AppState>) -> Result<Vec<TransferJob>> {
     Ok(state.transfers.jobs.lock().unwrap().clone())
+}
+
+/// ZMODEM 上传:前端选好文件后回传路径(空列表表示用户取消),转成 Ctl::SendFiles 投递
+#[tauri::command]
+pub fn zmodem_send_files(state: State<AppState>, session_id: String, paths: Vec<String>) -> Result<()> {
+    let files = paths.into_iter().map(std::path::PathBuf::from).collect();
+    ssh::send_ctl(&state.sessions, &session_id, ssh::Ctl::SendFiles(files))
+}
+
+/// ZMODEM 取消:用户在传输浮条点取消,投递 Ctl::CancelTransfer 中止当前传输
+#[tauri::command]
+pub fn zmodem_cancel(state: State<AppState>, session_id: String) -> Result<()> {
+    ssh::send_ctl(&state.sessions, &session_id, ssh::Ctl::CancelTransfer)
 }
 
 #[tauri::command]
