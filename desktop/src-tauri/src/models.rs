@@ -95,6 +95,33 @@ pub struct ForwardInput {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CertInfo {
+    pub id: String,
+    pub domains: Vec<String>,
+    pub challenge: String,
+    pub ca: String,
+    pub host_id: String,
+    pub deploy_path: String,
+    pub reload_cmd: String,
+    pub not_after: i64,
+    pub auto_renew: bool,
+    pub state: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueRequest {
+    pub domains: Vec<String>,
+    pub challenge: String,
+    pub ca: String,
+    pub host_id: String,
+    pub deploy_path: String,
+    pub reload_cmd: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SessionInfo {
     pub id: String,
     pub host_id: String,

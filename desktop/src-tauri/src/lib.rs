@@ -1,4 +1,5 @@
 pub mod account;
+mod acme;
 pub mod ai;
 mod commands;
 pub mod db;
