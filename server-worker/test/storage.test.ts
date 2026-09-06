@@ -1,9 +1,13 @@
 import { env, exports } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
-import { normalizePrefix, normalizeStorage, prefixValid, publicStorageJson, type StorageConfig } from "../src/storage";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { normalizePrefix, normalizeStorage, prefixValid, publicStorageJson, usage, type StorageConfig } from "../src/storage";
 
 const base = "https://kite.test";
 const adminHeaders = { "x-admin-key": env.KITE_ADMIN_KEY, "content-type": "application/json" };
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 function getStorage() {
   return exports.default.fetch(`${base}/api/admin/storage`, { headers: adminHeaders });
@@ -159,5 +163,104 @@ describe("管理接口:GET/POST /api/admin/storage", () => {
     const afterStats2 = await stats();
     const statsJson2 = (await afterStats2.json()) as Record<string, unknown>;
     expect(statsJson2.bucket).toBe("kite-bucket-2");
+  });
+});
+
+describe("usage —— 分页累加", () => {
+  it("多页 NextContinuationToken 按 continuation-token 请求下一页,累加 objects/bytes", async () => {
+    const cfg: StorageConfig = {
+      endpoint: "https://s3.usage-unit.local",
+      region: "us-east-1",
+      bucket: "b",
+      prefix: "",
+      accessKey: "AK",
+      secretKey: "SK",
+      pathStyle: true,
+      stsMode: "off",
+    };
+    const page1 =
+      "<ListBucketResult><IsTruncated>true</IsTruncated><NextContinuationToken>tok-2</NextContinuationToken>" +
+      "<Contents><Key>a</Key><Size>10</Size></Contents><Contents><Key>b</Key><Size>20</Size></Contents></ListBucketResult>";
+    const page2 = "<ListBucketResult><IsTruncated>false</IsTruncated><Contents><Key>c</Key><Size>5</Size></Contents></ListBucketResult>";
+    const urls: string[] = [];
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+      const url = input instanceof Request ? input.url : input.toString();
+      urls.push(url);
+      return new Response(url.includes("continuation-token=tok-2") ? page2 : page1, { status: 200 });
+    });
+    const result = await usage(cfg, "user-x");
+    expect(result).toEqual({ objects: 3, bytes: 35 });
+    expect(urls).toHaveLength(2);
+    expect(urls[1]).toContain("continuation-token=tok-2");
+  });
+});
+
+describe("GET /api/admin/users/:email/usage", () => {
+  it("未知邮箱 → 404 not_found", async () => {
+    const r = await exports.default.fetch(`${base}/api/admin/users/nobody-usage@example.com/usage`, { headers: adminHeaders });
+    expect(r.status).toBe(404);
+    const j = (await r.json()) as Record<string, unknown>;
+    expect(j).toMatchObject({ error: { code: "not_found", message: "用户不存在" } });
+  });
+
+  it("S3 请求失败 → 502 S3_ERROR", async () => {
+    const reg = await exports.default.fetch(`${base}/api/register`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "cf-connecting-ip": "10.50.0.1" },
+      body: JSON.stringify({ email: "usage-fail@example.com", password: "Kite#2026" }),
+    });
+    expect(reg.status).toBe(201);
+    const saved = await postStorage({
+      endpoint: "https://s3.usage-fail.local",
+      bucket: "b-usage-fail",
+      accessKey: "ak",
+      secretKey: "sk",
+      stsMode: "off",
+    });
+    expect(saved.status).toBe(200);
+
+    vi.stubGlobal("fetch", async () => new Response("forbidden", { status: 403 }));
+    const r = await exports.default.fetch(`${base}/api/admin/users/usage-fail@example.com/usage`, { headers: adminHeaders });
+    expect(r.status).toBe(502);
+    const j = (await r.json()) as Record<string, unknown>;
+    expect(j).toMatchObject({ error: { code: "S3_ERROR" } });
+  });
+});
+
+describe("POST /api/admin/storage/test", () => {
+  it("用请求体里的值探测,不落库", async () => {
+    const beforeGet = await getStorage();
+    const beforeJson = (await beforeGet.json()) as Record<string, unknown>;
+
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const method = input instanceof Request ? input.method : (init?.method ?? "GET");
+      if (method === "GET") return new Response("<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>", { status: 200 });
+      if (method === "PUT") return new Response("", { status: 200 });
+      if (method === "DELETE") return new Response(null, { status: 204 });
+      return new Response("unexpected", { status: 500 });
+    });
+
+    const r = await exports.default.fetch(`${base}/api/admin/storage/test`, {
+      method: "POST",
+      headers: adminHeaders,
+      body: JSON.stringify({
+        endpoint: "https://s3.probe-test.local",
+        bucket: "probe-bucket",
+        accessKey: "pk",
+        secretKey: "ps",
+        stsMode: "off",
+      }),
+    });
+    expect(r.status).toBe(200);
+    const j = (await r.json()) as Record<string, unknown>;
+    expect(j).toMatchObject({ ok: true });
+    expect(j.list).toBeUndefined();
+    expect(j.put).toBeUndefined();
+    expect(j.delete).toBeUndefined();
+
+    // 未落库:GET /api/admin/storage 的值不受影响
+    const afterGet = await getStorage();
+    const afterJson = (await afterGet.json()) as Record<string, unknown>;
+    expect(afterJson).toEqual(beforeJson);
   });
 });

@@ -42,7 +42,12 @@ function sharedCreds(cfg: StorageConfig, userId: string): Creds {
   };
 }
 
-/** R2 临时凭据 API:parentAccessKeyId 收敛到指定用户前缀,1 小时有效 */
+/**
+ * R2 临时凭据 API:parentAccessKeyId 收敛到指定用户前缀,固定 1 小时(`ttlSeconds: 3600`)有效。
+ * 与简报要求的请求体字段一致,不接收 `durationSecs`(`rawTempCredentials` 里探测用的 900s
+ * 只对通用 STS 分支生效,对 R2 分支没有意义 —— R2 侧统一走 Cloudflare 这份临时凭据接口
+ * 固定的 1 小时,不做 900s/3600s 的区分)。
+ */
 async function r2TempCredentials(cfg: StorageConfig, env: Env, userId: string): Promise<Creds> {
   const prefix = userPrefix(cfg, userId);
   const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${env.R2_ACCOUNT_ID}/r2/temp-access-credentials`, {
@@ -159,7 +164,8 @@ async function stsAssumeRole(cfg: StorageConfig, userId: string, durationSecs: n
 
 /**
  * 只负责"用哪种机制换临时凭据"(R2 或通用 STS),不做 stsMode 的 require/auto 兜底语义。
- * 供 `issueCredentials` 与 `probe()` 复用。
+ * 供 `issueCredentials` 与 `probe()` 复用。`durationSecs` 只传给通用 STS 分支
+ * (`AssumeRole` 的 `DurationSeconds`);R2 分支固定 1 小时,见 `r2TempCredentials` 的注释。
  */
 async function rawTempCredentials(cfg: StorageConfig, env: Env, userId: string, durationSecs: number): Promise<Creds> {
   if (isR2Endpoint(cfg.endpoint) && env.R2_ACCOUNT_ID && env.R2_API_TOKEN) {

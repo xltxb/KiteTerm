@@ -74,18 +74,40 @@ describe("isR2Endpoint", () => {
 });
 
 describe("issueCredentials —— R2 临时凭据(单元调用,注入 R2_ACCOUNT_ID/R2_API_TOKEN)", () => {
-  it("成功 → 返回 sessionToken 与按用户收敛的 prefix", async () => {
-    vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
-      expect(fakeRequestUrl(input)).toContain("api.cloudflare.com");
+  it.each([
+    { label: "prefix 为空", prefix: "", expectedUserPrefix: "users/user-1" },
+    { label: "prefix 为 prod/", prefix: "prod/", expectedUserPrefix: "prod/users/user-1" },
+  ])("成功($label):请求方法/请求头/请求体精确匹配,返回 sessionToken 与按用户收敛的 prefix", async ({ prefix, expectedUserPrefix }) => {
+    let captured: { url: string; method: string; headers: Headers; body: string } | undefined;
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      captured = {
+        url: fakeRequestUrl(input),
+        method: fakeRequestMethod(input, init),
+        headers: new Headers(init?.headers),
+        body: String(init?.body ?? ""),
+      };
       return new Response(
         JSON.stringify({ success: true, result: { accessKeyId: "ak", secretAccessKey: "sk", sessionToken: "st" } }),
         { status: 200 },
       );
     });
-    const cfg: StorageConfig = { ...baseCfg, endpoint: "https://acct123.r2.cloudflarestorage.com" };
+    const cfg: StorageConfig = { ...baseCfg, endpoint: "https://acct123.r2.cloudflarestorage.com", prefix };
     const fakeEnv = { R2_ACCOUNT_ID: "acct123", R2_API_TOKEN: "tok" } as unknown as Env;
     const creds = await issueCredentials(cfg, fakeEnv, "user-1");
-    expect(creds).toMatchObject({ accessKey: "ak", secretKey: "sk", sessionToken: "st", prefix: "users/user-1" });
+
+    expect(captured?.url).toBe("https://api.cloudflare.com/client/v4/accounts/acct123/r2/temp-access-credentials");
+    expect(captured?.method).toBe("POST");
+    expect(captured?.headers.get("authorization")).toBe("Bearer tok");
+    expect(captured?.headers.get("content-type")).toBe("application/json");
+    expect(JSON.parse(captured?.body ?? "{}")).toEqual({
+      bucket: cfg.bucket,
+      parentAccessKeyId: cfg.accessKey,
+      permission: "object-read-write",
+      ttlSeconds: 3600,
+      prefixes: [`${expectedUserPrefix}/`],
+    });
+
+    expect(creds).toMatchObject({ accessKey: "ak", secretKey: "sk", sessionToken: "st", prefix: expectedUserPrefix });
     expect(typeof creds.expiration).toBe("string");
   });
 
@@ -131,7 +153,8 @@ describe("issueCredentials —— R2 临时凭据(单元调用,注入 R2_ACCOUNT
 });
 
 describe("issueCredentials —— 通用 STS AssumeRole(非 R2 endpoint)", () => {
-  it("成功:表单体正确、解析 XML 标签", async () => {
+  it("成功:表单体正确、解析 XML 标签,且 session policy 精确收敛到该用户前缀", async () => {
+    const cfg: StorageConfig = { ...baseCfg, endpoint: "https://sts.minio.local", prefix: "prod/" };
     vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
       const req = input instanceof Request ? input : new Request(input);
       expect(req.method).toBe("POST");
@@ -139,6 +162,13 @@ describe("issueCredentials —— 通用 STS AssumeRole(非 R2 endpoint)", () =>
       expect(body).toContain("Action=AssumeRole");
       expect(body).toContain("DurationSeconds=3600");
       expect(body).toContain("RoleSessionName=kite-user-9");
+
+      const policyRaw = new URLSearchParams(body).get("Policy");
+      expect(policyRaw).toBeTruthy();
+      const policy = JSON.parse(decodeURIComponent(policyRaw ?? ""));
+      expect(policy.Statement[0].Resource[0]).toBe(`arn:aws:s3:::${cfg.bucket}/${cfg.prefix}users/user-9/*`);
+      expect(policy.Statement[1].Condition.StringLike["s3:prefix"][0]).toBe(`${cfg.prefix}users/user-9/*`);
+
       const xml =
         "<AssumeRoleResponse><AssumeRoleResult><Credentials>" +
         "<AccessKeyId>tak</AccessKeyId><SecretAccessKey>tsk</SecretAccessKey>" +
@@ -146,14 +176,13 @@ describe("issueCredentials —— 通用 STS AssumeRole(非 R2 endpoint)", () =>
         "</Credentials></AssumeRoleResult></AssumeRoleResponse>";
       return new Response(xml, { status: 200 });
     });
-    const cfg: StorageConfig = { ...baseCfg, endpoint: "https://sts.minio.local" };
     const creds = await issueCredentials(cfg, {} as unknown as Env, "user-9");
     expect(creds).toMatchObject({
       accessKey: "tak",
       secretKey: "tsk",
       sessionToken: "tst",
       expiration: "2030-01-01T00:00:00Z",
-      prefix: "users/user-9",
+      prefix: "prod/users/user-9",
     });
   });
 
@@ -219,6 +248,52 @@ describe("probe —— 模拟 S3 端点", () => {
     expect(report.put).toContain("403");
     expect(report.delete).toBeUndefined();
     expect(calledMethods).not.toContain("DELETE");
+  });
+});
+
+describe("probe —— STS 分支", () => {
+  const LIST_XML = "<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>";
+  const ASSUME_ROLE_XML =
+    "<AssumeRoleResponse><AssumeRoleResult><Credentials>" +
+    "<AccessKeyId>tak</AccessKeyId><SecretAccessKey>tsk</SecretAccessKey>" +
+    "<SessionToken>tst</SessionToken><Expiration>2030-01-01T00:00:00Z</Expiration>" +
+    "</Credentials></AssumeRoleResult></AssumeRoleResponse>";
+
+  /** list/put/delete 都模拟成功;STS(唯一走 POST 的请求)按传入的响应工厂返回 */
+  function stubS3AndSts(stsResponse: () => Response) {
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const method = fakeRequestMethod(input, init);
+      if (method === "GET") return new Response(LIST_XML, { status: 200 });
+      if (method === "PUT") return new Response("", { status: 200 });
+      if (method === "DELETE") return new Response(null, { status: 204 });
+      if (method === "POST") return stsResponse();
+      return new Response("unexpected", { status: 500 });
+    });
+  }
+
+  it("stsMode=auto,STS 返回 403 → report.sts 非空字符串,但 list/put/delete 都成功时 ok 仍为 true", async () => {
+    stubS3AndSts(() => new Response("access denied", { status: 403 }));
+    const cfg: StorageConfig = { ...baseCfg, stsMode: "auto" };
+    const report = await probe(cfg, {} as unknown as Env);
+    expect(report.ok).toBe(true);
+    expect(typeof report.sts).toBe("string");
+    expect((report.sts ?? "").length).toBeGreaterThan(0);
+  });
+
+  it("stsMode=require,STS 失败 → ok:false", async () => {
+    stubS3AndSts(() => new Response("access denied", { status: 403 }));
+    const cfg: StorageConfig = { ...baseCfg, stsMode: "require" };
+    const report = await probe(cfg, {} as unknown as Env);
+    expect(report.ok).toBe(false);
+    expect(typeof report.sts).toBe("string");
+  });
+
+  it("stsMode=auto,STS 成功 → sts 为 undefined", async () => {
+    stubS3AndSts(() => new Response(ASSUME_ROLE_XML, { status: 200 }));
+    const cfg: StorageConfig = { ...baseCfg, stsMode: "auto" };
+    const report = await probe(cfg, {} as unknown as Env);
+    expect(report.sts).toBeUndefined();
+    expect(report.ok).toBe(true);
   });
 });
 
