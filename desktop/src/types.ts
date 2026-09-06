@@ -5,6 +5,7 @@ export type Screen =
   | "hosts"
   | "transfer"
   | "forwards"
+  | "certs"
   | "monitor"
   | "keys"
   | "snippets"
@@ -64,6 +65,43 @@ export interface ForwardRule {
   enabled: boolean;
   bytesUp: number;
   bytesDown: number;
+}
+
+export interface CertInfo {
+  id: string;
+  domains: string[];
+  challenge: "http" | "dns";
+  ca: "letsencrypt" | "zerossl";
+  hostId: string;
+  deployPath: string;
+  reloadCmd: string;
+  notAfter: number;
+  autoRenew: boolean;
+  state: "active" | "expiring" | "error";
+  createdAt: string;
+}
+
+export interface IssueRequest {
+  domains: string[];
+  challenge: "http" | "dns";
+  ca: "letsencrypt" | "zerossl";
+  hostId: string;
+  deployPath: string;
+  reloadCmd: string;
+}
+
+export interface CertProgress {
+  certId: string;
+  step: number;
+  state: "running" | "ok" | "error";
+  label: string;
+  error?: string;
+}
+
+export interface CertDnsRecord {
+  certId: string;
+  name: string;
+  value: string;
 }
 
 export interface Recording {
