@@ -107,6 +107,9 @@ pub fn get_public_key(state: State<AppState>, id: String) -> Result<String> {
 
 #[tauri::command]
 pub fn set_key_sync(state: State<AppState>, id: String, enabled: bool) -> Result<()> {
+    if enabled && !crate::features::cached(&state.db).key_sync {
+        return Err(AppError("KEY_SYNC_DISABLED: 平台已禁止密钥同步,该密钥只能保留在本机".into()));
+    }
     state.db.set_key_sync(&id, enabled)
 }
 
@@ -345,6 +348,14 @@ pub fn recording_list(state: State<AppState>) -> Result<Vec<Recording>> {
 pub fn recording_read(state: State<AppState>, id: String) -> Result<String> {
     let path = state.db.get_recording_path(&id)?;
     Ok(std::fs::read_to_string(path)?)
+}
+
+#[tauri::command]
+pub fn set_recording_sync(state: State<AppState>, id: String, enabled: bool) -> Result<()> {
+    if enabled && !crate::features::cached(&state.db).recording_sync {
+        return Err(AppError("RECORDING_SYNC_DISABLED: 平台已禁止录制同步".into()));
+    }
+    state.db.set_recording_sync(&id, enabled)
 }
 
 // ---- monitor ----

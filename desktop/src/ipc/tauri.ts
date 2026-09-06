@@ -63,6 +63,7 @@ export function createTauriIpc(): KiteIpc {
     stopRecording: (sessionId) => invoke("recording_stop", { sessionId }),
     listRecordings: () => invoke("recording_list"),
     readRecording: (id) => invoke("recording_read", { id }),
+    setRecordingSync: (id, enabled) => invoke("set_recording_sync", { id, enabled }),
 
     onHostLatency: (cb) => sub<Record<string, number | null>>("hosts://latency", cb),
 

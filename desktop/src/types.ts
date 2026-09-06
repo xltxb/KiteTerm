@@ -138,7 +138,7 @@ export interface SyncConfig {
   hasSecret: boolean;
   /** 是否已设置主密码(派生密钥已缓存) */
   hasMasterKey: boolean;
-  scopes: { hosts: boolean; keys: boolean; snippets: boolean; settings: boolean };
+  scopes: { hosts: boolean; keys: boolean; snippets: boolean; settings: boolean; recordings: boolean };
 }
 
 /** AI 模型配置(密钥不回传前端) */

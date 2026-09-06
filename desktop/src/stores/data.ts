@@ -27,6 +27,7 @@ interface DataState {
   toggleForward: (id: string, enabled: boolean) => Promise<void>;
   deleteForward: (id: string) => Promise<void>;
   refreshRecordings: () => Promise<void>;
+  setRecordingSync: (id: string, enabled: boolean) => Promise<void>;
 }
 
 export const useDataStore = create<DataState>((set, get) => ({
@@ -122,5 +123,9 @@ export const useDataStore = create<DataState>((set, get) => ({
   },
   refreshRecordings: async () => {
     set({ recordings: await ipc.listRecordings() });
+  },
+  setRecordingSync: async (id, enabled) => {
+    await ipc.setRecordingSync(id, enabled);
+    set({ recordings: get().recordings.map((r) => (r.id === id ? { ...r, syncEnabled: enabled } : r)) });
   },
 }));

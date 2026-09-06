@@ -2,6 +2,7 @@ import { useState } from "react";
 import { KeyRound, Lock, ShieldCheck, Trash2 } from "lucide-react";
 import { Badge, Button, ScreenHeader, Segmented, TextInput } from "@/components/ui";
 import { useDataStore } from "@/stores/data";
+import { useFeaturesStore } from "@/stores/features";
 import { ipc } from "@/ipc";
 import { confirmAction } from "@/lib/dialog";
 
@@ -93,6 +94,8 @@ function ImportModal({ onClose }: { onClose: () => void }) {
 
 export function KeysScreen() {
   const { keys, deleteKey } = useDataStore();
+  const setKeySync = useDataStore((s) => s.setKeySync);
+  const keySyncOn = useFeaturesStore((s) => s.features.keySync);
   const [showGen, setShowGen] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
@@ -131,7 +134,15 @@ export function KeysScreen() {
                 <div className="row gap-8">
                   <span className="mono w-semi fs-md t-strong">{k.name}</span>
                   <Badge color="neutral">{k.algo === "ed25519" ? "ED25519" : "RSA 4096"}</Badge>
-                  <Badge color={k.syncEnabled ? "success" : "neutral"} dot>{k.syncEnabled ? "已同步" : "仅本地"}</Badge>
+                  <span
+                    className="clickable"
+                    title={keySyncOn ? "点击切换是否随云同步" : "平台已禁止密钥同步"}
+                    onClick={() => keySyncOn && void setKeySync(k.id, !k.syncEnabled)}
+                  >
+                    <Badge color={k.syncEnabled && keySyncOn ? "success" : "neutral"} dot>
+                      {k.syncEnabled && keySyncOn ? "已同步" : "仅本地"}
+                    </Badge>
+                  </span>
                 </div>
                 <div className="mono fs-xs t-faint ellipsis">{k.fingerprint}</div>
                 <div className="fs-xs t-muted">
