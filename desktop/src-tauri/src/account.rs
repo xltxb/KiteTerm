@@ -14,12 +14,23 @@ const KV_TOKEN: &str = "account_token_enc";
 const KV_ACCOUNT: &str = "account_info";
 const DEFAULT_PLATFORM: &str = "http://127.0.0.1:8787";
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountInfo {
     pub id: String,
     pub email: String,
     pub sync_enabled: bool,
+    #[serde(default = "default_true")]
+    pub email_verified: bool,
+    #[serde(default)]
+    pub totp_enabled: bool,
+    /// 平台强制 2FA 且本账户尚未绑定 —— 同步会被拒,界面要引导绑定
+    #[serde(default)]
+    pub totp_setup_required: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,6 +93,27 @@ pub struct RegisterPolicy {
     pub password_rule: String,
 }
 
+/// 从注册/登录响应体的 `user`(及顶层 `totpSetupRequired`)解析账户信息
+fn info_from(body: &serde_json::Value) -> AccountInfo {
+    let u = &body["user"];
+    AccountInfo {
+        id: u["id"].as_str().unwrap_or_default().to_string(),
+        email: u["email"].as_str().unwrap_or_default().to_string(),
+        sync_enabled: u["syncEnabled"].as_bool().unwrap_or(false),
+        email_verified: u["emailVerified"].as_bool().unwrap_or(true),
+        totp_enabled: u["totpEnabled"].as_bool().unwrap_or(false),
+        totp_setup_required: body["totpSetupRequired"].as_bool().unwrap_or(false),
+    }
+}
+
+fn store_login(db: &Db, vault: &Vault, token: &str, info: &AccountInfo) -> Result<()> {
+    db.kv_set(
+        KV_TOKEN,
+        &base64::engine::general_purpose::STANDARD.encode(vault.encrypt(token.as_bytes())?),
+    )?;
+    db.kv_set(KV_ACCOUNT, &serde_json::to_string(info)?)
+}
+
 pub async fn register_policy(db: &Db) -> Result<RegisterPolicy> {
     let url = format!("{}/api/register/policy", platform_url(db));
     let resp = reqwest::Client::new()
@@ -121,24 +153,22 @@ pub async fn register(
     let token = body["token"]
         .as_str()
         .ok_or_else(|| AppError("平台响应缺少令牌".into()))?;
-    let info = AccountInfo {
-        id: body["user"]["id"].as_str().unwrap_or_default().to_string(),
-        email: body["user"]["email"].as_str().unwrap_or_default().to_string(),
-        sync_enabled: body["user"]["syncEnabled"].as_bool().unwrap_or(false),
-    };
-    db.kv_set(
-        KV_TOKEN,
-        &base64::engine::general_purpose::STANDARD.encode(vault.encrypt(token.as_bytes())?),
-    )?;
-    db.kv_set(KV_ACCOUNT, &serde_json::to_string(&info)?)?;
+    let info = info_from(&body);
+    store_login(db, vault, token, &info)?;
     Ok(info)
 }
 
-pub async fn login(db: &Db, vault: &Vault, email: &str, password: &str) -> Result<AccountInfo> {
+pub async fn login(
+    db: &Db,
+    vault: &Vault,
+    email: &str,
+    password: &str,
+    totp: Option<&str>,
+) -> Result<AccountInfo> {
     let url = format!("{}/api/login", platform_url(db));
     let resp = reqwest::Client::new()
         .post(&url)
-        .json(&json!({ "email": email, "password": password }))
+        .json(&json!({ "email": email, "password": password, "totp": totp.unwrap_or_default() }))
         .send()
         .await
         .map_err(|e| AppError(format!("无法连接管理平台: {e}")))?;
@@ -149,16 +179,8 @@ pub async fn login(db: &Db, vault: &Vault, email: &str, password: &str) -> Resul
     let token = body["token"]
         .as_str()
         .ok_or_else(|| AppError("平台响应缺少令牌".into()))?;
-    let info = AccountInfo {
-        id: body["user"]["id"].as_str().unwrap_or_default().to_string(),
-        email: body["user"]["email"].as_str().unwrap_or_default().to_string(),
-        sync_enabled: body["user"]["syncEnabled"].as_bool().unwrap_or(false),
-    };
-    db.kv_set(
-        KV_TOKEN,
-        &base64::engine::general_purpose::STANDARD.encode(vault.encrypt(token.as_bytes())?),
-    )?;
-    db.kv_set(KV_ACCOUNT, &serde_json::to_string(&info)?)?;
+    let info = info_from(&body);
+    store_login(db, vault, token, &info)?;
     Ok(info)
 }
 
@@ -170,6 +192,91 @@ pub async fn logout(db: &Db, vault: &Vault) -> Result<()> {
     let conn = db.conn.lock().unwrap();
     conn.execute("DELETE FROM kv WHERE key IN (?1, ?2)", [KV_TOKEN, KV_ACCOUNT])?;
     Ok(())
+}
+
+/// 统一的带鉴权 POST 助手:令牌失效时清出 `LOGIN_REQUIRED` 错误串,交界面判断
+async fn authed_post(db: &Db, vault: &Vault, path: &str, body: serde_json::Value) -> Result<serde_json::Value> {
+    let t = token(db, vault)?;
+    let resp = reqwest::Client::new()
+        .post(format!("{}{path}", platform_url(db)))
+        .bearer_auth(t)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| AppError(format!("无法连接管理平台: {e}")))?;
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(AppError("LOGIN_REQUIRED: 登录已失效,请重新登录".into()));
+    }
+    if !resp.status().is_success() {
+        return Err(api_error(resp).await);
+    }
+    resp.json().await.map_err(|e| AppError(e.to_string()))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TotpSetup {
+    pub secret: String,
+    pub otpauth_url: String,
+}
+
+pub async fn verify_email(db: &Db, vault: &Vault, code: &str) -> Result<AccountInfo> {
+    authed_post(db, vault, "/api/verify-email", json!({ "code": code })).await?;
+    refresh(db, vault).await
+}
+
+pub async fn resend_verification(db: &Db, vault: &Vault) -> Result<()> {
+    authed_post(db, vault, "/api/verify-email/resend", json!({}))
+        .await
+        .map(|_| ())
+}
+
+pub async fn totp_setup(db: &Db, vault: &Vault) -> Result<TotpSetup> {
+    let v = authed_post(db, vault, "/api/2fa/setup", json!({})).await?;
+    serde_json::from_value(v).map_err(|e| AppError(e.to_string()))
+}
+
+pub async fn totp_enable(db: &Db, vault: &Vault, code: &str) -> Result<AccountInfo> {
+    authed_post(db, vault, "/api/2fa/enable", json!({ "code": code })).await?;
+    refresh(db, vault).await
+}
+
+pub async fn totp_disable(db: &Db, vault: &Vault, code: &str) -> Result<AccountInfo> {
+    authed_post(db, vault, "/api/2fa/disable", json!({ "code": code })).await?;
+    refresh(db, vault).await
+}
+
+/// GET /api/me 刷新账户状态缓存;令牌失效则清掉本地登录态
+pub async fn refresh(db: &Db, vault: &Vault) -> Result<AccountInfo> {
+    let t = token(db, vault)?;
+    let resp = reqwest::Client::new()
+        .get(format!("{}/api/me", platform_url(db)))
+        .bearer_auth(t)
+        .send()
+        .await
+        .map_err(|e| AppError(format!("无法连接管理平台: {e}")))?;
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        let conn = db.conn.lock().unwrap();
+        conn.execute("DELETE FROM kv WHERE key IN (?1, ?2)", [KV_TOKEN, KV_ACCOUNT])?;
+        return Err(AppError(
+            "LOGIN_REQUIRED: 登录已失效(可能在其它设备登录或被管理员下线),请重新登录".into(),
+        ));
+    }
+    if !resp.status().is_success() {
+        return Err(api_error(resp).await);
+    }
+    let v: serde_json::Value = resp.json().await.map_err(|e| AppError(e.to_string()))?;
+    let info = AccountInfo {
+        id: v["id"].as_str().unwrap_or_default().to_string(),
+        email: v["email"].as_str().unwrap_or_default().to_string(),
+        sync_enabled: v["syncEnabled"].as_bool().unwrap_or(false),
+        email_verified: v["emailVerified"].as_bool().unwrap_or(true),
+        totp_enabled: v["totpEnabled"].as_bool().unwrap_or(false),
+        totp_setup_required: v["requirements"]["totpRequired"].as_bool().unwrap_or(false)
+            && !v["totpEnabled"].as_bool().unwrap_or(false),
+    };
+    db.kv_set(KV_ACCOUNT, &serde_json::to_string(&info)?)?;
+    Ok(info)
 }
 
 /// 向平台索取同步凭据(登录 + 平台放开同步时才会成功)
