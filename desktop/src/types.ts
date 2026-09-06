@@ -158,7 +158,7 @@ export interface AiSettings {
 }
 
 /** AI 协助场景 */
-export type AiMode = "chat" | "explain" | "command";
+export type AiMode = "chat" | "explain" | "command" | "summary";
 
 /** 管理平台账户 */
 /** 管理平台下发的功能开关。

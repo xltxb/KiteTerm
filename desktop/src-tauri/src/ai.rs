@@ -61,6 +61,8 @@ pub enum AskMode {
     Explain,
     /// 自然语言 → 单条 shell 命令(只回命令本身)
     Command,
+    /// 长输出结构化摘要(日志、diff、构建输出等)
+    Summary,
 }
 
 impl AskMode {
@@ -68,6 +70,7 @@ impl AskMode {
         match s {
             "explain" => AskMode::Explain,
             "command" => AskMode::Command,
+            "summary" => AskMode::Summary,
             _ => AskMode::Chat,
         }
     }
@@ -90,6 +93,11 @@ impl AskMode {
                  严格要求:只输出命令本身,不要解释、不要 markdown 代码块、不要反引号、不要前后缀说明。\
                  若需求本身危险(删除数据、重启服务等),仍然输出命令,由客户端负责让用户确认。\
                  若无法用一条命令完成,输出用 && 或 | 连接的一条复合命令。"
+            }
+            AskMode::Summary => {
+                "你是 KiteTerm(桌面 SSH 终端)内置的终端助手。用户会给你一段较长的终端输出(日志、diff、构建输出等),\
+                 请用中文给出结构化摘要:先一句话总结,再用 3-6 个要点列出关键信息(错误、警告、数字指标、变更点),\
+                 最后若有需要关注的问题给出一条建议。不要逐行复述,总长度控制在 200 字内。"
             }
         }
     }

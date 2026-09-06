@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { Terminal } from "@xterm/xterm";
 import { ipc } from "@/ipc";
 import { confirmAction } from "@/lib/dialog";
+import { looksLikeError } from "@/lib/errorDetect";
 import { looksLikeNaturalLanguage, stripPrompt } from "@/lib/nlDetect";
 import { terminalTheme } from "@/theme/terminal";
 import type { SessionInfo } from "@/types";
@@ -56,6 +57,12 @@ export interface PendingAiInput {
   text: string;
 }
 
+/** 疑似命令失败时给出的提示 —— 只对当前活跃会话生效 */
+export interface ErrorHint {
+  sessionId: string;
+  snippet: string;
+}
+
 interface SessionState {
   sessions: SessionInfo[];
   activeId: string | null;
@@ -66,6 +73,12 @@ interface SessionState {
   nlEnabled: boolean;
   setNlEnabled: (on: boolean) => void;
   clearPendingAiInput: () => void;
+  /** 疑似出错的最近输出片段,命中即在终端左下角提示「AI 诊断」 */
+  errorHint: ErrorHint | null;
+  /** 运行期开关,由「错误诊断提示」子功能门禁同步 */
+  diagnoseEnabled: boolean;
+  setDiagnoseEnabled: (on: boolean) => void;
+  clearErrorHint: () => void;
   /** 清掉终端当前行(Ctrl+U + Ctrl+K),用于把白话替换成真正的命令 */
   clearInputLine: (id: string) => Promise<void>;
   open: (hostId: string, password?: string) => Promise<string>;
@@ -82,9 +95,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   wired: false,
   pendingAiInput: null,
   nlEnabled: true,
+  errorHint: null,
+  diagnoseEnabled: true,
 
   setNlEnabled: (on) => set({ nlEnabled: on }),
   clearPendingAiInput: () => set({ pendingAiInput: null }),
+  setDiagnoseEnabled: (on) => set({ diagnoseEnabled: on }),
+  clearErrorHint: () => set({ errorHint: null }),
 
   clearInputLine: async (id) => {
     // Ctrl+U 清到行首,Ctrl+K 清到行尾 —— 覆盖光标在中间的情况
@@ -94,8 +111,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   wire: () => {
     if (get().wired) return;
     set({ wired: true });
+    // 疑似出错的判定去抖:只盯着当前活跃会话,数据静默 350ms 后再看最近几行是否像错误,
+    // 避免大段刷屏输出时每帧都扫一遍
+    let debounce: ReturnType<typeof setTimeout> | null = null;
     ipc.onSessionData((id, data) => {
       terminals.get(id)?.write(data);
+      if (!get().diagnoseEnabled || id !== get().activeId) return;
+      if (debounce) clearTimeout(debounce);
+      debounce = setTimeout(() => {
+        const ctx = getTerminalContext(id, 8);
+        const lines = ctx.split("\n");
+        if (looksLikeError(lines)) set({ errorHint: { sessionId: id, snippet: lines.slice(-3).join("\n") } });
+      }, 350);
     });
     ipc.onSessionState((info) => {
       set((s) => ({
@@ -118,6 +145,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       theme: terminalTheme(),
     });
     term.onData((data) => {
+      // 用户按下回车即视为「开始一条新命令」,先清掉上一条残留的错误提示
+      if (data === "\r") set({ errorHint: null });
       // 白话直连:光标行是自然语言而非命令时,拦下回车交给 AI
       // (只拦单独的回车键;粘贴进来的整块内容不在此列)
       if (data === "\r" && get().nlEnabled) {
@@ -167,6 +196,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   runCommand: async (command) => {
     const { activeId } = get();
     if (!activeId) return;
+    set({ errorHint: null });
     terminals.get(activeId)?.focus();
     // {{cursor}} 占位符:写入占位符前后的内容,把光标移回占位处停留待编辑,不自动执行
     const marker = "{{cursor}}";

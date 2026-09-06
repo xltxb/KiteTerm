@@ -530,7 +530,7 @@ pub fn ai_set_active(state: State<AppState>, id: String) -> Result<crate::ai::Ai
     crate::ai::set_active(&state.db, &id)
 }
 
-/// mode: chat(侧栏对话)| explain(解释终端输出)| command(自然语言转命令)
+/// mode: chat(侧栏对话)| explain(解释终端输出)| command(自然语言转命令)| summary(长输出摘要)
 #[tauri::command]
 pub async fn ai_ask(
     state: State<'_, AppState>,
