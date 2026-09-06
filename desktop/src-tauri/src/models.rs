@@ -109,6 +109,13 @@ pub struct SessionInfo {
     pub rows: u16,
     pub recording: bool,
     pub recording_since: Option<i64>,
+    /// 会话类型:ssh | local
+    #[serde(default = "default_kind_ssh")]
+    pub kind: String,
+}
+
+fn default_kind_ssh() -> String {
+    "ssh".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -268,4 +275,18 @@ pub struct TermData {
     pub id: String,
     /// base64 编码的原始输出,保证二进制安全
     pub data: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_info_kind_defaults_to_ssh() {
+        let json = r#"{"id":"1","hostId":"h","hostName":"n","user":"u","addr":"a","port":22,
+            "state":"connected","latencyMs":null,"cipher":"c","cols":80,"rows":24,
+            "recording":false,"recordingSince":null}"#;
+        let info: SessionInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(info.kind, "ssh");
+    }
 }
