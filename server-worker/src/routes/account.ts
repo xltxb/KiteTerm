@@ -4,9 +4,10 @@ import { featureGating, registrationDefault } from "../env";
 import { apiError, bearerToken, clientIp, nowTs } from "../http";
 import { settingGet } from "../settings";
 import * as features from "../features";
-import { hashPassword, verifyPassword } from "../crypto";
+import { hashPassword, newTotpSecret, otpauthUrl, totpVerify, verifyPassword } from "../crypto";
 import { rateLimitOk } from "../ratelimit";
 import { authenticate, issueToken, newTokenValue, passwordIssue, tokenInsertStatement, userPublic, validEmail } from "../auth";
+import { newCode, sendCode } from "../mail";
 
 export const accountRoutes = new Hono<{ Bindings: Env }>();
 
@@ -62,12 +63,13 @@ accountRoutes.post("/api/register", async (c) => {
   const id = crypto.randomUUID();
   const defaultSync = await settingGet(db, "default_sync_enabled", "1");
   const syncEnabled = defaultSync === "1";
-  // 邮箱验证与 TOTP 的实际判定在 Task 3 补上,本任务先固定为已验证 / 未绑定
+  // 邮箱验证开关开着时,新用户先落地为未验证,注册成功后即发验证码
+  const needVerify = await features.raw(db, "email_verify");
   const inserted = await db
     .prepare(
-      "INSERT OR IGNORE INTO users (id, email, password_hash, sync_enabled, created_at, email_verified) VALUES (?1, ?2, ?3, ?4, ?5, 1)",
+      "INSERT OR IGNORE INTO users (id, email, password_hash, sync_enabled, created_at, email_verified) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
     )
-    .bind(id, email, hash, syncEnabled ? 1 : 0, nowTs())
+    .bind(id, email, hash, syncEnabled ? 1 : 0, nowTs(), needVerify ? 0 : 1)
     .run();
   if ((inserted.meta.changes ?? 0) === 0) {
     return apiError(c, 409, "email_taken", "该邮箱已注册");
@@ -83,6 +85,20 @@ accountRoutes.post("/api/register", async (c) => {
   }
   await db.batch(statements);
 
+  // ---- 邮箱验证 ----
+  if (needVerify) {
+    const code = newCode();
+    await db
+      .prepare(
+        "INSERT INTO email_codes (user_id, code, expires_at, sent_at, attempts) VALUES (?1, ?2, ?3, ?4, 0) " +
+          "ON CONFLICT(user_id) DO UPDATE SET code=?2, expires_at=?3, sent_at=?4, attempts=0",
+      )
+      .bind(id, code, nowTs() + 600, nowTs())
+      .run();
+    // 发信不阻塞响应,交给 waitUntil 在响应返回后继续执行
+    c.executionCtx.waitUntil(sendCode(c.env, email, code));
+  }
+
   const totpSetupRequired = await features.raw(db, "totp_required");
   return c.json(
     {
@@ -90,7 +106,7 @@ accountRoutes.post("/api/register", async (c) => {
       token,
       expiresAt,
       totpSetupRequired,
-      user: { id, email, syncEnabled, emailVerified: true, totpEnabled: false },
+      user: { id, email, syncEnabled, emailVerified: !needVerify, totpEnabled: false },
     },
     201,
   );
@@ -124,9 +140,18 @@ accountRoutes.post("/api/login", async (c) => {
     return apiError(c, 403, "LOGIN_DISABLED", "平台当前已关闭登录");
   }
 
-  // ---- Task 3: TOTP 分支插入点 ----
-  // row.totp_enabled !== 0 时:先按「用户+IP」限流(每小时 10 次,TOTP_RATE_LIMITED),
-  // 再校验 body.totp 是否存在(缺失 → TOTP_REQUIRED)、是否正确(错误 → TOTP_INVALID)。
+  if (row.totp_enabled !== 0) {
+    // 猜测节流:同一账户 + 同一 IP 每小时最多尝试 10 次,防暴力破解 6 位动态验证码
+    const ip = clientIp(c);
+    if (!(await rateLimitOk(c.env.RATE, "totp", `${row.id}:${ip}`, 10))) {
+      return apiError(c, 429, "TOTP_RATE_LIMITED", "动态验证码尝试过于频繁,请稍后再试");
+    }
+    const totp = typeof body.totp === "string" ? body.totp.trim() : "";
+    if (!totp) return apiError(c, 401, "TOTP_REQUIRED", "请输入动态验证码");
+    if (!(await totpVerify(row.totp_secret ?? "", totp, nowTs()))) {
+      return apiError(c, 401, "TOTP_INVALID", "动态验证码错误");
+    }
+  }
 
   const { token, expiresAt } = await issueToken(db, row.id);
   // 多设备登录关闭:新登录挤掉其它设备的令牌
@@ -171,4 +196,113 @@ accountRoutes.get("/api/me", async (c) => {
       totpRequired: await features.raw(db, "totp_required"),
     },
   });
+});
+
+// ---- 邮箱验证 ----
+
+interface CodeBody {
+  code?: unknown;
+}
+
+accountRoutes.post("/api/verify-email", async (c) => {
+  const user = await authenticate(c);
+  if (user instanceof Response) return user;
+  // 猜测节流:同一账户每小时最多尝试 10 次,与下面按次数删码互为补充
+  if (!(await rateLimitOk(c.env.RATE, "verify_email", user.id, 10))) {
+    return apiError(c, 429, "CODE_RATE_LIMITED", "验证码尝试过于频繁,请稍后再试");
+  }
+  const db = c.env.DB;
+  const body = await c.req.json<CodeBody>().catch(() => ({}) as CodeBody);
+  const submitted = String(body.code ?? "").trim();
+  const row = await db
+    .prepare("SELECT code, expires_at, attempts FROM email_codes WHERE user_id = ?1")
+    .bind(user.id)
+    .first<{ code: string; expires_at: number; attempts: number }>();
+  if (!row) return apiError(c, 400, "CODE_INVALID", "验证码不存在,请重新发送");
+  if (row.expires_at < nowTs()) return apiError(c, 400, "CODE_EXPIRED", "验证码已过期,请重新发送");
+  if (row.code !== submitted) {
+    const attempts = row.attempts + 1;
+    if (attempts >= 5) {
+      // 错误次数用尽:直接把码删掉,逼用户重新发送,而不是无限期让人猜
+      await db.prepare("DELETE FROM email_codes WHERE user_id = ?1").bind(user.id).run();
+      return apiError(c, 400, "CODE_INVALID", "验证码错误次数过多,请重新发送");
+    }
+    await db.prepare("UPDATE email_codes SET attempts = ?1 WHERE user_id = ?2").bind(attempts, user.id).run();
+    return apiError(c, 400, "CODE_INVALID", "验证码错误");
+  }
+  await db.prepare("UPDATE users SET email_verified = 1 WHERE id = ?1").bind(user.id).run();
+  await db.prepare("DELETE FROM email_codes WHERE user_id = ?1").bind(user.id).run();
+  return c.json({ ok: true, emailVerified: true });
+});
+
+accountRoutes.post("/api/verify-email/resend", async (c) => {
+  const user = await authenticate(c);
+  if (user instanceof Response) return user;
+  if (user.emailVerified) return c.json({ ok: true, emailVerified: true });
+  const db = c.env.DB;
+  const code = newCode();
+  const last = await db.prepare("SELECT sent_at FROM email_codes WHERE user_id = ?1").bind(user.id).first<{ sent_at: number }>();
+  if (last && nowTs() - last.sent_at < 60) {
+    return apiError(c, 429, "RESEND_TOO_SOON", "发送过于频繁,请一分钟后再试");
+  }
+  await db
+    .prepare(
+      "INSERT INTO email_codes (user_id, code, expires_at, sent_at, attempts) VALUES (?1, ?2, ?3, ?4, 0) " +
+        "ON CONFLICT(user_id) DO UPDATE SET code=?2, expires_at=?3, sent_at=?4, attempts=0",
+    )
+    .bind(user.id, code, nowTs() + 600, nowTs())
+    .run();
+  try {
+    await sendCode(c.env, user.email, code);
+  } catch (e) {
+    return apiError(c, 502, "MAIL_ERROR", e instanceof Error ? e.message : String(e));
+  }
+  return c.json({ ok: true, emailVerified: false });
+});
+
+// ---- 双因素认证 ----
+
+accountRoutes.post("/api/2fa/setup", async (c) => {
+  const user = await authenticate(c);
+  if (user instanceof Response) return user;
+  if (user.totpEnabled) {
+    return apiError(c, 409, "TOTP_ALREADY_ENABLED", "已绑定双因素认证,如需更换请先解绑");
+  }
+  const secret = newTotpSecret();
+  await c.env.DB.prepare("UPDATE users SET totp_secret = ?2 WHERE id = ?1").bind(user.id, secret).run();
+  return c.json({ secret, otpauthUrl: otpauthUrl(secret, user.email) });
+});
+
+accountRoutes.post("/api/2fa/enable", async (c) => {
+  const user = await authenticate(c);
+  if (user instanceof Response) return user;
+  const db = c.env.DB;
+  const body = await c.req.json<CodeBody>().catch(() => ({}) as CodeBody);
+  const code = String(body.code ?? "");
+  const row = await db.prepare("SELECT totp_secret FROM users WHERE id = ?1").bind(user.id).first<{ totp_secret: string | null }>();
+  const secret = row?.totp_secret ?? null;
+  if (!secret) return apiError(c, 400, "TOTP_NOT_PENDING", "请先生成密钥");
+  if (!(await totpVerify(secret, code, nowTs()))) {
+    return apiError(c, 400, "TOTP_INVALID", "动态验证码错误");
+  }
+  await db.prepare("UPDATE users SET totp_enabled = 1 WHERE id = ?1").bind(user.id).run();
+  return c.json({ ok: true, totpEnabled: true });
+});
+
+accountRoutes.post("/api/2fa/disable", async (c) => {
+  const user = await authenticate(c);
+  if (user instanceof Response) return user;
+  const db = c.env.DB;
+  if (await features.raw(db, "totp_required")) {
+    return apiError(c, 403, "TOTP_ENFORCED", "平台强制双因素认证,不能解绑");
+  }
+  const body = await c.req.json<CodeBody>().catch(() => ({}) as CodeBody);
+  const code = String(body.code ?? "");
+  const row = await db.prepare("SELECT totp_secret FROM users WHERE id = ?1").bind(user.id).first<{ totp_secret: string | null }>();
+  const secret = row?.totp_secret ?? "";
+  if (!user.totpEnabled || !(await totpVerify(secret, code, nowTs()))) {
+    return apiError(c, 400, "TOTP_INVALID", "动态验证码错误");
+  }
+  await db.prepare("UPDATE users SET totp_enabled = 0, totp_secret = NULL WHERE id = ?1").bind(user.id).run();
+  return c.json({ ok: true, totpEnabled: false });
 });

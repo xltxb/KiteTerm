@@ -129,6 +129,46 @@ adminRoutes.post("/api/admin/users/:email/sync", async (c) => {
   return c.json({ ok: true, email: rawEmail, syncEnabled: enabled });
 });
 
+/** 管理员手工标记已验证(没有邮件服务的部署) */
+adminRoutes.post("/api/admin/users/:email/verify", async (c) => {
+  const deny = requireAdmin(c);
+  if (deny) return deny;
+  const db = c.env.DB;
+  const email = c.req.param("email").trim().toLowerCase();
+  const res = await db.prepare("UPDATE users SET email_verified = 1 WHERE email = ?1").bind(email).run();
+  if ((res.meta.changes ?? 0) === 0) return apiError(c, 404, "not_found", "用户不存在");
+  // 顺带清掉待验证的验证码 —— 已被管理员手工标记,残留的码/尝试次数没有意义
+  await db
+    .prepare("DELETE FROM email_codes WHERE user_id IN (SELECT id FROM users WHERE email = ?1)")
+    .bind(email)
+    .run();
+  return c.json({ ok: true });
+});
+
+/** 管理员重置(用户丢了验证器):清掉密钥并吊销令牌,下次登录重新绑定 */
+adminRoutes.post("/api/admin/users/:email/2fa/reset", async (c) => {
+  const deny = requireAdmin(c);
+  if (deny) return deny;
+  const db = c.env.DB;
+  const email = c.req.param("email").trim().toLowerCase();
+  const res = await db.prepare("UPDATE users SET totp_enabled = 0, totp_secret = NULL WHERE email = ?1").bind(email).run();
+  if ((res.meta.changes ?? 0) === 0) return apiError(c, 404, "not_found", "用户不存在");
+  await db.prepare("DELETE FROM tokens WHERE user_id IN (SELECT id FROM users WHERE email = ?1)").bind(email).run();
+  return c.json({ ok: true });
+});
+
+/** 强制下线:吊销该用户全部令牌 */
+adminRoutes.post("/api/admin/users/:email/revoke", async (c) => {
+  const deny = requireAdmin(c);
+  if (deny) return deny;
+  const email = c.req.param("email").trim().toLowerCase();
+  const res = await c.env.DB
+    .prepare("DELETE FROM tokens WHERE user_id IN (SELECT id FROM users WHERE email = ?1)")
+    .bind(email)
+    .run();
+  return c.json({ ok: true, revoked: res.meta.changes ?? 0 });
+});
+
 adminRoutes.get("/api/admin/stats", async (c) => {
   const deny = requireAdmin(c);
   if (deny) return deny;

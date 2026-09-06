@@ -34,3 +34,70 @@ export async function verifyPassword(pw: string, stored: string): Promise<boolea
   const got = await derive(pw, unb64(saltB), Number(iterS));
   return timingSafeEqual(got, unb64(hashB));
 }
+
+// ---- TOTP(RFC 6238,HMAC-SHA1、6 位、30 s 步长),与 `server/src/totp.rs` 逐位一致 ----
+
+const B32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+/** RFC 4648 base32 编码,无填充 */
+export function base32Encode(u: Uint8Array): string {
+  let bits = 0;
+  let val = 0;
+  let out = "";
+  for (const b of u) {
+    val = (val << 8) | b;
+    bits += 8;
+    while (bits >= 5) {
+      out += B32[(val >>> (bits - 5)) & 31];
+      bits -= 5;
+    }
+  }
+  if (bits > 0) out += B32[(val << (5 - bits)) & 31];
+  return out;
+}
+
+/** RFC 4648 base32 解码,忽略大小写与末尾的 `=` 填充 */
+export function base32Decode(s: string): Uint8Array {
+  let bits = 0;
+  let val = 0;
+  const out: number[] = [];
+  for (const ch of s.toUpperCase().replace(/=+$/, "")) {
+    const i = B32.indexOf(ch);
+    if (i < 0) throw new Error("bad base32");
+    val = (val << 5) | i;
+    bits += 5;
+    if (bits >= 8) {
+      out.push((val >>> (bits - 8)) & 255);
+      bits -= 8;
+    }
+  }
+  return new Uint8Array(out);
+}
+
+/** 生成 20 字节随机密钥,base32 编码后为 32 个字符 */
+export const newTotpSecret = () => base32Encode(crypto.getRandomValues(new Uint8Array(20)));
+
+async function hotp(secret: Uint8Array, counter: number): Promise<number> {
+  const key = await crypto.subtle.importKey("raw", secret, { name: "HMAC", hash: "SHA-1" }, false, ["sign"]);
+  const msg = new Uint8Array(8);
+  new DataView(msg.buffer).setBigUint64(0, BigInt(counter));
+  const h = new Uint8Array(await crypto.subtle.sign("HMAC", key, msg));
+  const off = h[19] & 0x0f;
+  return (((h[off] & 0x7f) << 24) | (h[off + 1] << 16) | (h[off + 2] << 8) | h[off + 3]) % 1_000_000;
+}
+
+/** 给定 base32 密钥与时间戳(秒),计算当前 30 s 步长内的 6 位动态验证码 */
+export async function totpCodeAt(secretB32: string, ts: number): Promise<string> {
+  return String(await hotp(base32Decode(secretB32), Math.floor(ts / 30))).padStart(6, "0");
+}
+
+/** 允许前后各一个时间步(±30 s)的时钟漂移;非 6 位数字直接判否 */
+export async function totpVerify(secretB32: string, code: string, now: number): Promise<boolean> {
+  code = code.trim();
+  if (!/^\d{6}$/.test(code)) return false;
+  for (const d of [-1, 0, 1]) if ((await totpCodeAt(secretB32, now + d * 30)) === code) return true;
+  return false;
+}
+
+export const otpauthUrl = (secret: string, email: string) =>
+  `otpauth://totp/KiteTerm:${email}?secret=${secret}&issuer=KiteTerm&algorithm=SHA1&digits=6&period=30`;
