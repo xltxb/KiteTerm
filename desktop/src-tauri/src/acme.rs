@@ -297,8 +297,10 @@ pub async fn issue(
                 let token = ch.token.clone();
                 let dir = format!("{DEFAULT_WEBROOT}/.well-known/acme-challenge");
                 let file_path = format!("{DEFAULT_WEBROOT}{}", challenge_path(&token));
+                // 用 {{ ...; }} 2>&1 包住两段命令,把 stderr 折进被捕获的 stdout;
+                // 标记仍只在命令组退出 0 时 echo,失败检测不变,但错误消息可带出 stderr 原因
                 let cmd = format!(
-                    "mkdir -p '{}' && printf %s '{}' > '{}' && echo __ACME_OK__",
+                    "{{ mkdir -p '{}' && printf %s '{}' > '{}'; }} 2>&1 && echo __ACME_OK__",
                     dir,
                     key_auth.as_str(),
                     file_path
@@ -363,7 +365,8 @@ pub async fn issue(
         req.reload_cmd.clone()
     };
     let handle = step_try!(Step::Reload, sessions.get_handle(&req.host_id));
-    let reload_full = format!("{reload_cmd} && echo __RELOAD_OK__");
+    // 2>&1 绑定到 reload_cmd,stderr 折进 stdout;标记仍只在退出 0 时 echo
+    let reload_full = format!("{reload_cmd} 2>&1 && echo __RELOAD_OK__");
     let out = step_try!(Step::Reload, ssh::exec_capture(&handle, &reload_full).await);
     if !out.contains("__RELOAD_OK__") {
         step_fail!(Step::Reload, format!("服务重载失败: {}", out.trim()));
