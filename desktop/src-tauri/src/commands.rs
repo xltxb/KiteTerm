@@ -20,6 +20,7 @@ pub struct AppState {
     pub transfers: Arc<TransferManager>,
     pub forwards: Arc<ForwardManager>,
     pub monitor: Arc<MonitorState>,
+    pub certs: Arc<crate::acme::CertManager>,
 }
 
 // ---- hosts ----
@@ -607,4 +608,44 @@ pub fn settings_save(state: State<AppState>, settings: AppSettings) -> Result<()
     state.db.kv_set("settings", &json)?;
     state.db.oplog_append("settings", "app", "put", Some(json))?;
     Ok(())
+}
+
+// ---- certs ----
+
+#[tauri::command]
+pub fn cert_list(state: State<AppState>) -> Result<Vec<CertInfo>> {
+    state.db.list_certs()
+}
+
+#[tauri::command]
+pub async fn cert_issue(app: AppHandle, state: State<'_, AppState>, req: IssueRequest) -> Result<CertInfo> {
+    crate::acme::issue(app, state.db.clone(), state.vault.clone(), state.sessions.clone(), state.certs.clone(), req).await
+}
+
+#[tauri::command]
+pub fn cert_dns_confirm(state: State<AppState>, id: String) -> Result<()> {
+    crate::acme::confirm_dns(&state.certs, &id);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn cert_renew(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<CertInfo> {
+    crate::acme::renew(app, state.db.clone(), state.vault.clone(), state.sessions.clone(), state.certs.clone(), &id).await
+}
+
+#[tauri::command]
+pub async fn cert_revoke(state: State<'_, AppState>, id: String) -> Result<()> {
+    crate::acme::revoke(state.db.clone(), state.vault.clone(), &id).await
+}
+
+#[tauri::command]
+pub async fn cert_deploy(app: AppHandle, state: State<'_, AppState>, id: String, host_id: String) -> Result<()> {
+    // 注:deploy 比 brief 里的签名多一个 vault 参数 —— 私钥经 vault 加密存储,部署时需解密取私钥
+    crate::acme::deploy(app, state.db.clone(), state.vault.clone(), state.sessions.clone(), &id, &host_id).await
+}
+
+#[tauri::command]
+pub fn cert_download_chain(state: State<AppState>, id: String) -> Result<String> {
+    let row = state.db.get_cert_full(&id)?;
+    row.chain_pem.ok_or_else(|| AppError("证书链不存在".into()))
 }

@@ -4,12 +4,16 @@ import type {
   AiProvider,
   AiSettings,
   AppSettings,
+  CertDnsRecord,
+  CertInfo,
+  CertProgress,
   FileEntry,
   ForwardRule,
   ForwardType,
   Features,
   Host,
   HostGroup,
+  IssueRequest,
   MonitorSample,
   Recording,
   SessionInfo,
@@ -61,6 +65,20 @@ export interface KiteIpc {
   toggleForward(id: string, enabled: boolean): Promise<void>;
   deleteForward(id: string): Promise<void>;
   onForwardStats(cb: (rules: ForwardRule[]) => void): Unsubscribe;
+
+  // ---- certs(SSL 证书 / ACME)----
+  certList(): Promise<CertInfo[]>;
+  certIssue(req: IssueRequest): Promise<CertInfo>;
+  /** DNS 挑战:用户在 DNS 服务商处添加记录后调用,触发校验 */
+  certDnsConfirm(id: string): Promise<void>;
+  certRenew(id: string): Promise<CertInfo>;
+  certRevoke(id: string): Promise<void>;
+  /** 部署证书到目标主机(写文件 + 执行 reloadCmd) */
+  certDeploy(id: string, hostId: string): Promise<void>;
+  /** 返回证书链 PEM 原文 */
+  certDownloadChain(id: string): Promise<string>;
+  onCertProgress(cb: (p: CertProgress) => void): Unsubscribe;
+  onCertDnsRecord(cb: (r: CertDnsRecord) => void): Unsubscribe;
 
   // ---- sessions / terminal ----
   /** password 仅在主机未配置密钥时需要;错误消息含 PASSWORD_REQUIRED / HOSTKEY_CHANGED 标记 */

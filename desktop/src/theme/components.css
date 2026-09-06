@@ -847,3 +847,53 @@
   color: var(--text-strong);
 }
 .stat-label { font-size: var(--ui-xs); color: var(--text-faint); margin-top: 2px; }
+
+/* ---- 证书列表行的操作菜单(ellipsis 弹出) ---- */
+.cert-menu {
+  position: absolute;
+  right: 0;
+  top: 34px;
+  z-index: var(--z-raised);
+  width: 220px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-default);
+  border-radius: 12px;
+  box-shadow: var(--shadow-lg);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+}
+.cert-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: var(--ui-sm);
+  color: var(--text-strong);
+  transition: var(--transition-colors);
+}
+.cert-menu-item:hover { background: var(--surface-hover); }
+.cert-menu-item.danger { color: var(--danger-text); }
+.cert-menu-item.danger:hover { background: var(--danger-subtle); }
+.cert-menu-divider { height: 1px; background: var(--border-subtle); margin: 5px 8px; }
+
+/* ---- 操作成功的短提示(浮条) ---- */
+.cert-toast {
+  position: fixed;
+  bottom: 28px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: var(--z-toast);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-default);
+  border-radius: 99px;
+  padding: 9px 18px;
+  box-shadow: var(--shadow-lg);
+  font-size: var(--ui-sm);
+  color: var(--text-strong);
+}

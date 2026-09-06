@@ -1,7 +1,15 @@
 // Tauri 环境下的真实 IPC 实现 — 命令名与 src-tauri/src/commands.rs 一一对应
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { ForwardRule, MonitorSample, SessionInfo, SyncStatus, TransferJob } from "@/types";
+import type {
+  CertDnsRecord,
+  CertProgress,
+  ForwardRule,
+  MonitorSample,
+  SessionInfo,
+  SyncStatus,
+  TransferJob,
+} from "@/types";
 import type { Unsubscribe, KiteIpc } from "./api";
 
 function sub<T>(event: string, cb: (payload: T) => void): Unsubscribe {
@@ -36,6 +44,16 @@ export function createTauriIpc(): KiteIpc {
     toggleForward: (id, enabled) => invoke("toggle_forward", { id, enabled }),
     deleteForward: (id) => invoke("delete_forward", { id }),
     onForwardStats: (cb) => sub<ForwardRule[]>("forward://stats", cb),
+
+    certList: () => invoke("cert_list"),
+    certIssue: (req) => invoke("cert_issue", { req }),
+    certDnsConfirm: (id) => invoke("cert_dns_confirm", { id }),
+    certRenew: (id) => invoke("cert_renew", { id }),
+    certRevoke: (id) => invoke("cert_revoke", { id }),
+    certDeploy: (id, hostId) => invoke("cert_deploy", { id, hostId }),
+    certDownloadChain: (id) => invoke("cert_download_chain", { id }),
+    onCertProgress: (cb) => sub<CertProgress>("cert://progress", (p) => cb(p)),
+    onCertDnsRecord: (cb) => sub<CertDnsRecord>("cert://dns-record", (r) => cb(r)),
 
     openSession: (hostId, password) => invoke("session_open", { hostId, password }),
     openLocalSession: () => invoke("local_session_open"),
