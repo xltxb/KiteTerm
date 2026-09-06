@@ -57,7 +57,6 @@ pub async fn receive<C: ZChannel, P: ProgressSink>(
     let mut cur_written: u64 = 0;
     let mut ctx = DataCtx::None;
     let mut crc_errors: u32 = 0;
-    let mut finished = false; // 已收到 ZFIN,进入收尾(吞 OO 等 EOF)
 
     // 数据子包一律按 crc32 解析:我们通过 ZRINIT 协商了 CANFC32,`sz` 会用 bin32/crc32;
     // 且 `Parser::Event` 不携带帧的 crc 格式信息,故按协商结果默认 crc32。
@@ -72,8 +71,9 @@ pub async fn receive<C: ZChannel, P: ProgressSink>(
             None => {
                 let n = chan.read(&mut read_buf).await?;
                 if n == 0 {
-                    // 流结束。若仍有未收完的文件,报告失败。
-                    if !finished && writer.is_some() {
+                    // 在收到 ZFIN 之前就遇到流结束:若仍有未收完的文件,报告失败。
+                    // (正常收尾走 ZFIN 分支,读到 OO 即返回,不会走到这里。)
+                    if writer.is_some() {
                         sink.finish(false, Some("unexpected EOF".to_string()));
                     }
                     break;
@@ -126,11 +126,22 @@ pub async fn receive<C: ZChannel, P: ProgressSink>(
                             .await?;
                     }
                     frame::ZFIN => {
-                        // 回 ZFIN,随后吞掉尾部 OO 直到 EOF
+                        // 回 ZFIN 后,ZMODEM 传输在协议层已结束。真实交互式 shell 通道此后
+                        // **不会**给出传输层 EOF(shell 回到提示符,通道保持打开),因此不能再
+                        // 等 `read` 返回 `Ok(0)`,否则将永久阻塞。这里只做一次有界读吞掉发送端
+                        // 收尾的 "OO"(over-and-out)即返回。
+                        //
+                        // 边界:极少数实现可能把 "OO" 与其后的 shell 提示符字节放在同一段里发来,
+                        // 此时提示符首几字节会被这次有界读一并吞掉。ZMODEM 里发送端在写完 "OO" 后
+                        // 进程即退出,提示符是随后独立到达的一段,故实际几乎不会发生;
+                        // 权衡下这点极小的显示损失,换取不依赖 EOF 的确定性返回。
                         chan.write_all(&frame::encode_hex_header(frame::ZFIN, [0; 4]))
                             .await?;
-                        finished = true;
-                        ctx = DataCtx::None;
+                        let mut oo = [0u8; 8];
+                        // 一次有界读:对端已发 "OO" 则读到并丢弃;若此处直接读到 Ok(0)
+                        // (对端已关闭)也正常收尾。无论哪种都不再循环等待。
+                        let _ = chan.read(&mut oo).await?;
+                        break;
                     }
                     _ => {
                         // ZSKIP/ZNAK/未知帧:忽略
@@ -606,6 +617,68 @@ mod tests {
         let path = dir_path.join("data.bin");
         assert_eq!(std::fs::read(&path).unwrap(), b"hello");
         assert_eq!(files, vec![path]);
+        assert_eq!(sink.finishes.lock().unwrap()[0], (true, None));
+    }
+
+    /// 协议完成即返回,不依赖传输层 EOF:真实交互式 shell 通道在传输结束后不会关闭
+    /// (shell 回到提示符),故 `receive` 收到 ZFIN 并吞掉尾部 "OO" 后必须立即返回,
+    /// 不能再等 `read` 返回 `Ok(0)`。本测试的对端在发完 "OO" 后**不 drop** 自己的
+    /// MemChannel 半边(用 `pending` 占住所有权),因此本机 `read` 永远不会得到 EOF;
+    /// 若 `receive` 仍在等 EOF,则会挂起并被 5s 超时判定为失败。
+    #[tokio::test]
+    async fn receive_returns_on_oo_without_eof() {
+        use std::time::Duration;
+        let (mut local, mut peer) = MemChannel::pair();
+        let dir = TmpDir::new();
+        let dir_path = dir.path().to_path_buf();
+        let sink = RecordingSink::new();
+
+        let sender = async move {
+            let mut p = Parser::new();
+            wait_for(&mut peer, &mut p, frame::ZRINIT).await;
+            peer.write_all(&frame::encode_bin32_header(frame::ZFILE, [0; 4]))
+                .await
+                .unwrap();
+            peer.write_all(&frame::encode_data_subpacket(
+                &file_info("noeof.txt", 5),
+                frame::ZCRCW,
+                true,
+            ))
+            .await
+            .unwrap();
+            wait_for(&mut peer, &mut p, frame::ZRPOS).await;
+            peer.write_all(&frame::encode_bin32_header(frame::ZDATA, frame::pos_to_arg(0)))
+                .await
+                .unwrap();
+            peer.write_all(&frame::encode_data_subpacket(b"hello", frame::ZCRCE, true))
+                .await
+                .unwrap();
+            peer.write_all(&frame::encode_bin32_header(frame::ZEOF, frame::pos_to_arg(5)))
+                .await
+                .unwrap();
+            wait_for(&mut peer, &mut p, frame::ZRINIT).await;
+            peer.write_all(&frame::encode_hex_header(frame::ZFIN, [0; 4]))
+                .await
+                .unwrap();
+            wait_for(&mut peer, &mut p, frame::ZFIN).await;
+            peer.write_all(b"OO").await.unwrap();
+            // 关键:不 drop peer,保持发送半边存活,使 local 端不会读到 EOF。
+            std::future::pending::<()>().await;
+        };
+
+        let recv = receive(&mut local, &sink, &dir_path);
+        let files = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::select! {
+                r = recv => r,
+                _ = sender => unreachable!("sender 的 pending future 不应完成"),
+            }
+        })
+        .await
+        .expect("receive 收到 OO 后应立即返回,却超时(疑似仍在等传输层 EOF)")
+        .expect("receive 不应报错");
+
+        assert_eq!(files, vec![dir_path.join("noeof.txt")]);
+        assert_eq!(std::fs::read(dir_path.join("noeof.txt")).unwrap(), b"hello");
         assert_eq!(sink.finishes.lock().unwrap()[0], (true, None));
     }
 
