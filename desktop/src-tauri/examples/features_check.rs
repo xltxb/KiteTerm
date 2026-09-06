@@ -4,7 +4,6 @@
 //! 运行:`KITE_NO_KEYCHAIN=1 cargo run --example features_check`
 //! 期望输出 FEATURES_CHECK_PASS。
 
-use kite_term_lib::account;
 use kite_term_lib::db::Db;
 use kite_term_lib::features;
 
@@ -29,13 +28,13 @@ async fn main() {
     println!("step1 首次未知 → 不做门禁 OK");
 
     // 2) 指向一个不存在的平台:同上,且不应 panic 或报错
-    account::set_platform_url(&db, "http://127.0.0.1:1").unwrap();
+    std::env::set_var("KITE_PLATFORM_URL", "http://127.0.0.1:1");
     let f = features::refresh(&db).await.expect("平台不可达不该返回 Err");
     assert!(!f.known && f.ai, "不可达且无缓存 → 不做门禁");
     println!("step2 平台不可达且无缓存 → 不做门禁 OK");
 
     // 3) 指向真实平台:拉到并落缓存
-    account::set_platform_url(&db, PLATFORM).unwrap();
+    std::env::set_var("KITE_PLATFORM_URL", PLATFORM);
     let f = features::refresh(&db).await.expect("应能拉到");
     assert!(f.known, "拉到后 known 应为 true");
     println!(
@@ -50,7 +49,7 @@ async fn main() {
     println!("step4 落缓存 OK");
 
     // 5) 平台再次不可达:沿用缓存,不回落到全关 —— 断网不该把人锁在外面
-    account::set_platform_url(&db, "http://127.0.0.1:1").unwrap();
+    std::env::set_var("KITE_PLATFORM_URL", "http://127.0.0.1:1");
     let f2 = features::refresh(&db).await.expect("不可达不该 Err");
     assert_eq!(f2.login, cached.login, "不可达时应沿用缓存");
     assert_eq!(f2.ai, cached.ai);

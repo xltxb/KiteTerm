@@ -111,7 +111,7 @@ pub fn cached(db: &Db) -> Features {
 /// 拉取并刷新缓存。平台不可达时**不动缓存**,返回现有缓存值 ——
 /// 一次网络抖动不该让功能忽然消失。
 pub async fn refresh(db: &Db) -> Result<Features> {
-    let url = format!("{}/api/features", platform_url(db));
+    let url = format!("{}/api/features", platform_url());
     let resp = match client().get(&url).send().await {
         Ok(r) if r.status().is_success() => r,
         // 平台不可达或返回异常:沿用缓存(没缓存就是全关)

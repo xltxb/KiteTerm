@@ -130,8 +130,6 @@ pub fn run() {
             commands::account_totp_enable,
             commands::account_totp_disable,
             commands::account_refresh,
-            commands::platform_url_get,
-            commands::platform_url_set,
             commands::ai_get_settings,
             commands::ai_save_provider,
             commands::ai_delete_provider,

@@ -12,11 +12,10 @@ use crate::db::Db;
 use crate::error::{AppError, Result};
 use crate::vault::Vault;
 
-const KV_PLATFORM: &str = "platform_url";
 const KV_TOKEN: &str = "account_token_enc";
 const KV_ACCOUNT: &str = "account_info";
-/// 正式发布指向的管理平台;本地开发用环境变量 `KITE_PLATFORM_URL` 覆盖
-/// (如 `KITE_PLATFORM_URL=http://127.0.0.1:8787 pnpm tauri dev`),仅在用户尚未手动设置过地址时生效。
+/// 管理平台地址固定为正式域名,应用内不提供修改入口。
+/// 本地联调用环境变量 `KITE_PLATFORM_URL` 覆盖(如 `KITE_PLATFORM_URL=http://127.0.0.1:8787 pnpm tauri dev`)。
 const DEFAULT_PLATFORM: &str = "https://m.kiteterm.com";
 /// 单次平台请求的总超时;reqwest 默认不设超时,网络黑洞时登录按钮会永远转圈
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
@@ -72,27 +71,19 @@ pub fn client() -> reqwest::Client {
         .clone()
 }
 
-fn default_platform_url() -> String {
-    std::env::var("KITE_PLATFORM_URL")
-        .ok()
-        .and_then(|v| normalize_platform_url(&v).ok())
-        .unwrap_or_else(|| DEFAULT_PLATFORM.into())
-}
-
-pub fn platform_url(db: &Db) -> String {
-    db.kv_get(KV_PLATFORM)
-        .ok()
-        .flatten()
-        .unwrap_or_else(default_platform_url)
-}
-
-/// 校验并规范化用户输入的平台地址,返回落库的最终形式。
-/// 之前只去尾部斜杠:没写协议会得到 reqwest 的 `relative URL without a base`,
-/// 写了 `http://` 指向公网则密码与令牌明文传输 —— 这里都在保存时就拦住。
-pub fn set_platform_url(db: &Db, url: &str) -> Result<String> {
-    let normalized = normalize_platform_url(url)?;
-    db.kv_set(KV_PLATFORM, &normalized)?;
-    Ok(normalized)
+/// 平台地址:固定域名,仅 `KITE_PLATFORM_URL` 可覆盖(每次读取,便于自检程序在进程内切换)。
+/// 环境变量不合法时打日志并回退到正式域名。
+pub fn platform_url() -> String {
+    match std::env::var("KITE_PLATFORM_URL") {
+        Ok(v) if !v.trim().is_empty() => match normalize_platform_url(&v) {
+            Ok(u) => u,
+            Err(e) => {
+                eprintln!("KITE_PLATFORM_URL 无效({e}),改用 {DEFAULT_PLATFORM}");
+                DEFAULT_PLATFORM.into()
+            }
+        },
+        _ => DEFAULT_PLATFORM.into(),
+    }
 }
 
 fn is_loopback_host(url: &reqwest::Url) -> bool {
@@ -105,7 +96,7 @@ fn is_loopback_host(url: &reqwest::Url) -> bool {
     }
 }
 
-/// 规则:
+/// 规范化 `KITE_PLATFORM_URL` 覆盖值。规则:
 /// - 去首尾空白与尾部 `/`;
 /// - 没写协议按 https 补全(本机地址补 http,方便本地开发);
 /// - 只接受 http/https;http 仅允许本机(127.0.0.1 / localhost / ::1);
@@ -204,8 +195,8 @@ fn store_login(db: &Db, vault: &Vault, token: &str, info: &AccountInfo) -> Resul
     db.kv_set(KV_ACCOUNT, &serde_json::to_string(info)?)
 }
 
-pub async fn register_policy(db: &Db) -> Result<RegisterPolicy> {
-    let url = format!("{}/api/register/policy", platform_url(db));
+pub async fn register_policy() -> Result<RegisterPolicy> {
+    let url = format!("{}/api/register/policy", platform_url());
     let resp = client()
         .get(&url)
         .send()
@@ -225,7 +216,7 @@ pub async fn register(
     password: &str,
     invite_code: Option<&str>,
 ) -> Result<AccountInfo> {
-    let url = format!("{}/api/register", platform_url(db));
+    let url = format!("{}/api/register", platform_url());
     let resp = client()
         .post(&url)
         .json(&json!({
@@ -255,7 +246,7 @@ pub async fn login(
     password: &str,
     totp: Option<&str>,
 ) -> Result<AccountInfo> {
-    let url = format!("{}/api/login", platform_url(db));
+    let url = format!("{}/api/login", platform_url());
     let resp = client()
         .post(&url)
         .json(&json!({ "email": email, "password": password, "totp": totp.unwrap_or_default() }))
@@ -276,7 +267,7 @@ pub async fn login(
 
 pub async fn logout(db: &Db, vault: &Vault) -> Result<()> {
     if let Ok(t) = token(db, vault) {
-        let url = format!("{}/api/logout", platform_url(db));
+        let url = format!("{}/api/logout", platform_url());
         let _ = client().post(&url).bearer_auth(t).send().await;
     }
     let conn = db.conn.lock().unwrap();
@@ -288,7 +279,7 @@ pub async fn logout(db: &Db, vault: &Vault) -> Result<()> {
 async fn authed_post(db: &Db, vault: &Vault, path: &str, body: serde_json::Value) -> Result<serde_json::Value> {
     let t = token(db, vault)?;
     let resp = client()
-        .post(format!("{}{path}", platform_url(db)))
+        .post(format!("{}{path}", platform_url()))
         .bearer_auth(t)
         .json(&body)
         .send()
@@ -340,7 +331,7 @@ pub async fn totp_disable(db: &Db, vault: &Vault, code: &str) -> Result<AccountI
 pub async fn refresh(db: &Db, vault: &Vault) -> Result<AccountInfo> {
     let t = token(db, vault)?;
     let resp = client()
-        .get(format!("{}/api/me", platform_url(db)))
+        .get(format!("{}/api/me", platform_url()))
         .bearer_auth(t)
         .send()
         .await
@@ -372,7 +363,7 @@ pub async fn refresh(db: &Db, vault: &Vault) -> Result<AccountInfo> {
 /// 向平台索取同步凭据(登录 + 平台放开同步时才会成功)
 pub async fn sync_credentials(db: &Db, vault: &Vault) -> Result<PlatformCreds> {
     let t = token(db, vault)?;
-    let url = format!("{}/api/sync/credentials", platform_url(db));
+    let url = format!("{}/api/sync/credentials", platform_url());
     let resp = client()
         .get(&url)
         .bearer_auth(t)

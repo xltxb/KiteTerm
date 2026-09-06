@@ -92,8 +92,6 @@ export function createTauriIpc(): KiteIpc {
     accountRefresh: () => invoke("account_refresh"),
     featuresGet: () => invoke("features_get"),
     featuresRefresh: () => invoke("features_refresh"),
-    platformUrlGet: () => invoke("platform_url_get"),
-    platformUrlSet: (url) => invoke("platform_url_set", { url }),
 
     getSettings: () => invoke("settings_get"),
     saveSettings: (s) => invoke("settings_save", { settings: s }),
