@@ -45,6 +45,9 @@ pub struct PlatformCreds {
     #[serde(default)]
     pub session_token: Option<String>,
     pub prefix: String,
+    /// MinIO / 自建网关需开启;AWS S3 / R2 关闭(旧版平台未下发该字段时按开启处理)
+    #[serde(default = "default_true")]
+    pub path_style: bool,
 }
 
 pub fn platform_url(db: &Db) -> String {

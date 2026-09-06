@@ -199,8 +199,8 @@ async fn open_bucket(db: &Db, vault: &Vault) -> Result<(Box<Bucket>, SyncConfig,
     )
     .map_err(|e| AppError(format!("凭据错误: {e}")))?;
     let bucket = Bucket::new(&creds_info.bucket, region, creds)
-        .map_err(|e| AppError(format!("bucket 初始化失败: {e}")))?
-        .with_path_style();
+        .map_err(|e| AppError(format!("bucket 初始化失败: {e}")))?;
+    let bucket = if creds_info.path_style { bucket.with_path_style() } else { bucket };
     Ok((bucket, cfg, creds_info.prefix))
 }
 
@@ -749,8 +749,9 @@ async fn sync_recordings(
     for page in listing {
         for obj in page.contents {
             let Some(id) = obj.key.strip_prefix(&list_prefix).and_then(|k| k.strip_suffix(".meta")) else { continue };
-            // 防御性校验:id 混入路径分隔符/上跳会让下面的 dir.join 逃逸出 recordings 目录
-            if id.contains('/') || id.contains("..") { continue; }
+            // 防御性校验:白名单放行(字母数字/-/_),避免路径分隔符/上跳等字符
+            // 让下面的 dir.join 逃逸出 recordings 目录
+            if !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') { continue; }
             if db.recording_exists(id)? { continue; }
             // 单条对象缺失/网络错误不该把整轮同步 Err 掉(否则后面的 maybe_compact 永远跑不到)
             let Ok(meta_resp) = bucket.get_object(&obj.key).await else { continue };

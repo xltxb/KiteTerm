@@ -44,9 +44,12 @@ struct PlatformConfig {
     registration_default: String,
     /// 功能门禁总闸(KITE_FEATURE_GATING,默认 off)。
     ///
-    /// off:登录/云同步/AI 助手三项开关全部失效 —— 客户端不隐藏任何入口,
-    ///     服务端也不据此拦截。平台只当账户与凭据的中枢,不管功能可见性。
-    /// on: 三项开关生效,由管理控制台逐项开关并下发。
+    /// off:8 项产品开关(login/sync/ai/key_sync/recording_sync/ai_command/
+    ///     ai_diagnose/ai_summary)全部失效 —— 客户端不隐藏任何入口,服务端
+    ///     也不据此拦截。平台只当账户与凭据的中枢,不管功能可见性。
+    ///     安全策略类开关(email_verify/totp_required/multi_device)不受总闸
+    ///     影响,总闸关闭时依旧按各自设置生效。
+    /// on: 8 项产品开关生效,由管理控制台逐项开关并下发。
     ///
     /// 之所以做成部署配置而不是控制台开关:它决定的是这套管控要不要存在,
     /// 属于部署形态,不该被日常运维误点。
@@ -62,8 +65,10 @@ struct AppState {
     storage: std::sync::RwLock<storage::StorageConfig>,
     /// 当前生效配置的来源:"db" | "env",供控制台展示
     storage_source: Mutex<&'static str>,
-    /// 注册限流:IP → 最近注册尝试的时间戳(滑动窗口)
-    register_hits: Mutex<HashMap<String, Vec<i64>>>,
+    /// 通用滑动窗口限流:`"{bucket}:{key}"` → 最近命中的时间戳。
+    /// bucket 区分场景(register / totp / verify_email 等),key 是该场景内的限流对象
+    /// (IP、`用户id:IP` 或用户 id)。
+    rate_hits: Mutex<HashMap<String, Vec<i64>>>,
 }
 
 /// 注册限流:同一 IP 在窗口内的注册尝试上限(KITE_REGISTER_LIMIT 可调)
@@ -182,17 +187,18 @@ fn register_limit() -> usize {
         .unwrap_or(REGISTER_MAX_PER_WINDOW)
 }
 
-/// 滑动窗口限流;超限返回 false
-fn rate_limit_ok(state: &AppState, ip: &str) -> bool {
+/// 通用滑动窗口限流(窗口固定 3600 s);超限返回 false。
+/// `bucket` 区分场景(register/totp/verify_email),`key` 是该场景内的限流对象。
+fn rate_limit_ok(state: &AppState, bucket: &str, key: &str, max: usize) -> bool {
     let now = now_ts();
-    let mut hits = state.register_hits.lock().unwrap();
-    let entry = hits.entry(ip.to_string()).or_default();
+    let mut hits = state.rate_hits.lock().unwrap();
+    let entry = hits.entry(format!("{bucket}:{key}")).or_default();
     entry.retain(|t| now - *t < REGISTER_WINDOW_SECS);
-    if entry.len() >= register_limit() {
+    if entry.len() >= max {
         return false;
     }
     entry.push(now);
-    // 顺带清理其它 IP 的过期记录,避免无限增长
+    // 顺带清理其它键的过期记录,避免无限增长
     if hits.len() > 1024 {
         hits.retain(|_, v| {
             v.retain(|t| now - *t < REGISTER_WINDOW_SECS);
@@ -325,7 +331,7 @@ async fn register(
     // 限流放在最前:注册接口会通过 email_taken 泄露邮箱是否已注册,
     // 必须先压制暴力枚举,再做其余校验
     let ip = client_ip(&headers, Some(peer));
-    if !rate_limit_ok(&state, &ip) {
+    if !rate_limit_ok(&state, "register", &ip, register_limit()) {
         return Err(err(
             StatusCode::TOO_MANY_REQUESTS,
             "rate_limited",
@@ -416,8 +422,8 @@ async fn register(
     if need_verify {
         let code = mail::new_code();
         conn.execute(
-            "INSERT INTO email_codes (user_id, code, expires_at, sent_at) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(user_id) DO UPDATE SET code=?2, expires_at=?3, sent_at=?4",
+            "INSERT INTO email_codes (user_id, code, expires_at, sent_at, attempts) VALUES (?1, ?2, ?3, ?4, 0)
+             ON CONFLICT(user_id) DO UPDATE SET code=?2, expires_at=?3, sent_at=?4, attempts=0",
             params![id, code, now_ts() + 600, now_ts()],
         ).map_err(internal)?;
         // 发信不借用 conn(MutexGuard),spawn 前先克隆出去,避免把锁跨 await 持有
@@ -443,6 +449,8 @@ async fn register(
 
 async fn login(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(body): Json<Credentials>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let email = body.email.trim().to_lowercase();
@@ -471,6 +479,15 @@ async fn login(
         return Err(err(StatusCode::FORBIDDEN, "LOGIN_DISABLED", "平台当前已关闭登录"));
     }
     if totp_enabled != 0 {
+        // 猜测节流:同一账户 + 同一 IP 每小时最多尝试 10 次,防暴力破解 6 位动态验证码
+        let ip = client_ip(&headers, Some(peer));
+        if !rate_limit_ok(&state, "totp", &format!("{user_id}:{ip}"), 10) {
+            return Err(err(
+                StatusCode::TOO_MANY_REQUESTS,
+                "TOTP_RATE_LIMITED",
+                "动态验证码尝试过于频繁,请稍后再试",
+            ));
+        }
         let Some(code) = body.totp.as_deref().filter(|c| !c.trim().is_empty()) else {
             return Err(err(StatusCode::UNAUTHORIZED, "TOTP_REQUIRED", "请输入动态验证码"));
         };
@@ -540,11 +557,20 @@ async fn sync_credentials(
     }
     {
         let conn = state.db.lock().unwrap();
+        // 顺序:平台总闸 → 用户级开关 → 邮箱验证 → 强制 2FA —— 越靠前的检查越该
+        // 先挡下,避免被停用账户走到后面的检查里泄露「平台还要求什么」
         if !features::effective(&conn, state.cfg.feature_gating, "sync") {
             return Err(err(
                 StatusCode::FORBIDDEN,
                 "SYNC_DISABLED",
                 "平台当前已关闭云同步",
+            ));
+        }
+        if !user.sync_enabled {
+            return Err(err(
+                StatusCode::FORBIDDEN,
+                "SYNC_DISABLED",
+                "该账户的云同步已被平台停用,请联系管理员",
             ));
         }
         if features::raw(&conn, "email_verify") && !user.email_verified {
@@ -553,13 +579,6 @@ async fn sync_credentials(
         if features::raw(&conn, "totp_required") && !user.totp_enabled {
             return Err(err(StatusCode::FORBIDDEN, "TOTP_SETUP_REQUIRED", "平台要求绑定双因素认证后才能同步"));
         }
-    }
-    if !user.sync_enabled {
-        return Err(err(
-            StatusCode::FORBIDDEN,
-            "SYNC_DISABLED",
-            "该账户的云同步已被平台停用,请联系管理员",
-        ));
     }
     let prefix = cfg.user_prefix(&user.id);
     if cfg.sts_mode != "off" {
@@ -618,17 +637,36 @@ async fn verify_email(
     Json(body): Json<CodeBody>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let user = authenticate(&state, &headers)?;
+    // 猜测节流:同一账户每小时最多尝试 10 次,与下面按次数删码互为补充
+    if !rate_limit_ok(&state, "verify_email", &user.id, 10) {
+        return Err(err(
+            StatusCode::TOO_MANY_REQUESTS,
+            "CODE_RATE_LIMITED",
+            "验证码尝试过于频繁,请稍后再试",
+        ));
+    }
     let conn = state.db.lock().unwrap();
-    let row: Option<(String, i64)> = conn
-        .query_row("SELECT code, expires_at FROM email_codes WHERE user_id = ?1", [&user.id], |r| Ok((r.get(0)?, r.get(1)?)))
+    let row: Option<(String, i64, i64)> = conn
+        .query_row(
+            "SELECT code, expires_at, attempts FROM email_codes WHERE user_id = ?1",
+            [&user.id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
         .optional().map_err(internal)?;
-    let Some((code, expires_at)) = row else {
+    let Some((code, expires_at, attempts)) = row else {
         return Err(err(StatusCode::BAD_REQUEST, "CODE_INVALID", "验证码不存在,请重新发送"));
     };
     if expires_at < now_ts() {
         return Err(err(StatusCode::BAD_REQUEST, "CODE_EXPIRED", "验证码已过期,请重新发送"));
     }
     if code != body.code.trim() {
+        let attempts = attempts + 1;
+        if attempts >= 5 {
+            // 错误次数用尽:直接把码删掉,逼用户重新发送,而不是无限期让人猜
+            conn.execute("DELETE FROM email_codes WHERE user_id = ?1", [&user.id]).map_err(internal)?;
+            return Err(err(StatusCode::BAD_REQUEST, "CODE_INVALID", "验证码错误次数过多,请重新发送"));
+        }
+        conn.execute("UPDATE email_codes SET attempts = ?1 WHERE user_id = ?2", params![attempts, &user.id]).map_err(internal)?;
         return Err(err(StatusCode::BAD_REQUEST, "CODE_INVALID", "验证码错误"));
     }
     conn.execute("UPDATE users SET email_verified = 1 WHERE id = ?1", [&user.id]).map_err(internal)?;
@@ -654,8 +692,8 @@ async fn resend_verification(
             return Err(err(StatusCode::TOO_MANY_REQUESTS, "RESEND_TOO_SOON", "发送过于频繁,请一分钟后再试"));
         } }
         conn.execute(
-            "INSERT INTO email_codes (user_id, code, expires_at, sent_at) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(user_id) DO UPDATE SET code=?2, expires_at=?3, sent_at=?4",
+            "INSERT INTO email_codes (user_id, code, expires_at, sent_at, attempts) VALUES (?1, ?2, ?3, ?4, 0)
+             ON CONFLICT(user_id) DO UPDATE SET code=?2, expires_at=?3, sent_at=?4, attempts=0",
             params![user.id, code, now_ts() + 600, now_ts()],
         ).map_err(internal)?;
     }
@@ -672,8 +710,14 @@ async fn admin_verify_user(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     require_admin(&state, &headers)?;
     let conn = state.db.lock().unwrap();
-    let n = conn.execute("UPDATE users SET email_verified = 1 WHERE email = ?1", [email.trim().to_lowercase()]).map_err(internal)?;
+    let email = email.trim().to_lowercase();
+    let n = conn.execute("UPDATE users SET email_verified = 1 WHERE email = ?1", [&email]).map_err(internal)?;
     if n == 0 { return Err(err(StatusCode::NOT_FOUND, "not_found", "用户不存在")); }
+    // 顺带清掉待验证的验证码 —— 已被管理员手工标记,残留的码/尝试次数没有意义
+    conn.execute(
+        "DELETE FROM email_codes WHERE user_id IN (SELECT id FROM users WHERE email = ?1)",
+        [&email],
+    ).map_err(internal)?;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -865,6 +909,13 @@ fn storage_from_body(state: &AppState, body: StorageBody) -> Result<storage::Sto
     }
     if cfg.bucket.is_empty() || cfg.access_key.is_empty() || cfg.secret_key.is_empty() {
         return Err(err(StatusCode::BAD_REQUEST, "INVALID_STORAGE", "Bucket、Access Key、Secret 不能为空"));
+    }
+    if !storage::prefix_valid(&cfg.prefix) {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "INVALID_STORAGE",
+            "路径前缀只能包含字母、数字、. _ - /,且不能含 ..",
+        ));
     }
     Ok(cfg)
 }
@@ -1166,6 +1217,7 @@ async fn main() {
             user_id TEXT PRIMARY KEY, code TEXT NOT NULL, expires_at INTEGER NOT NULL, sent_at INTEGER NOT NULL
         );",
     ).expect("email_codes 建表失败");
+    add_column_if_missing(&conn, "email_codes", "attempts", "INTEGER NOT NULL DEFAULT 0");
 
     let (storage_cfg, source) = { storage::load(&conn) };
     if storage_cfg.is_configured() {
@@ -1185,7 +1237,7 @@ async fn main() {
         cfg,
         storage: std::sync::RwLock::new(storage_cfg),
         storage_source: Mutex::new(source),
-        register_hits: Mutex::new(HashMap::new()),
+        rate_hits: Mutex::new(HashMap::new()),
     });
     let app = Router::new()
         .route("/", get(admin_ui))

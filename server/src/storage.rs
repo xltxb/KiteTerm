@@ -35,6 +35,18 @@ pub fn normalize_prefix(raw: &str) -> String {
     if t.is_empty() { String::new() } else { format!("{t}/") }
 }
 
+/// 归一化后的前缀是否只含安全字符:字母、数字、`.` `_` `-` `/`,且不含 `..` 或 `\`。
+/// 空前缀视为合法(表示不加前缀)。
+pub fn prefix_valid(p: &str) -> bool {
+    if p.is_empty() {
+        return true;
+    }
+    if p.contains("..") || p.contains('\\') {
+        return false;
+    }
+    p.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/'))
+}
+
 impl StorageConfig {
     pub fn from_env() -> Self {
         let env = |k: &str| std::env::var(k).unwrap_or_default();
@@ -123,7 +135,18 @@ pub async fn probe(cfg: &StorageConfig) -> ProbeReport {
     let mut r = ProbeReport { ok: false, latency_ms: 0, list: None, put: None, delete: None, sts: None };
     let bucket = match cfg.bucket() {
         Ok(b) => b,
-        Err(e) => { r.list = Some(e); r.latency_ms = t0.elapsed().as_millis(); return r; }
+        Err(e) => {
+            // bucket 都建不起来,put/delete(以及要求的 sts)根本没跑,
+            // 别让它们的 None 被控制台渲染成 ✓
+            r.put = Some("未执行".into());
+            r.delete = Some("未执行".into());
+            if cfg.sts_mode != "off" {
+                r.sts = Some("未执行".into());
+            }
+            r.list = Some(e);
+            r.latency_ms = t0.elapsed().as_millis();
+            return r;
+        }
     };
     if let Err(e) = bucket.list(cfg.prefix.clone(), Some("/".into())).await {
         r.list = Some(e.to_string());
@@ -156,6 +179,10 @@ mod tests {
         assert_eq!(normalize_prefix(""), "");
         assert_eq!(normalize_prefix("prod"), "prod/");
         assert_eq!(normalize_prefix("/prod//"), "prod/");
+        assert!(prefix_valid(""));
+        assert!(prefix_valid("prod/v2"));
+        assert!(!prefix_valid("../evil"));
+        assert!(!prefix_valid("a\\b"));
         let c = StorageConfig { endpoint: "http://x/".into(), region: "r".into(), bucket: "b".into(), prefix: "p".into(),
             access_key: "a".into(), secret_key: "s".into(), path_style: true, sts_mode: "weird".into() }.normalized();
         assert_eq!(c.endpoint, "http://x");

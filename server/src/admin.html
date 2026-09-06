@@ -516,11 +516,15 @@ function renderFeatures() {
   const gating = !!SETTINGS.featureGating;
   for (const [box, rows] of Object.entries(FEATURE_CARDS)) {
     $(box).innerHTML = rows.map(([key, label, desc, gated]) => {
-      const dim = gated && !gating;
+      // defaultSyncEnabled 既不受总闸约束,也不是「安全策略」——只是普通的默认值设置,
+      // 不追加尾注也不做变暗
+      const isPlainSetting = key === "defaultSyncEnabled";
+      const dim = !isPlainSetting && gated && !gating;
       const sub = box === "feat-ai" && key !== "featureAi" && !SETTINGS.featureAi;
+      const note = isPlainSetting ? "" : (gated ? "" : " · 安全策略,不受总闸影响");
       return `<div class="feat-row" data-dim="${dim || sub}">
         <div style="flex:1;line-height:1.4"><div style="font-weight:600;font-size:13px;color:var(--text-strong)">${label}</div>
-        <div style="font-size:11.5px;color:var(--faint)">${desc}${gated ? "" : " · 安全策略,不受总闸影响"}</div></div>
+        <div style="font-size:11.5px;color:var(--faint)">${desc}${note}</div></div>
         <button class="switch" data-on="${!!SETTINGS[key]}" onclick="toggleSetting('${key}','${label}')"><span class="thumb"></span></button>
       </div>`;
     }).join("");
