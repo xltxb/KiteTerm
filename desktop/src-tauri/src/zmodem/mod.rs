@@ -100,11 +100,13 @@ pub(crate) mod testutil {
             if buf.is_empty() {
                 return Ok(0);
             }
-            let first = self
-                .rx
-                .recv()
-                .await
-                .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "channel closed"))?;
+            // 对端(发送半边)已被 drop 且无缓冲字节剩余时,视为流结束:
+            // 真实的 ZChannel 实现(子进程 stdio、russh 通道 EOF)用 Ok(0) 表达"读到流尾",
+            // 而不是把它当作错误,这里对齐该语义,方便接收/发送状态机统一按 Ok(0) 处理 EOF。
+            let first = match self.rx.recv().await {
+                Some(b) => b,
+                None => return Ok(0),
+            };
             buf[0] = first;
             let mut n = 1;
             while n < buf.len() {
@@ -171,11 +173,12 @@ mod tests {
     #[test]
     fn detects_rz_zrqinit() {
         let mut d = Detector::new();
-        // sz 发的 ZRQINIT 十六进制头以 **\x18B00 开头
-        assert!(matches!(
+        // sz 发的 ZRQINIT 十六进制头以 **\x18B00 开头;前面 4 字节 "junk" 是干扰前缀,
+        // 命中下标应精确落在 "junk" 之后,即 4。
+        assert_eq!(
             d.push(b"junk\x2a\x2a\x18B00"),
-            Some((Detected::Receive, _))
-        ));
+            Some((Detected::Receive, 4))
+        );
     }
 
     #[test]
@@ -197,7 +200,9 @@ mod tests {
     fn detects_across_two_pushes() {
         let mut d = Detector::new();
         assert!(d.push(b"\x2a\x2a\x18").is_none());
-        assert!(matches!(d.push(b"B00"), Some((Detected::Receive, _))));
+        // 命中头完全来自上次残留的窗口,本次 data("B00")里并没有 "**\x18" 前缀,
+        // 所以命中下标应为 0(saturating_sub(base) 语义:命中点落在窗口起始处)。
+        assert_eq!(d.push(b"B00"), Some((Detected::Receive, 0)));
     }
 
     /// 证明 MemChannel::pair 确实能双向传字节:Task 4/5 会依赖这个行为来跑接收/发送状态机测试。
@@ -214,5 +219,18 @@ mod tests {
         let mut buf2 = [0u8; 5];
         let n2 = a.read(&mut buf2).await.unwrap();
         assert_eq!(&buf2[..n2], b"world");
+    }
+
+    /// 对端整体被 drop(其发送半边随之关闭)且无缓冲字节剩余时,read 应返回 Ok(0)
+    /// 表示流结束,而不是 Err —— 真实的子进程 stdio / russh 通道 EOF 都是这个语义,
+    /// 接收/发送状态机需要能统一按 Ok(0) 判断"对端读完了"。
+    #[tokio::test]
+    async fn mem_channel_read_returns_ok_zero_on_peer_drop() {
+        let (mut a, b) = MemChannel::pair();
+        drop(b);
+
+        let mut buf = [0u8; 8];
+        let n = a.read(&mut buf).await.unwrap();
+        assert_eq!(n, 0);
     }
 }
