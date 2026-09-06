@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import {
+  AlertTriangle,
+  AlignLeft,
   Circle,
   Lock,
   MessageCircleQuestion,
@@ -17,7 +19,7 @@ import { RightDock } from "@/screens/terminal/RightDock";
 import { SearchBar } from "@/screens/terminal/SearchBar";
 import { XtermPane } from "@/screens/terminal/XtermPane";
 import { useAiStore } from "@/stores/ai";
-import { useFeaturesStore } from "@/stores/features";
+import { useAiFeature } from "@/stores/features";
 import { getTerminalContext, useSessionStore } from "@/stores/session";
 import { useUiStore } from "@/stores/ui";
 
@@ -37,16 +39,27 @@ export function TerminalScreen() {
   const active = sessions.find((s) => s.id === activeId) ?? null;
   const setRightTab = useUiStore((s) => s.setRightTab);
   const explain = useAiStore((s) => s.explain);
+  const summarize = useAiStore((s) => s.summarize);
   const pendingAiInput = useSessionStore((s) => s.pendingAiInput);
   const clearPendingAiInput = useSessionStore((s) => s.clearPendingAiInput);
   const setNlEnabled = useSessionStore((s) => s.setNlEnabled);
   const nlSetting = useUiStore((s) => s.settings.naturalLanguageInput);
-  const aiOn = useFeaturesStore((s) => s.features.ai);
+  const cmdOn = useAiFeature("aiCommand");
+  const diagOn = useAiFeature("aiDiagnose");
+  const sumOn = useAiFeature("aiSummary");
+  const errorHint = useSessionStore((s) => s.errorHint);
+  const clearErrorHint = useSessionStore((s) => s.clearErrorHint);
+  const setDiagnoseEnabled = useSessionStore((s) => s.setDiagnoseEnabled);
 
-  // 设置开关同步给终端输入拦截逻辑
+  // 设置开关同步给终端输入拦截逻辑(白话直连属于「AI 生成命令」子功能)
   useEffect(() => {
-    setNlEnabled(nlSetting && aiOn);
-  }, [nlSetting, aiOn, setNlEnabled]);
+    setNlEnabled(nlSetting && cmdOn);
+  }, [nlSetting, cmdOn, setNlEnabled]);
+
+  // 「错误诊断提示」子功能门禁同步给会话 store 的检测逻辑
+  useEffect(() => {
+    setDiagnoseEnabled(diagOn);
+  }, [diagOn, setDiagnoseEnabled]);
 
   /** 把最近输出交给 AI 解释,并把右栏切到 AI 助手 */
   const explainOutput = () => {
@@ -54,6 +67,13 @@ export function TerminalScreen() {
     setRightTab("ai");
     if (!useUiStore.getState().rightPanelOpen) toggleRightPanel();
     void explain(getTerminalContext(active.id));
+  };
+
+  /** 把最近较长的一段输出交给 AI 摘要,并把右栏切到 AI 助手 */
+  const summarizeOutput = () => {
+    if (!active) return;
+    setRightTab("ai");
+    void summarize(getTerminalContext(active.id, 400));
   };
 
   // REC 计时与延迟展示每秒刷新
@@ -74,20 +94,24 @@ export function TerminalScreen() {
       } else if (mod && (e.key === "t" || e.key === "T")) {
         e.preventDefault();
         setPalette(true);
-      } else if (aiOn && mod && e.shiftKey && (e.key === "a" || e.key === "A")) {
+      } else if (cmdOn && mod && e.shiftKey && (e.key === "a" || e.key === "A")) {
         // ⌘⇧A:自然语言生成命令
         e.preventDefault();
         setCmdBarOpen(true);
-      } else if (aiOn && mod && !e.shiftKey && (e.key === "i" || e.key === "I") && active) {
+      } else if (diagOn && mod && !e.shiftKey && (e.key === "i" || e.key === "I") && active) {
         // ⌘I:让 AI 解释最近的终端输出
         e.preventDefault();
         explainOutput();
+      } else if (sumOn && mod && e.shiftKey && (e.key === "s" || e.key === "S") && active) {
+        // ⌘⇧S:让 AI 摘要最近较长的一段输出
+        e.preventDefault();
+        summarizeOutput();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, close, setPalette, aiOn]);
+  }, [active, close, setPalette, cmdOn, diagOn, sumOn]);
 
   return (
     <>
@@ -125,7 +149,7 @@ export function TerminalScreen() {
             <Circle size={15} fill={active.recording ? "currentColor" : "none"} />
           </div>
         )}
-        {aiOn && (
+        {cmdOn && (
           <div
             className="tab-action"
             data-tone="accent"
@@ -135,9 +159,14 @@ export function TerminalScreen() {
             <Sparkles size={15} />
           </div>
         )}
-        {aiOn && active && (
+        {diagOn && active && (
           <div className="tab-action" title="AI 解释最近输出(⌘I)" onClick={explainOutput}>
             <MessageCircleQuestion size={15} />
+          </div>
+        )}
+        {sumOn && active && (
+          <div className="tab-action" title="AI 摘要最近输出(⌘⇧S)" onClick={summarizeOutput}>
+            <AlignLeft size={15} />
           </div>
         )}
         <div className="tab-action" title="开合右栏" onClick={toggleRightPanel}>
@@ -147,8 +176,8 @@ export function TerminalScreen() {
 
       <div className="grow term-body">
         <div className="grow term-surface">
-          {aiOn && cmdBarOpen && <AiCommandBar onClose={() => setCmdBarOpen(false)} />}
-          {aiOn && pendingAiInput && (
+          {cmdOn && cmdBarOpen && <AiCommandBar onClose={() => setCmdBarOpen(false)} />}
+          {cmdOn && pendingAiInput && (
             <AiCommandBar
               initialRequest={pendingAiInput.text}
               replaceLineInSession={pendingAiInput.sessionId}
@@ -158,8 +187,16 @@ export function TerminalScreen() {
           {active ? (
             <>
               <XtermPane sessionId={active.id} />
+              {diagOn && errorHint && errorHint.sessionId === active.id && (
+                <div className="error-hint">
+                  <AlertTriangle size={13} />
+                  <span className="grow ellipsis">检测到命令失败</span>
+                  <span className="clickable t-accent" onClick={() => { clearErrorHint(); explainOutput(); }}>AI 诊断</span>
+                  <span className="clickable t-faint" onClick={clearErrorHint}>忽略</span>
+                </div>
+              )}
               {searchOpen && <SearchBar sessionId={active.id} onClose={() => setSearchOpen(false)} />}
-              {aiOn && <AiFab sessionId={active.id} onOpenEmpty={() => setCmdBarOpen(true)} />}
+              {cmdOn && <AiFab sessionId={active.id} onOpenEmpty={() => setCmdBarOpen(true)} />}
             </>
           ) : (
             <div className="empty-state fill">

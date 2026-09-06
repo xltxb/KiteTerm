@@ -21,6 +21,8 @@ interface AiState {
   send: (text: string, terminalContext: string) => Promise<void>;
   /** 终端协助:把一段输出交给 AI 解释,结果进入对话流 */
   explain: (terminalContext: string) => Promise<void>;
+  /** 长输出摘要:把一大段终端输出交给 AI 结构化总结,结果进入对话流 */
+  summarize: (terminalContext: string) => Promise<void>;
   /** 自然语言 → 单条命令(不进对话流,由调用方确认后注入终端) */
   toCommand: (request: string, terminalContext: string) => Promise<string>;
   clear: () => void;
@@ -76,6 +78,20 @@ export const useAiStore = create<AiState>((set, get) => ({
     set({ messages: next, busy: true });
     try {
       const reply = await ipc.aiAsk([{ role: "user", content: ask }], terminalContext, "explain");
+      set({ messages: [...next, { role: "assistant", text: reply }] });
+    } catch (e) {
+      set({ messages: [...next, { role: "assistant", text: friendly(e) }] });
+    } finally {
+      set({ busy: false });
+    }
+  },
+
+  summarize: async (terminalContext) => {
+    const ask = "总结一下上面这段终端输出。";
+    const next = [...get().messages, { role: "user" as const, text: ask }];
+    set({ messages: next, busy: true });
+    try {
+      const reply = await ipc.aiAsk([{ role: "user", content: ask }], terminalContext, "summary");
       set({ messages: [...next, { role: "assistant", text: reply }] });
     } catch (e) {
       set({ messages: [...next, { role: "assistant", text: friendly(e) }] });

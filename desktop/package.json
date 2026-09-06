@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "tauri": "tauri",
-    "test": "node --experimental-strip-types src/lib/nlDetect.test.ts && node --experimental-strip-types src/lib/dialog.test.ts && node --experimental-strip-types src/theme/terminal.test.ts"
+    "test": "node --experimental-strip-types src/lib/nlDetect.test.ts && node --experimental-strip-types src/lib/dialog.test.ts && node --experimental-strip-types src/theme/terminal.test.ts && node --experimental-strip-types src/lib/errorDetect.test.ts"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.9.0",

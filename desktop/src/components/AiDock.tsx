@@ -3,12 +3,16 @@ import { useEffect, useRef, useState } from "react";
 import { ArrowUp, Loader2, Settings2 } from "lucide-react";
 import { ProviderPanel } from "@/components/ai/ProviderPanel";
 import { Reply } from "@/components/ai/Reply";
+import { useAiFeature } from "@/stores/features";
 import { getTerminalContext, useSessionStore } from "@/stores/session";
 import { useAiStore } from "@/stores/ai";
 
 export function AiDock() {
   const activeId = useSessionStore((s) => s.activeId);
   const { load, activeProvider, messages, busy, send, clear } = useAiStore();
+  const diagOn = useAiFeature("aiDiagnose");
+  const sumOn = useAiFeature("aiSummary");
+  const cmdOn = useAiFeature("aiCommand");
   const [input, setInput] = useState("");
   const [showSettings, setShowSettings] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -56,11 +60,18 @@ export function AiDock() {
         {messages.length === 0 && (
           <div className="fs-sm t-faint lh-relaxed" style={{ padding: "8px 4px" }}>
             向 AI 提问,或让它解释上一条输出。
-            <br />
-            终端内还可以:
-            <br />
-            <span className="mono t-accent">⌘I</span> 解释最近输出 ·{" "}
-            <span className="mono t-accent">⌘⇧A</span> 用自然语言生成命令
+            {(diagOn || sumOn || cmdOn) && (
+              <>
+                <br />
+                终端内还可以:
+                <br />
+                <span className="mono t-accent">
+                  {diagOn && "⌘I 解释最近输出"}
+                  {sumOn && " · ⌘⇧S 摘要长输出"}
+                  {cmdOn && " · ⌘⇧A 生成命令"}
+                </span>
+              </>
+            )}
           </div>
         )}
         {messages.map((m, i) =>

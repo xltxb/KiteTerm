@@ -421,6 +421,7 @@
    自带 display:flex —— 不要再叠 .row,那会把 align-items 拉回 center,右栏就不撑满了。 */
 .term-body { display: flex; align-items: stretch; min-height: 0; }
 .term-surface { background: var(--term-bg); position: relative; }
+.error-hint{position:absolute;left:12px;bottom:12px;display:flex;align-items:center;gap:8px;max-width:420px;padding:6px 10px;border-radius:var(--radius-md);background:var(--danger-subtle);color:var(--danger-text);font-size:12px;box-shadow:var(--shadow-md)}
 .term-canvas {
   position: absolute;
   inset: 0;
