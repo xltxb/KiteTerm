@@ -3,10 +3,10 @@ import {
   Braces,
   KeyRound,
   Moon,
-  Plus,
   RefreshCw,
   Search,
   Server,
+  SquareTerminal,
   Sun,
   Upload,
 } from "lucide-react";
@@ -29,6 +29,7 @@ export function CommandPalette() {
   const { paletteOpen, setPalette, go, settings, setSettings } = useUiStore();
   const { hosts, snippets } = useDataStore();
   const openSession = useSessionStore((s) => s.open);
+  const openLocal = useSessionStore((s) => s.openLocal);
   const runCommand = useSessionStore((s) => s.runCommand);
   const syncNow = useSyncStore((s) => s.syncNow);
   const [query, setQuery] = useState("");
@@ -38,7 +39,7 @@ export function CommandPalette() {
   const commands = useMemo<Cmd[]>(() => {
     const dark = settings.theme === "dark";
     const base: Cmd[] = [
-      { id: "new-tab", icon: <Plus size={16} />, label: "新建标签页", hint: "⌘T", keywords: "new tab", run: () => go("terminal") },
+      { id: "new-tab", icon: <SquareTerminal size={16} />, label: "打开本地终端", hint: "⌘T", keywords: "local shell new tab", run: () => { go("terminal"); void openLocal(); } },
       { id: "upload", icon: <Upload size={16} />, label: "上传文件…", hint: "SCP", keywords: "upload scp", run: () => go("transfer") },
       { id: "gen-key", icon: <KeyRound size={16} />, label: "生成新密钥", hint: "Ed25519", keywords: "key generate", run: () => go("keys") },
       { id: "sync", icon: <RefreshCw size={16} />, label: "立即同步", hint: "Cloud", keywords: "sync", run: () => { go("sync"); void syncNow(); } },
@@ -68,7 +69,7 @@ export function CommandPalette() {
       run: () => { go("terminal"); void runCommand(s.command); },
     }));
     return [...hostCmds, ...base, ...snipCmds];
-  }, [hosts, snippets, settings.theme, go, openSession, runCommand, setSettings, syncNow]);
+  }, [hosts, snippets, settings.theme, go, openLocal, openSession, runCommand, setSettings, syncNow]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();

@@ -31,8 +31,8 @@ function stateDot(state: string): string {
 }
 
 export function TerminalScreen() {
-  const { sessions, activeId, setActive, close, toggleRecording } = useSessionStore();
-  const { rightPanelOpen, toggleRightPanel, setPalette, go } = useUiStore();
+  const { sessions, activeId, setActive, close, toggleRecording, openLocal } = useSessionStore();
+  const { rightPanelOpen, toggleRightPanel, go } = useUiStore();
   const [searchOpen, setSearchOpen] = useState(false);
   const [cmdBarOpen, setCmdBarOpen] = useState(false);
   const [, forceTick] = useState(0);
@@ -93,7 +93,7 @@ export function TerminalScreen() {
         void close(active.id);
       } else if (mod && (e.key === "t" || e.key === "T")) {
         e.preventDefault();
-        setPalette(true);
+        void openLocal();
       } else if (cmdOn && mod && e.shiftKey && (e.key === "a" || e.key === "A")) {
         // ⌘⇧A:自然语言生成命令
         e.preventDefault();
@@ -111,7 +111,7 @@ export function TerminalScreen() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, close, setPalette, cmdOn, diagOn, sumOn]);
+  }, [active, close, openLocal, cmdOn, diagOn, sumOn]);
 
   return (
     <>
@@ -135,7 +135,7 @@ export function TerminalScreen() {
             />
           </div>
         ))}
-        <div className="tab-action mb-0" onClick={() => setPalette(true)}>
+        <div className="tab-action mb-0" title="新建本地终端(⌘T)" onClick={() => void openLocal()}>
           <Plus size={15} />
         </div>
         <div className="spacer" />
@@ -202,9 +202,14 @@ export function TerminalScreen() {
             <div className="empty-state fill">
               <SquareTerminal size={40} strokeWidth={1.2} />
               <div className="fs-md">没有活跃会话 — 从主机列表连接,或按 ⌘K 快速搜索</div>
-              <Button variant="primary" size="sm" onClick={() => go("hosts")}>
-                浏览主机
-              </Button>
+              <div className="row gap-8">
+                <Button variant="outline" size="sm" onClick={() => void openLocal()}>
+                  打开本地终端
+                </Button>
+                <Button variant="primary" size="sm" onClick={() => go("hosts")}>
+                  浏览主机
+                </Button>
+              </div>
             </div>
           )}
         </div>
@@ -214,18 +219,30 @@ export function TerminalScreen() {
       <div className="statusbar">
         {active ? (
           <>
-            <span className="grp t-accent">
-              <Lock size={12} />
-              SSH
-            </span>
-            <span>
-              {active.user}@{active.addr}:{active.port}
-            </span>
-            <span className="grp">
-              <span className={active.state === "connected" ? "dot-sm dot-ok" : "dot-sm dot-warn"} />
-              {active.latencyMs != null ? `${active.latencyMs}ms` : "—"}
-            </span>
-            <span>{active.cipher}</span>
+            {active.kind === "local" ? (
+              <>
+                <span className="grp t-accent">
+                  <SquareTerminal size={12} />
+                  本地
+                </span>
+                <span>{active.user}@localhost</span>
+              </>
+            ) : (
+              <>
+                <span className="grp t-accent">
+                  <Lock size={12} />
+                  SSH
+                </span>
+                <span>
+                  {active.user}@{active.addr}:{active.port}
+                </span>
+                <span className="grp">
+                  <span className={active.state === "connected" ? "dot-sm dot-ok" : "dot-sm dot-warn"} />
+                  {active.latencyMs != null ? `${active.latencyMs}ms` : "—"}
+                </span>
+                <span>{active.cipher}</span>
+              </>
+            )}
             <span className="spacer" />
             {active.recording && active.recordingSince && (
               <span className="grp t-danger">

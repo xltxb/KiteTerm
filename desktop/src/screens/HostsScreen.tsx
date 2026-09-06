@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Folders } from "lucide-react";
+import { Folders, SquareTerminal } from "lucide-react";
 import { Badge, Button, ScreenHeader, TextInput } from "@/components/ui";
 import { ipc } from "@/ipc";
 import { GroupsModal } from "@/screens/hosts/GroupsModal";
@@ -16,6 +16,7 @@ export function HostsScreen() {
   const { groups, hosts, deleteHost } = useDataStore();
   const keys = useDataStore((s) => s.keys);
   const open = useSessionStore((s) => s.open);
+  const openLocal = useSessionStore((s) => s.openLocal);
   const go = useUiStore((s) => s.go);
   const [query, setQuery] = useState("");
   const [showNew, setShowNew] = useState(false);
@@ -70,6 +71,9 @@ export function HostsScreen() {
           <TextInput className="search" placeholder="搜索主机、标签…" value={query} onChange={(e) => setQuery(e.target.value)} />
           <Button variant="outline" onClick={() => setShowGroups(true)}>
             <Folders size={14} />管理分组
+          </Button>
+          <Button variant="outline" onClick={() => { go("terminal"); void openLocal(); }}>
+            <SquareTerminal size={14} />本地终端
           </Button>
           <Button variant="primary" onClick={() => setShowNew(true)}>新建主机</Button>
         </ScreenHeader>

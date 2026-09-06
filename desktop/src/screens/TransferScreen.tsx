@@ -160,6 +160,8 @@ function ArrowButton({
 
 export function TransferScreen() {
   const sessions = useSessionStore((s) => s.sessions);
+  // 传输只认 SSH 会话 —— 本地终端没有远端文件系统,不参与选择
+  const sshSessions = sessions.filter((s) => s.kind === "ssh");
   const go = useUiStore((s) => s.go);
   const t = useTransferStore();
 
@@ -204,7 +206,7 @@ export function TransferScreen() {
 
   const remoteChooser = (
     <div className="col gap-12 pad-card">
-      {sessions.length === 0 ? (
+      {sshSessions.length === 0 ? (
         <>
           <div className="fs-sm t-faint lh-relaxed">
             还没有已连接的主机。先去主机列表建立一个会话,再回来选。
@@ -217,7 +219,7 @@ export function TransferScreen() {
         <>
           <div className="fs-sm t-faint lh-relaxed">选择要传输的主机:</div>
           <div className="col gap-8">
-            {sessions.map((sn) => (
+            {sshSessions.map((sn) => (
               <div key={sn.id} className="pick-card" onClick={() => void t.openRemote(sn.id)}>
                 <span className={sn.state === "connected" ? "dot-lg dot-ok" : "dot-lg dot-warn"} />
                 <div className="grow lh-snug">
