@@ -141,6 +141,13 @@ pub struct TransferJob {
     pub state: String, // queued | running | done | failed
     pub error: Option<String>,
     pub elapsed_ms: u64,
+    /// 传输协议:sftp | zmodem
+    #[serde(default = "default_protocol_sftp")]
+    pub protocol: String,
+}
+
+fn default_protocol_sftp() -> String {
+    "sftp".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -248,6 +255,9 @@ pub struct AppSettings {
     /// 终端里直接输入白话时,自动转交 AI 生成命令
     #[serde(default = "default_true")]
     pub natural_language_input: bool,
+    /// zmodem 下载目录;为空时取系统 Downloads
+    #[serde(default)]
+    pub download_dir: String,
 }
 
 fn default_true() -> bool {
@@ -265,6 +275,7 @@ impl Default for AppSettings {
             auto_reconnect: true,
             confirm_on_quit: false,
             natural_language_input: true,
+            download_dir: String::new(),
         }
     }
 }
@@ -288,5 +299,21 @@ mod tests {
             "recording":false,"recordingSince":null}"#;
         let info: SessionInfo = serde_json::from_str(json).unwrap();
         assert_eq!(info.kind, "ssh");
+    }
+
+    #[test]
+    fn transfer_job_protocol_defaults_to_sftp() {
+        let json = r#"{"id":"1","direction":"upload","name":"n","localPath":"l","remotePath":"r",
+            "sessionId":"s","progress":0,"rateBps":0,"state":"queued","error":null,"elapsedMs":0}"#;
+        let job: TransferJob = serde_json::from_str(json).unwrap();
+        assert_eq!(job.protocol, "sftp");
+    }
+
+    #[test]
+    fn app_settings_download_dir_defaults_empty() {
+        let json = r#"{"theme":"dark","terminalFont":"f","terminalFontSize":13,"cursorBlink":true,
+            "restoreSessions":true,"autoReconnect":true,"confirmOnQuit":false}"#;
+        let s: AppSettings = serde_json::from_str(json).unwrap();
+        assert_eq!(s.download_dir, "");
     }
 }

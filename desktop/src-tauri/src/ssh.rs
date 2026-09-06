@@ -142,6 +142,10 @@ pub enum Ctl {
     Data(Vec<u8>),
     Resize(u16, u16),
     Close,
+    /// rz:前端选好文件后回传(空列表表示用户取消)
+    SendFiles(Vec<std::path::PathBuf>),
+    /// 用户在浮条点取消
+    CancelTransfer,
 }
 
 pub struct SessionEntry {
@@ -434,6 +438,9 @@ async fn run_session(
                             user_closed = true;
                             let _ = channel.eof().await;
                             break;
+                        }
+                        Some(Ctl::SendFiles(_)) | Some(Ctl::CancelTransfer) => {
+                            // 非传输态收到,忽略(仅传输态由 zmodem::run 消费)
                         }
                     }
                 }
