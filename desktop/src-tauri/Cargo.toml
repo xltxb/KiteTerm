@@ -47,6 +47,8 @@ portable-pty = "0.9"
 instant-acme = "0.8"
 rcgen = "0.14"
 x509-parser = "0.18"
+# ACME 吊销需要把证书构造成 CertificateDer(与 instant-acme 同源)
+rustls-pki-types = "1"
 
 [profile.release]
 codegen-units = 1
