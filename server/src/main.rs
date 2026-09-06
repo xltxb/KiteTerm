@@ -11,6 +11,8 @@
 //!   KITE_REGISTRATION 注册策略初值 open|invite|closed(默认 open;之后以管理后台设置为准)
 //!   S3_ENDPOINT / S3_BUCKET / S3_REGION / S3_ACCESS_KEY / S3_SECRET_KEY / S3_PREFIX / S3_PATH_STYLE
 //!       —— 仅作存储配置初值;控制台「S3 存储」页保存后以 DB 为准,不再读环境变量。
+//!   KITE_SMTP_HOST / KITE_SMTP_PORT / KITE_SMTP_USER / KITE_SMTP_PASS / KITE_SMTP_FROM
+//!       —— 邮箱验证码发信配置;未设置 KITE_SMTP_HOST 时验证码只打进服务端日志。
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -24,10 +26,11 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use rand::RngCore;
 use rusqlite::{params, Connection, OptionalExtension};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::json;
 
 mod features;
+mod mail;
 mod storage;
 mod sts;
 
@@ -44,6 +47,8 @@ struct PlatformConfig {
     /// 之所以做成部署配置而不是控制台开关:它决定的是这套管控要不要存在,
     /// 属于部署形态,不该被日常运维误点。
     feature_gating: bool,
+    /// 验证码发信配置;None 时验证码只打进服务端日志
+    smtp: Option<mail::Smtp>,
 }
 
 struct AppState {
@@ -221,14 +226,6 @@ fn issue_token(conn: &Connection, user_id: &str) -> Result<(String, i64), ApiErr
 
 // ---- 数据模型 ----
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct UserOut {
-    id: String,
-    email: String,
-    sync_enabled: bool,
-}
-
 #[derive(Deserialize)]
 struct Credentials {
     email: String,
@@ -242,6 +239,8 @@ struct AuthedUser {
     id: String,
     email: String,
     sync_enabled: bool,
+    email_verified: bool,
+    totp_enabled: bool,
 }
 
 fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<AuthedUser, ApiError> {
@@ -251,20 +250,22 @@ fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<AuthedUser, Api
         .and_then(|v| v.strip_prefix("Bearer "))
         .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "unauthorized", "缺少令牌"))?;
     let conn = state.db.lock().unwrap();
-    let row: Option<(String, String, i64, i64)> = conn
+    let row: Option<(String, String, i64, i64, i64, i64)> = conn
         .query_row(
-            "SELECT u.id, u.email, u.sync_enabled, t.expires_at
+            "SELECT u.id, u.email, u.sync_enabled, u.email_verified, u.totp_enabled, t.expires_at
              FROM tokens t JOIN users u ON u.id = t.user_id WHERE t.token = ?1",
             [token],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
         )
         .optional()
         .map_err(internal)?;
     match row {
-        Some((id, email, sync_enabled, expires_at)) if expires_at > now_ts() => Ok(AuthedUser {
+        Some((id, email, sync_enabled, email_verified, totp_enabled, expires_at)) if expires_at > now_ts() => Ok(AuthedUser {
             id,
             email,
             sync_enabled: sync_enabled != 0,
+            email_verified: email_verified != 0,
+            totp_enabled: totp_enabled != 0,
         }),
         Some(_) => Err(err(StatusCode::UNAUTHORIZED, "token_expired", "令牌已过期,请重新登录")),
         None => Err(err(StatusCode::UNAUTHORIZED, "unauthorized", "令牌无效")),
@@ -374,11 +375,13 @@ async fn register(
         .to_string();
     let id = uuid::Uuid::new_v4().to_string();
     let default_sync = setting_get(&conn, "default_sync_enabled", "1");
+    // 邮箱验证开关开着时,新用户先落地为未验证,注册成功后即发验证码
+    let need_verify = features::raw(&conn, "email_verify");
     let inserted = conn
         .execute(
-            "INSERT OR IGNORE INTO users (id, email, password_hash, sync_enabled, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![id, email, hash, if default_sync == "1" { 1 } else { 0 }, now_ts()],
+            "INSERT OR IGNORE INTO users (id, email, password_hash, sync_enabled, created_at, email_verified)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![id, email, hash, if default_sync == "1" { 1 } else { 0 }, now_ts(), if need_verify { 0 } else { 1 }],
         )
         .map_err(internal)?;
     if inserted == 0 {
@@ -401,13 +404,30 @@ async fn register(
     // 注册即登录:直接签发令牌,免去客户端再发一次登录请求
     let (token, expires_at) = issue_token(&conn, &id)?;
     let sync_enabled = default_sync == "1";
+
+    // ---- 邮箱验证 ----
+    if need_verify {
+        let code = mail::new_code();
+        conn.execute(
+            "INSERT INTO email_codes (user_id, code, expires_at, sent_at) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(user_id) DO UPDATE SET code=?2, expires_at=?3, sent_at=?4",
+            params![id, code, now_ts() + 600, now_ts()],
+        ).map_err(internal)?;
+        // 发信不借用 conn(MutexGuard),spawn 前先克隆出去,避免把锁跨 await 持有
+        let smtp = state.cfg.smtp.clone();
+        let to = email.clone();
+        tokio::spawn(async move {
+            if let Err(e) = mail::send_code(smtp.as_ref(), &to, &code).await { eprintln!("[mail] {e}"); }
+        });
+    }
+
     Ok((
         StatusCode::CREATED,
         Json(json!({
             "userId": id,
             "token": token,
             "expiresAt": expires_at,
-            "user": { "id": id, "email": email, "syncEnabled": sync_enabled },
+            "user": { "id": id, "email": email, "syncEnabled": sync_enabled, "emailVerified": !need_verify },
         })),
     ))
 }
@@ -418,15 +438,15 @@ async fn login(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let email = body.email.trim().to_lowercase();
     let conn = state.db.lock().unwrap();
-    let row: Option<(String, String, i64)> = conn
+    let row: Option<(String, String, i64, i64)> = conn
         .query_row(
-            "SELECT id, password_hash, sync_enabled FROM users WHERE email = ?1",
+            "SELECT id, password_hash, sync_enabled, email_verified FROM users WHERE email = ?1",
             [&email],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .optional()
         .map_err(internal)?;
-    let Some((user_id, hash, sync_enabled)) = row else {
+    let Some((user_id, hash, sync_enabled, email_verified)) = row else {
         return Err(err(StatusCode::UNAUTHORIZED, "bad_credentials", "邮箱或密码错误"));
     };
     let parsed = PasswordHash::new(&hash).map_err(internal)?;
@@ -445,7 +465,7 @@ async fn login(
     Ok(Json(json!({
         "token": token,
         "expiresAt": expires_at,
-        "user": { "id": user_id, "email": email, "syncEnabled": sync_enabled != 0 },
+        "user": { "id": user_id, "email": email, "syncEnabled": sync_enabled != 0, "emailVerified": email_verified != 0 },
     })))
 }
 
@@ -467,9 +487,17 @@ async fn logout(
 async fn me(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<Json<UserOut>, ApiError> {
+) -> Result<Json<serde_json::Value>, ApiError> {
     let user = authenticate(&state, &headers)?;
-    Ok(Json(UserOut { id: user.id, email: user.email, sync_enabled: user.sync_enabled }))
+    let conn = state.db.lock().unwrap();
+    Ok(Json(json!({
+        "id": user.id, "email": user.email, "syncEnabled": user.sync_enabled,
+        "emailVerified": user.email_verified, "totpEnabled": user.totp_enabled,
+        "requirements": {
+            "emailVerify": features::raw(&conn, "email_verify"),
+            "totpRequired": features::raw(&conn, "totp_required"),
+        },
+    })))
 }
 
 /// 平台管控的同步凭据:登录且账户同步已放开时下发。
@@ -496,6 +524,9 @@ async fn sync_credentials(
                 "SYNC_DISABLED",
                 "平台当前已关闭云同步",
             ));
+        }
+        if features::raw(&conn, "email_verify") && !user.email_verified {
+            return Err(err(StatusCode::FORBIDDEN, "EMAIL_UNVERIFIED", "请先完成邮箱验证"));
         }
     }
     if !user.sync_enabled {
@@ -547,6 +578,78 @@ async fn sync_credentials(
         "prefix": prefix,
         "pathStyle": cfg.path_style,
     })))
+}
+
+// ---- 邮箱验证 ----
+
+#[derive(Deserialize)]
+struct CodeBody {
+    code: String,
+}
+
+async fn verify_email(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<CodeBody>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let user = authenticate(&state, &headers)?;
+    let conn = state.db.lock().unwrap();
+    let row: Option<(String, i64)> = conn
+        .query_row("SELECT code, expires_at FROM email_codes WHERE user_id = ?1", [&user.id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .optional().map_err(internal)?;
+    let Some((code, expires_at)) = row else {
+        return Err(err(StatusCode::BAD_REQUEST, "CODE_INVALID", "验证码不存在,请重新发送"));
+    };
+    if expires_at < now_ts() {
+        return Err(err(StatusCode::BAD_REQUEST, "CODE_EXPIRED", "验证码已过期,请重新发送"));
+    }
+    if code != body.code.trim() {
+        return Err(err(StatusCode::BAD_REQUEST, "CODE_INVALID", "验证码错误"));
+    }
+    conn.execute("UPDATE users SET email_verified = 1 WHERE id = ?1", [&user.id]).map_err(internal)?;
+    conn.execute("DELETE FROM email_codes WHERE user_id = ?1", [&user.id]).map_err(internal)?;
+    Ok(Json(json!({ "ok": true, "emailVerified": true })))
+}
+
+async fn resend_verification(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let user = authenticate(&state, &headers)?;
+    if user.email_verified {
+        return Ok(Json(json!({ "ok": true, "emailVerified": true })));
+    }
+    let code = mail::new_code();
+    {
+        let conn = state.db.lock().unwrap();
+        let last: Option<i64> = conn
+            .query_row("SELECT sent_at FROM email_codes WHERE user_id = ?1", [&user.id], |r| r.get(0))
+            .optional().map_err(internal)?;
+        if let Some(t) = last { if now_ts() - t < 60 {
+            return Err(err(StatusCode::TOO_MANY_REQUESTS, "RESEND_TOO_SOON", "发送过于频繁,请一分钟后再试"));
+        } }
+        conn.execute(
+            "INSERT INTO email_codes (user_id, code, expires_at, sent_at) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(user_id) DO UPDATE SET code=?2, expires_at=?3, sent_at=?4",
+            params![user.id, code, now_ts() + 600, now_ts()],
+        ).map_err(internal)?;
+    }
+    mail::send_code(state.cfg.smtp.as_ref(), &user.email, &code).await
+        .map_err(|e| err(StatusCode::BAD_GATEWAY, "MAIL_ERROR", &e))?;
+    Ok(Json(json!({ "ok": true, "emailVerified": false })))
+}
+
+/// 管理员手工标记已验证(没有邮件服务的部署)
+async fn admin_verify_user(
+    State(state): State<Arc<AppState>>,
+    Path(email): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    require_admin(&state, &headers)?;
+    let conn = state.db.lock().unwrap();
+    let n = conn.execute("UPDATE users SET email_verified = 1 WHERE email = ?1", [email.trim().to_lowercase()]).map_err(internal)?;
+    if n == 0 { return Err(err(StatusCode::NOT_FOUND, "not_found", "用户不存在")); }
+    Ok(Json(json!({ "ok": true })))
 }
 
 fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {
@@ -881,7 +984,7 @@ async fn admin_list_users(
     require_admin(&state, &headers)?;
     let conn = state.db.lock().unwrap();
     let mut stmt = conn
-        .prepare("SELECT id, email, sync_enabled, created_at FROM users ORDER BY created_at")
+        .prepare("SELECT id, email, sync_enabled, created_at, email_verified, totp_enabled FROM users ORDER BY created_at")
         .map_err(internal)?;
     let users: Vec<serde_json::Value> = stmt
         .query_map([], |r| {
@@ -890,6 +993,8 @@ async fn admin_list_users(
                 "email": r.get::<_, String>(1)?,
                 "syncEnabled": r.get::<_, i64>(2)? != 0,
                 "createdAt": r.get::<_, i64>(3)?,
+                "emailVerified": r.get::<_, i64>(4)? != 0,
+                "totpEnabled": r.get::<_, i64>(5)? != 0,
             }))
         })
         .map_err(internal)?
@@ -900,6 +1005,20 @@ async fn admin_list_users(
 
 fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
+/// 存量库无该列时补列;存量用户视为已验证(DEFAULT 1)
+fn add_column_if_missing(conn: &Connection, table: &str, col: &str, decl: &str) {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})")).expect("pragma");
+    let has = stmt
+        .query_map([], |r| r.get::<_, String>(1))
+        .expect("pragma rows")
+        .filter_map(|c| c.ok())
+        .any(|c| c == col);
+    if !has {
+        conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {col} {decl}"), [])
+            .unwrap_or_else(|e| panic!("迁移 {table}.{col} 失败: {e}"));
+    }
 }
 
 #[tokio::main]
@@ -914,6 +1033,7 @@ async fn main() {
             let m = env_or("KITE_REGISTRATION", "open");
             if ["open", "invite", "closed"].contains(&m.as_str()) { m } else { "open".into() }
         },
+        smtp: mail::Smtp::from_env(),
     };
 
     let conn = Connection::open(env_or("KITE_DB", "kite-server.db")).expect("打开数据库失败");
@@ -953,6 +1073,16 @@ async fn main() {
     )
     .expect("初始化表失败");
 
+    // ---- 邮箱验证 / TOTP 迁移(存量库补列;email_verified 默认 1 —— 存量用户视为已验证)----
+    add_column_if_missing(&conn, "users", "email_verified", "INTEGER NOT NULL DEFAULT 1");
+    add_column_if_missing(&conn, "users", "totp_secret", "TEXT");
+    add_column_if_missing(&conn, "users", "totp_enabled", "INTEGER NOT NULL DEFAULT 0");
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS email_codes (
+            user_id TEXT PRIMARY KEY, code TEXT NOT NULL, expires_at INTEGER NOT NULL, sent_at INTEGER NOT NULL
+        );",
+    ).expect("email_codes 建表失败");
+
     let (storage_cfg, source) = { storage::load(&conn) };
     if storage_cfg.is_configured() {
         match storage_cfg.bucket() {
@@ -982,6 +1112,8 @@ async fn main() {
         .route("/api/login", post(login))
         .route("/api/logout", post(logout))
         .route("/api/me", get(me))
+        .route("/api/verify-email", post(verify_email))
+        .route("/api/verify-email/resend", post(resend_verification))
         .route("/api/sync/credentials", get(sync_credentials))
         .route("/api/features", get(features))
         .route("/api/admin/stats", get(admin_stats))
@@ -994,6 +1126,7 @@ async fn main() {
         .route("/api/admin/users/{email}/sync", post(admin_set_sync))
         .route("/api/admin/users/{email}/revoke", post(admin_revoke))
         .route("/api/admin/users/{email}/usage", get(admin_usage))
+        .route("/api/admin/users/{email}/verify", post(admin_verify_user))
         .with_state(state);
 
     let listen = env_or("KITE_LISTEN", "127.0.0.1:8787");
