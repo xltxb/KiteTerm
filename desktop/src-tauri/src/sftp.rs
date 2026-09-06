@@ -157,6 +157,7 @@ pub fn enqueue(
         state: "queued".into(),
         error: None,
         elapsed_ms: 0,
+        protocol: "sftp".into(),
     };
     transfers.jobs.lock().unwrap().push(job.clone());
     emit_job(&app, &job);
