@@ -53,7 +53,7 @@ function PlatformCard() {
         now.known
           ? now.enforced
             ? "已连上平台,功能开关已更新"
-            : "已连上平台。该平台未启用功能门禁,四项功能均可用"
+            : "已连上平台。该平台未启用功能门禁,各项功能均可用"
           : "保存了,但没连上平台 —— 地址对吗?平台在跑吗?",
       );
     } catch (e) {
@@ -63,11 +63,34 @@ function PlatformCard() {
     }
   };
 
-  const items: { label: string; on: boolean }[] = [
-    { label: "注册", on: features.registration !== "closed" },
-    { label: "登录", on: features.login },
-    { label: "云同步", on: features.sync },
-    { label: "AI 助手", on: features.ai },
+  const groups: { title: string; items: { label: string; on: boolean }[] }[] = [
+    {
+      title: "账户",
+      items: [
+        { label: "注册", on: features.registration !== "closed" },
+        { label: "登录", on: features.login },
+        { label: "邮箱验证", on: features.emailVerify },
+        { label: "强制 2FA", on: features.totpRequired },
+        { label: "多设备登录", on: features.multiDevice },
+      ],
+    },
+    {
+      title: "同步",
+      items: [
+        { label: "云同步", on: features.sync },
+        { label: "密钥同步", on: features.keySync },
+        { label: "录制同步", on: features.recordingSync },
+      ],
+    },
+    {
+      title: "AI",
+      items: [
+        { label: "AI 助手", on: features.ai },
+        { label: "命令生成", on: features.ai && features.aiCommand },
+        { label: "错误诊断", on: features.ai && features.aiDiagnose },
+        { label: "输出摘要", on: features.ai && features.aiSummary },
+      ],
+    },
   ];
 
   return (
@@ -100,21 +123,27 @@ function PlatformCard() {
           <div className="w-semi fs-md t-strong">功能开关</div>
           <div className="fs-sm t-faint">
             {!features.known
-              ? "尚未连上管理平台 —— 按「未启用门禁」处理,四项功能均可用。"
+              ? "尚未连上管理平台 —— 按「未启用门禁」处理,各项功能均可用。"
               : features.enforced
                 ? "该平台已启用功能门禁,以下为当前下发的状态,关闭的功能在本机隐藏入口。"
-                : "该平台未启用功能门禁(部署配置 KITE_FEATURE_GATING),四项功能均可用。"}
+                : "该平台未启用功能门禁(部署配置 KITE_FEATURE_GATING),各项功能均可用。"}
           </div>
         </div>
-        <div className="row gap-8 wrap jend" style={{ maxWidth: 300 }}>
-          {items.map((it) => (
-            <span key={it.label} className={it.on ? "badge badge-success" : "badge badge-neutral"}>
-              <span className="dot" />
-              {it.label}
-            </span>
-          ))}
-        </div>
       </div>
+
+      {groups.map((g) => (
+        <div key={g.title} className="settings-row">
+          <div className="w-semi fs-md t-strong">{g.title}</div>
+          <div className="row gap-8 wrap jend" style={{ maxWidth: 300 }}>
+            {g.items.map((it) => (
+              <span key={it.label} className={it.on ? "badge badge-success" : "badge badge-neutral"}>
+                <span className="dot" />
+                {it.label}
+              </span>
+            ))}
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
