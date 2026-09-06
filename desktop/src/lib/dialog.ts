@@ -25,3 +25,10 @@ export async function pickDirectory(defaultPath?: string): Promise<string | null
   const picked = await tauriOpen({ directory: true, multiple: false, defaultPath });
   return typeof picked === "string" ? picked : null;
 }
+
+/** 多选本地文件(ZMODEM 上传用)。取消返回空数组。 */
+export async function pickFiles(): Promise<string[]> {
+  const picked = await tauriOpen({ directory: false, multiple: true });
+  if (Array.isArray(picked)) return picked;
+  return typeof picked === "string" ? [picked] : [];
+}

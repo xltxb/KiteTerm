@@ -90,6 +90,13 @@ export interface KiteIpc {
   retryTransfer(id: string): Promise<void>;
   onTransferProgress(cb: (job: TransferJob) => void): Unsubscribe;
 
+  // ---- zmodem(rz/sz 直连,不经 SFTP)----
+  /** 用户在弹出的多选文件框里选中的本地路径;空数组表示用户取消 */
+  zmodemSendFiles(sessionId: string, paths: string[]): Promise<void>;
+  zmodemCancel(sessionId: string): Promise<void>;
+  /** 远端跑 rz 时触发,前端需弹多选文件框并回传选择结果 */
+  onZmodemPickFiles(cb: (sessionId: string) => void): Unsubscribe;
+
   // ---- recording ----
   startRecording(sessionId: string): Promise<void>;
   stopRecording(sessionId: string): Promise<Recording>;

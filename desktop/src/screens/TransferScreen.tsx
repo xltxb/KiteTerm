@@ -308,14 +308,18 @@ export function TransferScreen() {
                 {j.direction === "upload" ? <Upload size={15} /> : <Download size={15} />}
                 <span className="mono fs-sm t-strong ellipsis" style={{ width: 210 }}>{j.name}</span>
                 <span className="fs-xs t-faint grow ellipsis">
-                  {j.direction === "upload" ? `${j.localPath} → ${j.remotePath}` : `${j.remotePath} → ${j.localPath}`}
+                  {j.protocol === "zmodem"
+                    ? "ZMODEM"
+                    : j.direction === "upload"
+                      ? `${j.localPath} → ${j.remotePath}`
+                      : `${j.remotePath} → ${j.localPath}`}
                 </span>
                 <div style={{ width: 180 }}><Progress value={j.progress} /></div>
                 <span className="mono fs-xs t-muted text-right" style={{ width: 48 }}>
                   {j.state === "queued" ? "—" : `${Math.round(j.progress)}%`}
                 </span>
                 <span className={`fs-xs ellipsis text-right ${meta.tone}`} style={{ width: 110 }} title={j.error ?? undefined}>{meta.text}</span>
-                {j.state === "failed" && (
+                {j.state === "failed" && j.protocol !== "zmodem" && (
                   <span
                     onClick={() => void ipc.retryTransfer(j.id)}
                     className="fs-xs t-accent clickable nowrap"

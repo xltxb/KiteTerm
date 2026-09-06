@@ -1,7 +1,7 @@
 import { create, type StoreApi } from "zustand";
 import { Terminal } from "@xterm/xterm";
 import { ipc } from "@/ipc";
-import { confirmAction, showError } from "@/lib/dialog";
+import { confirmAction, pickFiles, showError } from "@/lib/dialog";
 import { looksLikeError } from "@/lib/errorDetect";
 import { looksLikeNaturalLanguage, stripPrompt } from "@/lib/nlDetect";
 import { terminalTheme } from "@/theme/terminal";
@@ -180,6 +180,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           ? s.sessions.map((x) => (x.id === info.id ? info : x))
           : s.sessions,
       }));
+    });
+    // 远端跑 rz 时后端发出此事件,弹多选文件框回传选中的本地路径(取消则传空数组)
+    ipc.onZmodemPickFiles((sessionId) => {
+      void pickFiles().then((paths) => ipc.zmodemSendFiles(sessionId, paths));
     });
   },
 
