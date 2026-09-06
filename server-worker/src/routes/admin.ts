@@ -124,14 +124,17 @@ adminRoutes.get("/api/admin/users", async (c) => {
 adminRoutes.post("/api/admin/users/:email/sync", async (c) => {
   const deny = requireAdmin(c);
   if (deny) return deny;
-  const email = c.req.param("email").trim().toLowerCase();
+  // 与 Rust 版一致:WHERE 用归一化(trim + 小写)后的邮箱匹配,
+  // 但响应体的 "email" 回显原始路径参数,不做归一化
+  const rawEmail = c.req.param("email");
+  const normalizedEmail = rawEmail.trim().toLowerCase();
   const body = await c.req.json<{ enabled?: boolean }>().catch(() => ({}) as Record<string, unknown>);
   const enabled = body.enabled === true;
-  const res = await c.env.DB.prepare("UPDATE users SET sync_enabled = ?2 WHERE email = ?1").bind(email, enabled ? 1 : 0).run();
+  const res = await c.env.DB.prepare("UPDATE users SET sync_enabled = ?2 WHERE email = ?1").bind(normalizedEmail, enabled ? 1 : 0).run();
   if ((res.meta.changes ?? 0) === 0) {
     return apiError(c, 404, "not_found", "用户不存在");
   }
-  return c.json({ ok: true, email, syncEnabled: enabled });
+  return c.json({ ok: true, email: rawEmail, syncEnabled: enabled });
 });
 
 adminRoutes.get("/api/admin/stats", async (c) => {

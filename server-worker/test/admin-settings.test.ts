@@ -89,4 +89,20 @@ describe("admin settings", () => {
     const j = await r.json() as { users: unknown[] };
     expect(j.users).toEqual([]);
   });
+
+  it("设置同步开关:响应回显原始路径邮箱,而非归一化后的邮箱", async () => {
+    // 直接插入用户,绕开注册流程(本任务范围不含 /api/register)
+    await env.DB.prepare(
+      "INSERT INTO users (id, email, password_hash, created_at) VALUES ('u1', 'a@x.com', 'hash', 0)",
+    ).run();
+    const r = await exports.default.fetch(`${base}/api/admin/users/A%40X.COM/sync`, {
+      method: "POST",
+      headers: adminHeaders,
+      body: JSON.stringify({ enabled: true }),
+    });
+    expect(r.status).toBe(200);
+    const j = await r.json() as Record<string, unknown>;
+    // SQL 匹配用归一化(trim+小写)后的邮箱,但响应体 "email" 是原始路径参数 "A@X.COM"
+    expect(j).toMatchObject({ ok: true, email: "A@X.COM", syncEnabled: true });
+  });
 });
