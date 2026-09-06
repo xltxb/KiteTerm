@@ -14,3 +14,6 @@ kite-server.db
 
 # 一次性设计产物
 design/
+
+# 服务端发布产物
+server/dist/
