@@ -180,8 +180,13 @@ export function AccountCard() {
             value={platformUrl}
             onChange={(e) => setPlatformUrl(e.target.value)}
             onBlur={async () => {
-              await ipc.platformUrlSet(platformUrl.trim());
-              void refreshFeatures();
+              try {
+                setPlatformUrl(await ipc.platformUrlSet(platformUrl));
+                setError(null);
+                void refreshFeatures();
+              } catch (e) {
+                setError(friendlyError(e));
+              }
             }}
           />
         </div>

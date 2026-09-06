@@ -141,7 +141,8 @@ export interface KiteIpc {
   /** 向平台核对一次账户状态(GET /api/me);令牌失效抛 LOGIN_REQUIRED */
   accountRefresh(): Promise<AccountInfo>;
   platformUrlGet(): Promise<string>;
-  platformUrlSet(url: string): Promise<void>;
+  /** 保存并返回规范化后的地址(补协议、去尾斜杠);格式非法或公网 http 会抛错 */
+  platformUrlSet(url: string): Promise<string>;
 
   // ---- settings ----
   getSettings(): Promise<AppSettings>;
