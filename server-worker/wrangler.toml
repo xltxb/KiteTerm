@@ -8,7 +8,7 @@ directory = "./public"
 
 [[d1_databases]]
 binding = "DB"
-database_name = "kite-server"
+database_name = "kiteterm"
 database_id = "a4dca6ca-7399-46dc-822f-d05db937713f"   # wrangler d1 create kite-server 后替换
 
 [[kv_namespaces]]
