@@ -2,6 +2,10 @@ pub mod frame;
 pub mod receive;
 pub mod send;
 
+/// 与真实 lrzsz 的互操作测试(全部 `#[ignore]`,需本机安装 sz/rz)。
+#[cfg(test)]
+mod interop;
+
 use std::io;
 
 /// 抽象一条可读可写的字节通道:russh 通道、内存管道或本机 lrzsz 子进程 stdio
