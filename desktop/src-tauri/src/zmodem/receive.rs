@@ -230,7 +230,8 @@ pub async fn receive<C: ZChannel, P: ProgressSink>(
 }
 
 /// 解析文件信息子包:`name\0size mtime mode ...`,返回(文件名, 字节数)。
-fn parse_file_info(bytes: &[u8]) -> (String, u64) {
+/// `pub(crate)` 以便 send.rs 的测试做「信息子包格式互通」交叉校验。
+pub(crate) fn parse_file_info(bytes: &[u8]) -> (String, u64) {
     let nul = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
     let name = String::from_utf8_lossy(&bytes[..nul]).into_owned();
     let rest: &[u8] = if nul < bytes.len() {
