@@ -1,7 +1,7 @@
-import { create } from "zustand";
+import { create, type StoreApi } from "zustand";
 import { Terminal } from "@xterm/xterm";
 import { ipc } from "@/ipc";
-import { confirmAction } from "@/lib/dialog";
+import { confirmAction, showError } from "@/lib/dialog";
 import { looksLikeError } from "@/lib/errorDetect";
 import { looksLikeNaturalLanguage, stripPrompt } from "@/lib/nlDetect";
 import { terminalTheme } from "@/theme/terminal";
@@ -82,11 +82,61 @@ interface SessionState {
   /** 清掉终端当前行(Ctrl+U + Ctrl+K),用于把白话替换成真正的命令 */
   clearInputLine: (id: string) => Promise<void>;
   open: (hostId: string, password?: string) => Promise<string>;
+  /** 打开本地终端 */
+  openLocal: () => Promise<string>;
   close: (id: string) => Promise<void>;
   setActive: (id: string) => void;
   runCommand: (command: string) => Promise<void>;
   toggleRecording: (id: string) => Promise<void>;
   wire: () => void;
+}
+
+/** 为一条已由后端打开的会话创建 xterm、挂接输入与尺寸,并登记到 store */
+function attach(
+  info: SessionInfo,
+  set: StoreApi<SessionState>["setState"],
+  get: () => SessionState,
+): string {
+  const term = new Terminal({
+    fontFamily: '"JetBrains Mono", "SF Mono", ui-monospace, Menlo, monospace',
+    fontSize: 13,
+    lineHeight: 1.25,
+    cursorBlink: true,
+    scrollback: 10_000,
+    theme: terminalTheme(),
+  });
+  term.onData((data) => {
+    // 用户按下回车即视为「开始一条新命令」,先清掉上一条残留的错误提示
+    if (data === "\r") set({ errorHint: null });
+    // 白话直连:光标行是自然语言而非命令时,拦下回车交给 AI
+    // (只拦单独的回车键;粘贴进来的整块内容不在此列)
+    if (data === "\r" && get().nlEnabled) {
+      const line = readCurrentInputLine(info.id);
+      if (looksLikeNaturalLanguage(line)) {
+        set({ pendingAiInput: { sessionId: info.id, text: line.replace(/^\?\s*/, "") } });
+        return; // 回车不下发,原文留在行内 —— 用户取消也不丢输入
+      }
+    }
+    // 粘贴护栏:多行粘贴(含换行的整块输入)需确认,防止误执行。
+    // 确认框是异步的(见 lib/dialog.ts),所以要等确认后再下发,不能先写再问。
+    const isPaste = data.length > 1 && /[\r\n]/.test(data);
+    if (isPaste) {
+      const lines = data.split(/\r\n?|\n/).filter((l) => l.length > 0).length;
+      const preview = data.slice(0, 160).replace(/[\r\n]+/g, " ⏎ ");
+      void confirmAction(
+        `将粘贴 ${lines} 行内容到终端(可能立即执行):\n\n${preview}\n\n确认粘贴?`,
+        "确认粘贴",
+      ).then((ok) => {
+        if (ok) void ipc.writeSession(info.id, data);
+      });
+      return;
+    }
+    void ipc.writeSession(info.id, data);
+  });
+  term.onResize(({ cols, rows }) => void ipc.resizeSession(info.id, cols, rows));
+  terminals.set(info.id, term);
+  set((s) => ({ sessions: [...s.sessions, info], activeId: info.id }));
+  return info.id;
 }
 
 export const useSessionStore = create<SessionState>((set, get) => ({
@@ -136,46 +186,20 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   open: async (hostId, password) => {
     get().wire();
     const info = await ipc.openSession(hostId, password);
-    const term = new Terminal({
-      fontFamily: '"JetBrains Mono", "SF Mono", ui-monospace, Menlo, monospace',
-      fontSize: 13,
-      lineHeight: 1.25,
-      cursorBlink: true,
-      scrollback: 10_000,
-      theme: terminalTheme(),
-    });
-    term.onData((data) => {
-      // 用户按下回车即视为「开始一条新命令」,先清掉上一条残留的错误提示
-      if (data === "\r") set({ errorHint: null });
-      // 白话直连:光标行是自然语言而非命令时,拦下回车交给 AI
-      // (只拦单独的回车键;粘贴进来的整块内容不在此列)
-      if (data === "\r" && get().nlEnabled) {
-        const line = readCurrentInputLine(info.id);
-        if (looksLikeNaturalLanguage(line)) {
-          set({ pendingAiInput: { sessionId: info.id, text: line.replace(/^\?\s*/, "") } });
-          return; // 回车不下发,原文留在行内 —— 用户取消也不丢输入
-        }
-      }
-      // 粘贴护栏:多行粘贴(含换行的整块输入)需确认,防止误执行。
-      // 确认框是异步的(见 lib/dialog.ts),所以要等确认后再下发,不能先写再问。
-      const isPaste = data.length > 1 && /[\r\n]/.test(data);
-      if (isPaste) {
-        const lines = data.split(/\r\n?|\n/).filter((l) => l.length > 0).length;
-        const preview = data.slice(0, 160).replace(/[\r\n]+/g, " ⏎ ");
-        void confirmAction(
-          `将粘贴 ${lines} 行内容到终端(可能立即执行):\n\n${preview}\n\n确认粘贴?`,
-          "确认粘贴",
-        ).then((ok) => {
-          if (ok) void ipc.writeSession(info.id, data);
-        });
-        return;
-      }
-      void ipc.writeSession(info.id, data);
-    });
-    term.onResize(({ cols, rows }) => void ipc.resizeSession(info.id, cols, rows));
-    terminals.set(info.id, term);
-    set((s) => ({ sessions: [...s.sessions, info], activeId: info.id }));
-    return info.id;
+    return attach(info, set, get);
+  },
+
+  openLocal: async () => {
+    get().wire();
+    let info: SessionInfo;
+    try {
+      info = await ipc.openLocalSession();
+    } catch (e) {
+      // PTY 或 shell 启动失败:弹原生提示,不抛给调用方(入口都是 fire-and-forget)
+      void showError(String(e), "打开本地终端失败");
+      return "";
+    }
+    return attach(info, set, get);
   },
 
   close: async (id) => {

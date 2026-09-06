@@ -38,6 +38,7 @@ export function createTauriIpc(): KiteIpc {
     onForwardStats: (cb) => sub<ForwardRule[]>("forward://stats", cb),
 
     openSession: (hostId, password) => invoke("session_open", { hostId, password }),
+    openLocalSession: () => invoke("local_session_open"),
     trustHostKey: (hostId) => invoke("trust_host_key", { hostId }),
     writeSession: (id, data) => invoke("session_write", { id, data }),
     resizeSession: (id, cols, rows) => invoke("session_resize", { id, cols, rows }),
