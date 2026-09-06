@@ -115,6 +115,7 @@ export interface TransferJob {
   state: TransferState;
   error: string | null;
   elapsedMs: number;
+  protocol: "sftp" | "zmodem";
 }
 
 export interface MonitorSample {
@@ -230,6 +231,8 @@ export interface AppSettings {
   confirmOnQuit: boolean;
   /** 终端里直接输入白话时,自动转交 AI 生成命令 */
   naturalLanguageInput: boolean;
+  /** zmodem 下载目录;为空时取系统 Downloads */
+  downloadDir: string;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -241,4 +244,5 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autoReconnect: true,
   confirmOnQuit: false,
   naturalLanguageInput: true,
+  downloadDir: "",
 };
