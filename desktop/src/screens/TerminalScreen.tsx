@@ -17,6 +17,7 @@ import { fmtDuration } from "@/lib/format";
 import { AiFab } from "@/screens/terminal/AiFab";
 import { RightDock } from "@/screens/terminal/RightDock";
 import { SearchBar } from "@/screens/terminal/SearchBar";
+import { TransferHint } from "@/screens/terminal/TransferHint";
 import { XtermPane } from "@/screens/terminal/XtermPane";
 import { useAiStore } from "@/stores/ai";
 import { useAiFeature } from "@/stores/features";
@@ -196,6 +197,7 @@ export function TerminalScreen() {
                   <span className="clickable t-faint" onClick={clearErrorHint}>忽略</span>
                 </div>
               )}
+              <TransferHint sessionId={active.id} />
               {searchOpen && <SearchBar sessionId={active.id} onClose={() => setSearchOpen(false)} />}
               {cmdOn && <AiFab sessionId={active.id} onOpenEmpty={() => setCmdBarOpen(true)} />}
             </>
