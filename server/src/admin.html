@@ -90,7 +90,6 @@
   .pill{font-size:11px;padding:2px 9px;border-radius:99px;border:1px solid var(--border);color:var(--muted)}
   .pill.ok{background:var(--success-s);border-color:var(--success);color:var(--success-t)}
   .pill.warn{background:var(--warning-s);border-color:var(--warning);color:var(--warning-t)}
-  .feat{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--muted);cursor:pointer}
   .switch{position:relative;width:40px;height:24px;border-radius:99px;background:var(--sunken);
           border:1px solid var(--border-md);cursor:pointer;transition:all .14s;flex:none;padding:0}
   .switch[data-on="true"]{background:var(--accent);border-color:var(--accent)}
@@ -580,7 +579,7 @@ async function loadInvites() {
           <span class="badge ${dead ? "off" : "ok"}"><span class="dot"></span>${state}</span>
           <span style="font-size:12px;color:var(--muted)">${v.usedCount}${v.maxUses ? " / " + v.maxUses : ""} 次</span>
           <span style="font-size:12px;color:var(--faint)">${v.expiresAt ? "至 " + fmtTime(v.expiresAt) : "永久"}</span>
-          <span style="font-size:12px;color:var(--faint);flex:1">${v.note || ""}</span>
+          <span style="font-size:12px;color:var(--faint);flex:1">${esc(v.note || "")}</span>
           <button class="btn ghost" style="height:26px;padding:0 10px;font-size:11.5px" onclick="copyInvite('${v.code}')">复制</button>
           ${v.disabled ? "" : `<button class="btn danger-ghost" style="height:26px;padding:0 10px;font-size:11.5px" onclick="disableInvite('${v.code}')">停用</button>`}
         </div>`;
@@ -634,10 +633,10 @@ function render() {
   $("rows").innerHTML = rows
     .map(
       (u) => `
-    <tr data-email="${u.email}">
+    <tr data-email="${esc(u.email)}">
       <td>
-        <div class="email">${u.email}</div>
-        <div class="mono">${u.id}</div>
+        <div class="email">${esc(u.email)}</div>
+        <div class="mono">${esc(u.id)}</div>
       </td>
       <td style="color:var(--muted);white-space:nowrap">${fmtTime(u.createdAt)}</td>
       <td>
@@ -647,17 +646,17 @@ function render() {
         </div>
       </td>
       <td class="usage-cell">
-        <button class="btn ghost" style="height:26px;padding:0 10px;font-size:11.5px" onclick="loadUsage('${u.email}', this)">查看</button>
+        <button class="btn ghost" style="height:26px;padding:0 10px;font-size:11.5px" onclick="loadUsage(this.closest('tr').dataset.email, this)">查看</button>
       </td>
       <td>
         <div style="display:flex;align-items:center;gap:10px">
-          <button class="switch" data-on="${u.syncEnabled}" onclick="toggleSync('${u.email}', ${!u.syncEnabled})"><span class="thumb"></span></button>
+          <button class="switch" data-on="${u.syncEnabled}" onclick="toggleSync(this.closest('tr').dataset.email, ${!u.syncEnabled})"><span class="thumb"></span></button>
           <span class="badge ${u.syncEnabled ? "ok" : "off"}"><span class="dot"></span>${u.syncEnabled ? "已放开" : "已停用"}</span>
         </div>
       </td>
       <td style="text-align:right">
-        ${u.emailVerified ? "" : `<button class="btn ghost" style="height:28px" onclick="verifyUser('${u.email}')">标记已验证</button>`}${u.totpEnabled ? `<button class="btn ghost" style="height:28px" onclick="resetTotp('${u.email}')">重置 2FA</button>` : ""}
-        <button class="btn danger-ghost" style="height:28px" onclick="revoke('${u.email}')">强制下线</button>
+        ${u.emailVerified ? "" : `<button class="btn ghost" style="height:28px" onclick="verifyUser(this.closest('tr').dataset.email)">标记已验证</button>`}${u.totpEnabled ? `<button class="btn ghost" style="height:28px" onclick="resetTotp(this.closest('tr').dataset.email)">重置 2FA</button>` : ""}
+        <button class="btn danger-ghost" style="height:28px" onclick="revoke(this.closest('tr').dataset.email)">强制下线</button>
       </td>
     </tr>`
     )
