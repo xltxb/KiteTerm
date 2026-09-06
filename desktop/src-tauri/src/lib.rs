@@ -5,7 +5,6 @@ pub mod db;
 pub mod error;
 pub mod features;
 mod forward;
-#[allow(dead_code)] // ZMODEM 实现分多个任务落地,当前任务尚未被上层消费
 mod zmodem;
 mod local;
 pub mod models;

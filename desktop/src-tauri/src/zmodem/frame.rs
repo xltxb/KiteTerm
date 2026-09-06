@@ -11,12 +11,17 @@ pub const ZSINIT: u8 = 2;
 pub const ZACK: u8 = 3;
 pub const ZFILE: u8 = 4;
 pub const ZSKIP: u8 = 5;
+// ZNAK/ZFERR/ZCAN 为协议完整性保留的帧类型常量,当前状态机尚未消费(远端中止走原始
+// 5×CAN 字节扫描而非 ZCAN 帧),narrow allow 抑制各自的 dead_code 告警。
+#[allow(dead_code)]
 pub const ZNAK: u8 = 6;
 pub const ZFIN: u8 = 8;
 pub const ZRPOS: u8 = 9;
 pub const ZDATA: u8 = 10;
 pub const ZEOF: u8 = 11;
+#[allow(dead_code)]
 pub const ZFERR: u8 = 12;
+#[allow(dead_code)]
 pub const ZCAN: u8 = 16;
 
 pub const ZCRCE: u8 = 0x68;

@@ -36,6 +36,30 @@ const USE_CRC32: bool = true;
 /// 单个数据子包的最大负载字节数。
 const SUBPACKET_LEN: usize = 1024;
 
+/// 单次阻塞读的停顿上限:对端存活但长时间不发数据时,避免接管永久挂起。
+/// 说明:未做逐帧重传,故采用单一较长的整体停顿上限(30s)替代 spec 的「每帧 10s + 重传」。
+const STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// 远端中止(ZCAN)判定:连续 5 个 CAN(0x18/ZDLE)即视为对端中止。
+/// 正常 ZMODEM 帧里 0x18 只作单个转义前缀出现,连续 5 个不会出现在合法帧中,故据此判定安全。
+const CAN_ABORT_RUN: usize = 5;
+
+/// 扫描字节里是否出现连续 `CAN_ABORT_RUN` 个 CAN(0x18)。
+fn has_can_run(bytes: &[u8]) -> bool {
+    let mut run = 0usize;
+    for &b in bytes {
+        if b == frame::ZDLE {
+            run += 1;
+            if run >= CAN_ABORT_RUN {
+                return true;
+            }
+        } else {
+            run = 0;
+        }
+    }
+    false
+}
+
 /// 发送状态机主循环。
 ///
 /// - `chan`:底层字节通道(EOF 语义为 `read` 返回 `Ok(0)`)。
@@ -47,10 +71,10 @@ pub async fn send<C: ZChannel, P: ProgressSink>(
     files: &[std::path::PathBuf],
 ) -> io::Result<()> {
     match send_impl(chan, sink, files).await {
-        Ok(()) => {
-            sink.finish(true, None);
-            Ok(())
-        }
+        // 成功路径由 `send_impl` 逐个文件在其 ZEOF/ZSKIP 处 finish(true),此处不再重复 finish,
+        // 避免最后一个文件的任务被结束两次。
+        Ok(()) => Ok(()),
+        // 失败路径:若当前文件的任务尚未结束(错误发生在其 finish 之前),在此补一次 finish(false)。
         Err(e) => {
             sink.finish(false, Some(e.to_string()));
             Err(e)
@@ -77,6 +101,14 @@ async fn send_impl<C: ZChannel, P: ProgressSink>(
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| "file".to_string());
 
+        // >4GB 守卫:ZMODEM 帧头偏移为 u32,超过 4GB 会在 pos_to_arg 处静默截断。
+        // 在开文件前拦下:登记一个失败任务并跳过,不进入该文件的协议交互(故无需 ZSKIP)。
+        if total > u32::MAX as u64 {
+            sink.start("upload", &name, total, index, count);
+            sink.finish(false, Some("文件超过 4GB,ZMODEM 不支持".to_string()));
+            continue;
+        }
+
         // 发 ZFILE(ZCBIN 二进制转换)头 + 文件信息子包(ZCRCW)
         chan.write_all(&frame::encode_bin32_header(frame::ZFILE, [0, 0, 0, ZCBIN]))
             .await?;
@@ -99,7 +131,11 @@ async fn send_impl<C: ZChannel, P: ProgressSink>(
 
         let offset = match start_offset {
             Some(o) => o,
-            None => continue, // ZSKIP:跳过该文件,下一个文件直接发 ZFILE
+            None => {
+                // ZSKIP:对端跳过该文件,其任务正常结束,再发下一个文件的 ZFILE
+                sink.finish(true, None);
+                continue;
+            }
         };
 
         // 流式发送文件内容(空区间不发 ZDATA)
@@ -114,6 +150,9 @@ async fn send_impl<C: ZChannel, P: ProgressSink>(
         ))
         .await?;
         wait_for(chan, &mut parser, &mut rbuf, frame::ZRINIT).await?;
+        // 该文件传输完成:结束其任务(镜像 receive 在 ZEOF 处的逐文件 finish),
+        // 避免多文件上传时前 N-1 个任务永远停在 running。
+        sink.finish(true, None);
     }
 
     // 全部完成:发 ZFIN,等对端 ZFIN,再发 OO
@@ -222,11 +261,22 @@ async fn recv_header<C: ZChannel>(
         if let Some(h) = next_header(parser) {
             return Ok(h);
         }
-        let n = chan.read(buf).await?;
+        // 停顿超时:对端存活但长时间不发帧,避免永久挂起。错误信息即 finish(false) 的原因文案。
+        let n = match tokio::time::timeout(STALL_TIMEOUT, chan.read(buf)).await {
+            Ok(r) => r?,
+            Err(_) => return Err(io::Error::new(io::ErrorKind::TimedOut, "传输超时")),
+        };
         if n == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "zmodem: peer closed while awaiting header",
+            ));
+        }
+        // 远端中止(ZCAN / 5×CAN):作为错误上抛,由 send 外层 finish(false)
+        if has_can_run(&buf[..n]) {
+            return Err(io::Error::new(
+                io::ErrorKind::ConnectionAborted,
+                "远端中止传输",
             ));
         }
         parser.feed(&buf[..n]);
@@ -266,6 +316,13 @@ async fn poll_incoming<C: ZChannel>(
     };
     if n == 0 {
         return Ok(None);
+    }
+    // 流式发送期间也可能收到远端中止(ZCAN / 5×CAN),命中即作为错误上抛
+    if has_can_run(&buf[..n]) {
+        return Err(io::Error::new(
+            io::ErrorKind::ConnectionAborted,
+            "远端中止传输",
+        ));
     }
     parser.feed(&buf[..n]);
     Ok(next_header(parser))
@@ -567,6 +624,34 @@ mod tests {
 
         assert_eq!(received[0], content);
         assert_eq!(*sink.advances.lock().unwrap().last().unwrap(), 1025);
+    }
+
+    /// Fix 1:多文件上传应逐个结束任务——2 个文件产生 2 次 start **且** 2 次 finish(均 ok),
+    /// 而不是 2 次 start / 1 次 finish(否则前 N-1 个任务永远停在 running)。
+    #[tokio::test]
+    async fn multi_file_finishes_each_job() {
+        let (mut local, mut peer) = MemChannel::pair();
+        let dir = TmpDir::new();
+        let a = write_file(&dir, "a.txt", b"aaa");
+        let b = write_file(&dir, "b.txt", b"bbbb");
+        let sink = RecordingSink::new();
+
+        let files = [a, b];
+        let peer_task = async move { rz_peer(&mut peer, &[false, false]).await };
+        let (result, received) = tokio::join!(send(&mut local, &sink, &files), peer_task);
+        result.unwrap();
+
+        assert_eq!(received.len(), 2);
+        assert_eq!(received[0], b"aaa");
+        assert_eq!(received[1], b"bbbb");
+        let starts = sink.starts.lock().unwrap();
+        assert_eq!(starts.len(), 2, "两个文件应各 start 一次");
+        let finishes = sink.finishes.lock().unwrap();
+        assert_eq!(finishes.len(), 2, "两个文件应各 finish 一次(而非仅 1 次)");
+        assert!(
+            finishes.iter().all(|f| *f == (true, None)),
+            "两个任务都应成功结束"
+        );
     }
 
     /// 多文件 + 中间一个被 ZSKIP 跳过。
