@@ -107,6 +107,8 @@ pub fn run() {
             commands::transfer_enqueue,
             commands::transfer_list,
             commands::transfer_retry,
+            commands::zmodem_send_files,
+            commands::zmodem_cancel,
             commands::recording_start,
             commands::recording_stop,
             commands::recording_list,
