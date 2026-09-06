@@ -544,6 +544,7 @@ pub fn persist_open_sessions(state: &AppState) {
         .sessions
         .list()
         .into_iter()
+        .filter(|s| s.kind == "ssh")
         .map(|s| s.host_id)
         .collect();
     let _ = state
