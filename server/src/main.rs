@@ -26,6 +26,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+mod features;
 mod sts;
 
 struct PlatformConfig {
@@ -133,7 +134,7 @@ fn password_issue(pw: &str) -> Option<String> {
 
 // ---- 平台设置(DB 持久化,管理后台可改)----
 
-fn setting_get(conn: &Connection, key: &str, default: &str) -> String {
+pub(crate) fn setting_get(conn: &Connection, key: &str, default: &str) -> String {
     conn.query_row(
         "SELECT value FROM platform_settings WHERE key = ?1",
         [key],
@@ -145,7 +146,7 @@ fn setting_get(conn: &Connection, key: &str, default: &str) -> String {
     .unwrap_or_else(|| default.to_string())
 }
 
-fn setting_set(conn: &Connection, key: &str, value: &str) -> rusqlite::Result<()> {
+pub(crate) fn setting_set(conn: &Connection, key: &str, value: &str) -> rusqlite::Result<()> {
     conn.execute(
         "INSERT INTO platform_settings (key, value) VALUES (?1, ?2)
          ON CONFLICT(key) DO UPDATE SET value = ?2",
@@ -279,32 +280,20 @@ async fn health() -> Json<serde_json::Value> {
 
 /// 全局功能开关。注册用三档 registration_mode 表达(closed 即关),
 /// 其余是布尔;默认全开 —— 平台没显式关过的功能就是可用的。
-/// 单项开关的原始值(不看总闸)—— 管理控制台展示用
-fn feature_raw(conn: &Connection, feature: &str) -> bool {
-    setting_get(conn, &format!("feature_{feature}"), "1") == "1"
-}
-
-/// 生效值:总闸关闭时一律视为开启 —— 不启用门禁就等于什么都不限制
-fn feature_on(state: &AppState, conn: &Connection, feature: &str) -> bool {
-    !state.cfg.feature_gating || feature_raw(conn, feature)
-}
-
+/// 具体注册表见 `features` 模块。
 /// 客户端据此决定哪些入口可见。**免鉴权** —— 客户端未登录时也要能拿到,
 /// 否则「登录开关」自身就没法下发。
 async fn features(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let conn = state.db.lock().unwrap();
-    Ok(Json(json!({
-        // 注册策略是平台自己的准入政策,与功能门禁无关,总闸关掉也照样生效
-        "registration": setting_get(&conn, "registration_mode", &state.cfg.registration_default),
-        "enforced": state.cfg.feature_gating,
-        "login": feature_on(&state, &conn, "login"),
-        "sync": feature_on(&state, &conn, "sync"),
-        "ai": feature_on(&state, &conn, "ai"),
-        "passwordMinLength": PASSWORD_MIN_LEN,
-        "passwordRule": "至少 8 位,且包含字母、数字、符号中的至少两类",
-    })))
+    let mut body = features::payload(&conn, state.cfg.feature_gating);
+    // 注册策略是平台自己的准入政策,与功能门禁无关,总闸关掉也照样生效
+    body.insert("registration".into(), json!(setting_get(&conn, "registration_mode", &state.cfg.registration_default)));
+    body.insert("enforced".into(), json!(state.cfg.feature_gating));
+    body.insert("passwordMinLength".into(), json!(PASSWORD_MIN_LEN));
+    body.insert("passwordRule".into(), json!("至少 8 位,且包含字母、数字、符号中的至少两类"));
+    Ok(Json(serde_json::Value::Object(body)))
 }
 
 /// 公开的注册策略:客户端据此决定是否展示邀请码输入、以及口令规则提示
@@ -450,7 +439,7 @@ async fn login(
     }
     // 开关校验放在口令校验之后:先把凭据不对的挡掉,避免通过错误信息区分
     // 「密码错」和「登录已关」而泄露邮箱是否存在
-    if !feature_on(&state, &conn, "login") {
+    if !features::effective(&conn, state.cfg.feature_gating, "login") {
         return Err(err(StatusCode::FORBIDDEN, "LOGIN_DISABLED", "平台当前已关闭登录"));
     }
     let (token, expires_at) = issue_token(&conn, &user_id)?;
@@ -494,7 +483,7 @@ async fn sync_credentials(
     let user = authenticate(&state, &headers)?;
     {
         let conn = state.db.lock().unwrap();
-        if !feature_on(&state, &conn, "sync") {
+        if !features::effective(&conn, state.cfg.feature_gating, "sync") {
             return Err(err(
                 StatusCode::FORBIDDEN,
                 "SYNC_DISABLED",
@@ -666,14 +655,11 @@ async fn admin_get_settings(
 
 /// 管理接口与公开接口共用同一份取值,避免两边漂移
 fn settings_payload(conn: &Connection, state: &AppState) -> serde_json::Value {
-    json!({
-        "registrationMode": setting_get(conn, "registration_mode", &state.cfg.registration_default),
-        "defaultSyncEnabled": setting_get(conn, "default_sync_enabled", "1") == "1",
-        "featureGating": state.cfg.feature_gating,
-        "featureLogin": feature_raw(conn, "login"),
-        "featureSync": feature_raw(conn, "sync"),
-        "featureAi": feature_raw(conn, "ai"),
-    })
+    let mut m = features::admin_payload(conn);
+    m.insert("registrationMode".into(), json!(setting_get(conn, "registration_mode", &state.cfg.registration_default)));
+    m.insert("defaultSyncEnabled".into(), json!(setting_get(conn, "default_sync_enabled", "1") == "1"));
+    m.insert("featureGating".into(), json!(state.cfg.feature_gating));
+    serde_json::Value::Object(m)
 }
 
 #[derive(Deserialize)]
@@ -681,9 +667,9 @@ fn settings_payload(conn: &Connection, state: &AppState) -> serde_json::Value {
 struct AdminSettingsBody {
     registration_mode: Option<String>,
     default_sync_enabled: Option<bool>,
-    feature_login: Option<bool>,
-    feature_sync: Option<bool>,
-    feature_ai: Option<bool>,
+    /// featureLogin / featureKeySync / … 任意子集
+    #[serde(flatten)]
+    features: HashMap<String, serde_json::Value>,
 }
 
 async fn admin_set_settings(
@@ -702,15 +688,19 @@ async fn admin_set_settings(
     if let Some(on) = body.default_sync_enabled {
         setting_set(&conn, "default_sync_enabled", if on { "1" } else { "0" }).map_err(internal)?;
     }
-    for (feature, value) in [
-        ("login", body.feature_login),
-        ("sync", body.feature_sync),
-        ("ai", body.feature_ai),
-    ] {
-        if let Some(on) = value {
-            setting_set(&conn, &format!("feature_{feature}"), if on { "1" } else { "0" })
-                .map_err(internal)?;
+    for (key, value) in &body.features {
+        let Some(rest) = key.strip_prefix("feature") else { continue };
+        let Some(on) = value.as_bool() else { continue };
+        // featureKeySync → key_sync
+        let mut snake = String::new();
+        for (i, c) in rest.chars().enumerate() {
+            if c.is_ascii_uppercase() && i > 0 { snake.push('_'); }
+            snake.push(c.to_ascii_lowercase());
         }
+        if !features::NAMES.iter().any(|(n, _, _)| *n == snake) {
+            return Err(err(StatusCode::BAD_REQUEST, "unknown_feature", &format!("未知功能开关 {key}")));
+        }
+        features::set(&conn, &snake, on).map_err(internal)?;
     }
     Ok(Json(settings_payload(&conn, &state)))
 }
