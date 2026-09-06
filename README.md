@@ -56,7 +56,7 @@ cargo run --manifest-path server/Cargo.toml   # 或 pnpm server
 # Web 管理控制台:http://127.0.0.1:8787/admin(输入管理密钥)—— 三个页签:
 #   用户与同步:用户列表/搜索、同步启停开关、强制下线(吊销令牌)、按用户存储用量、
 #     手工标记邮箱已验证、重置某用户 2FA、注册策略与邀请码、新用户默认同步开关、平台统计
-#   S3 存储:端点/区域/桶/密钥/前缀/Path-style/STS 模式六项 + 保存即热生效 + 连通性测试
+#   S3 存储:端点/区域/桶/密钥/前缀/Path-style/STS 模式 + 保存即热生效 + 连通性测试
 #   功能开关:11 项两类(见下文「功能开关」一节)
 # 账户 API:POST /api/register、GET /api/register/policy、POST /api/login、POST /api/logout、
 #   GET /api/me、GET /api/sync/credentials、GET /api/features、
@@ -121,6 +121,10 @@ server/                     ── 管理系统(Web)
   Cargo.toml                独立 crate,与客户端零代码共享
   src/main.rs               axum:账户注册/登录、注册策略与邀请码、令牌、同步授权、S3 凭据下发
   src/sts.rs                STS AssumeRole(手写 SigV4),按用户前缀下发限权临时凭据
+  src/features.rs           功能开关注册表:11 项两类(产品开关受总闸约束 / 安全策略恒生效),camelCase 下发与管理接口读写
+  src/mail.rs               邮箱验证码发信:SMTP 未配置时验证码打服务端日志
+  src/storage.rs            S3 存储配置:DB 优先、环境变量仅作初值,运行期热改(RwLock)
+  src/totp.rs               RFC 6238 TOTP:密钥生成、6 位码校验、otpauth:// URL
   src/admin.html            内嵌 Web 管理控制台(include_str!,随二进制分发)
 ```
 
@@ -164,7 +168,7 @@ server/                     ── 管理系统(Web)
 | `ai_diagnose` | 产品开关(AI 子项) | 开 | 是 | 客户端:失败输出诊断提示隐藏,与 `ai` 取与 |
 | `ai_summary` | 产品开关(AI 子项) | 开 | 是 | 客户端:输出摘要模式(`⌘⇧S`)隐藏,与 `ai` 取与 |
 | `email_verify` | 安全策略 | 关 | 否(恒生效) | 服务端:`/api/sync/credentials` 返回 403 `EMAIL_UNVERIFIED`;未验证邮箱仍可登录,只是拿不到同步凭据 |
-| `totp_required` | 安全策略 | 关 | 否(恒生效) | 服务端:登录返回 401 `TOTP_REQUIRED`/`TOTP_SETUP_REQUIRED`,同步返回 403 `TOTP_SETUP_REQUIRED`,尝试关闭本人 2FA 返回 403 `TOTP_ENFORCED` |
+| `totp_required` | 安全策略 | 关 | 否(恒生效) | 服务端:用户本人已绑定 2FA 时登录要求验证码(401 `TOTP_REQUIRED`,与本开关无关);本开关开启且用户未绑定时,登录成功但响应体标记 `totpSetupRequired`,同步接口返回 403 `TOTP_SETUP_REQUIRED`;解绑返回 403 `TOTP_ENFORCED` |
 | `multi_device` | 安全策略 | 开 | 否(恒生效) | 服务端:关闭时登录成功即吊销该用户其余设备已持有的令牌 |
 
 - 8 个「产品开关」受总闸约束;3 个「安全策略」(邮箱验证、强制 2FA、多设备)不受总闸影响,始终按各自设置生效。
