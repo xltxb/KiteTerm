@@ -4,6 +4,7 @@ import { featureGating, registrationDefault } from "../env";
 import { apiError, nowTs, requireAdmin } from "../http";
 import { settingGet, settingSet } from "../settings";
 import * as features from "../features";
+import { newInviteCode } from "../auth";
 
 export const adminRoutes = new Hono<{ Bindings: Env }>();
 
@@ -13,15 +14,6 @@ async function settingsPayload(db: D1Database, env: Env) {
   const registrationMode = await settingGet(db, "registration_mode", registrationDefault(env));
   const defaultSyncEnabled = (await settingGet(db, "default_sync_enabled", "1")) === "1";
   return { ...admin, registrationMode, defaultSyncEnabled, featureGating: featureGating(env) };
-}
-
-/** 去掉易混字符(0/O/1/I/L),便于口头/手抄传达 */
-const INVITE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
-export function newInviteCode(): string {
-  const raw = new Uint8Array(12);
-  crypto.getRandomValues(raw);
-  const body = Array.from(raw, (b) => INVITE_ALPHABET[b % INVITE_ALPHABET.length]).join("");
-  return `${body.slice(0, 4)}-${body.slice(4, 8)}-${body.slice(8, 12)}`;
 }
 
 adminRoutes.get("/api/admin/settings", async (c) => {

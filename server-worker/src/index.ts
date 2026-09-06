@@ -2,9 +2,11 @@ import { Hono } from "hono";
 import type { Env } from "./env";
 import { publicRoutes } from "./routes/public";
 import { adminRoutes } from "./routes/admin";
+import { accountRoutes } from "./routes/account";
 const app = new Hono<{ Bindings: Env }>();
 app.route("/", publicRoutes);
 app.route("/", adminRoutes);
+app.route("/", accountRoutes);
 app.notFound((c) => c.json({ error: { code: "not_found", message: "接口不存在" } }, 404));
 export default {
   fetch: app.fetch,
