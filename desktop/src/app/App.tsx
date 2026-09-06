@@ -6,6 +6,7 @@ import { TerminalScreen } from "@/screens/TerminalScreen";
 import { HostsScreen } from "@/screens/HostsScreen";
 import { TransferScreen } from "@/screens/TransferScreen";
 import { ForwardsScreen } from "@/screens/ForwardsScreen";
+import { CertsScreen } from "@/screens/CertsScreen";
 import { MonitorScreen } from "@/screens/MonitorScreen";
 import { KeysScreen } from "@/screens/KeysScreen";
 import { SnippetsScreen } from "@/screens/SnippetsScreen";
@@ -91,6 +92,7 @@ export function App() {
         {screen === "hosts" && <HostsScreen />}
         {screen === "transfer" && <TransferScreen />}
         {screen === "forwards" && <ForwardsScreen />}
+        {screen === "certs" && <CertsScreen />}
         {screen === "monitor" && <MonitorScreen />}
         {screen === "keys" && <KeysScreen />}
         {screen === "snippets" && <SnippetsScreen />}
