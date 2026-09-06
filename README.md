@@ -52,8 +52,8 @@ cargo run --manifest-path server/Cargo.toml   # 或 pnpm server
 #       S3_PREFIX / S3_PATH_STYLE / KITE_STS=auto|require|off  存储配置的其余初值
 #       KITE_SMTP_HOST/PORT/USER/PASS/FROM  邮箱验证码发信配置;不设置 HOST 时验证码只打进服务端日志
 # 以上 S3_* 与 KITE_STS 仅在数据库尚无存储配置时生效 —— 控制台「S3 存储」页保存后以 DB 为准,不再读环境变量
-# 应用内默认平台地址 https://m.kiteterm.com,可在「设置 → 管理平台」修改(公网地址强制 https,http 仅限本机);
-#   本地联调用 KITE_PLATFORM_URL=http://127.0.0.1:8787 pnpm tauri dev 覆盖默认值(用户手动设置过地址后不再生效)
+# 应用内平台地址固定为 https://m.kiteterm.com,不提供修改入口;
+#   本地联调用 KITE_PLATFORM_URL=http://127.0.0.1:8787 pnpm tauri dev 覆盖(公网地址强制 https,http 仅限本机)
 # Web 管理控制台:http://127.0.0.1:8787/admin(输入管理密钥)—— 三个页签:
 #   用户与同步:用户列表/搜索、同步启停开关、强制下线(吊销令牌)、按用户存储用量、
 #     手工标记邮箱已验证、重置某用户 2FA、注册策略与邀请码、新用户默认同步开关、平台统计

@@ -55,8 +55,7 @@ async fn main() {
     let db_b = Db::open(scratch("dev-b")).unwrap();
     let v_a = Vault::open(&db_a.data_dir).unwrap();
     let v_b = Vault::open(&db_b.data_dir).unwrap();
-    account::set_platform_url(&db_a, PLATFORM).unwrap();
-    account::set_platform_url(&db_b, PLATFORM).unwrap();
+    std::env::set_var("KITE_PLATFORM_URL", PLATFORM);
 
     let email = format!("sync-check-{}@test.local", db_a.device_id());
     // 注册即返回登录态(平台直接签发令牌);随后各设备各自登录验证多端
@@ -253,7 +252,7 @@ async fn main() {
     }
     let db_c = Db::open(scratch("dev-c")).unwrap();
     let v_c = Vault::open(&db_c.data_dir).unwrap();
-    account::set_platform_url(&db_c, PLATFORM).unwrap();
+    std::env::set_var("KITE_PLATFORM_URL", PLATFORM);
     account::login(&db_c, &v_c, &email, "check-password-123", None).await.expect("C 登录");
     configure(&db_c, &v_c);
     sync::sync_once(&db_c, &v_c).await.expect("C 快照引导");
@@ -278,7 +277,7 @@ async fn main() {
     assert_eq!(ph_a.split_whitespace().count(), 24);
     let db_d = Db::open(scratch("dev-d")).unwrap();
     let v_d = Vault::open(&db_d.data_dir).unwrap();
-    account::set_platform_url(&db_d, PLATFORM).unwrap();
+    std::env::set_var("KITE_PLATFORM_URL", PLATFORM);
     account::login(&db_d, &v_d, &email, "check-password-123", None).await.expect("D 登录");
     sync::restore_master_from_phrase(&db_d, &v_d, &ph_a).expect("短语恢复");
     sync::sync_once(&db_d, &v_d).await.expect("D 恢复后同步");

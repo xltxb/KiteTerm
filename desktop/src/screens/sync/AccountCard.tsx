@@ -1,7 +1,6 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { UserRound } from "lucide-react";
 import { Button, Segmented, TextInput } from "@/components/ui";
-import { ipc } from "@/ipc";
 import { useFeaturesStore } from "@/stores/features";
 import { AccountSummary } from "@/screens/sync/AccountSummary";
 import { checkPassword, PasswordStrength } from "@/screens/sync/PasswordStrength";
@@ -29,14 +28,8 @@ export function AccountCard() {
   const [needTotp, setNeedTotp] = useState(false);
   const [busy, setBusy] = useState<"login" | "register" | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [showPlatform, setShowPlatform] = useState(false);
-  const [platformUrl, setPlatformUrl] = useState("");
   // 注册策略与口令规则都随功能开关一起下发,不再单独拉 /api/register/policy
-  const { features, refresh: refreshFeatures } = useFeaturesStore();
-
-  useEffect(() => {
-    void ipc.platformUrlGet().then(setPlatformUrl);
-  }, []);
+  const { features } = useFeaturesStore();
 
   const run = async (kind: "login" | "register", fn: () => Promise<void>) => {
     setBusy(kind);
@@ -173,29 +166,8 @@ export function AccountCard() {
         <div className="fs-xs t-danger mt-4">邮箱格式不正确</div>
       )}
 
-      {showPlatform && (
-        <div className="mt-12">
-          <TextInput
-            label="平台地址"
-            value={platformUrl}
-            onChange={(e) => setPlatformUrl(e.target.value)}
-            onBlur={async () => {
-              try {
-                setPlatformUrl(await ipc.platformUrlSet(platformUrl));
-                setError(null);
-                void refreshFeatures();
-              } catch (e) {
-                setError(friendlyError(e));
-              }
-            }}
-          />
-        </div>
-      )}
       {error && <div className="fs-sm t-danger mt-8 lh-normal">{error}</div>}
       <div className="row gap-8 mt-12">
-        <span className="fs-xs t-faint clickable" onClick={() => setShowPlatform((s) => !s)}>
-          {showPlatform ? "收起平台设置" : "平台设置"}
-        </span>
         <span className="spacer" />
         {!loginOn && !registerOn ? null : isRegister ? (
           <Button

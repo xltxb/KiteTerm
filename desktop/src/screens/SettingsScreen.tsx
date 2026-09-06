@@ -1,7 +1,5 @@
-import { useEffect, useState } from "react";
 import { ChevronDown, Minus, Plus } from "lucide-react";
-import { Button, ScreenHeader, Segmented, Switch, TextInput } from "@/components/ui";
-import { ipc } from "@/ipc";
+import { ScreenHeader, Segmented, Switch } from "@/components/ui";
 import { useFeaturesStore } from "@/stores/features";
 import { useUiStore } from "@/stores/ui";
 
@@ -27,126 +25,6 @@ const SHORTCUTS = [
   { label: "AI 解释最近输出", keys: "⌘ I" },
   { label: "AI 生成命令", keys: "⌘ ⇧ A" },
 ];
-
-/** 平台连接与功能开关。
- *
- *  这一段**永远显示**,不受任何开关影响 —— 功能开关的兜底是「从未拉到过就全关」,
- *  如果连平台地址都配不了,全新安装的用户就再也没法指向自己的平台、把功能打开。 */
-function PlatformCard() {
-  const { features, refresh } = useFeaturesStore();
-  const [url, setUrl] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
-
-  useEffect(() => {
-    void ipc.platformUrlGet().then(setUrl);
-  }, []);
-
-  const save = async () => {
-    setBusy(true);
-    setMsg(null);
-    try {
-      setUrl(await ipc.platformUrlSet(url));
-      await refresh();
-      const now = useFeaturesStore.getState().features;
-      setMsg(
-        now.known
-          ? now.enforced
-            ? "已连上平台,功能开关已更新"
-            : "已连上平台。该平台未启用功能门禁,各项功能均可用"
-          : "保存了,但没连上平台 —— 地址对吗?平台在跑吗?",
-      );
-    } catch (e) {
-      setMsg(String(e).replace(/^[A-Za-z_]+:\s*/, ""));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const groups: { title: string; items: { label: string; on: boolean }[] }[] = [
-    {
-      title: "账户",
-      items: [
-        { label: "注册", on: features.registration !== "closed" },
-        { label: "登录", on: features.login },
-        { label: "邮箱验证", on: features.emailVerify },
-        { label: "强制 2FA", on: features.totpRequired },
-        { label: "多设备登录", on: features.multiDevice },
-      ],
-    },
-    {
-      title: "同步",
-      items: [
-        { label: "云同步", on: features.sync },
-        { label: "密钥同步", on: features.keySync },
-        { label: "录制同步", on: features.recordingSync },
-      ],
-    },
-    {
-      title: "AI",
-      items: [
-        { label: "AI 助手", on: features.ai },
-        { label: "命令生成", on: features.ai && features.aiCommand },
-        { label: "错误诊断", on: features.ai && features.aiDiagnose },
-        { label: "输出摘要", on: features.ai && features.aiSummary },
-      ],
-    },
-  ];
-
-  return (
-    <div className="card pad-band mb-16">
-      <div className="settings-section-title">管理平台</div>
-
-      <div className="settings-row">
-        <div className="grow lh-snug">
-          <div className="w-semi fs-md t-strong">平台地址</div>
-          <div className="fs-sm t-faint">
-            功能开关由管理平台下发。改完地址点「连接」即可重新拉取;公网地址必须走 https。
-          </div>
-        </div>
-        <TextInput
-          value={url}
-          placeholder="https://m.kiteterm.com"
-          onChange={(e) => setUrl(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && void save()}
-          style={{ width: 240 }}
-        />
-        <Button variant="secondary" loading={busy} onClick={() => void save()}>
-          连接
-        </Button>
-      </div>
-
-      {msg && <div className="settings-row fs-sm t-muted lh-normal">{msg}</div>}
-
-      <div className="settings-row">
-        <div className="grow lh-snug">
-          <div className="w-semi fs-md t-strong">功能开关</div>
-          <div className="fs-sm t-faint">
-            {!features.known
-              ? "尚未连上管理平台 —— 按「未启用门禁」处理,各项功能均可用。"
-              : features.enforced
-                ? "该平台已启用功能门禁,以下为当前下发的状态,关闭的功能在本机隐藏入口。"
-                : "该平台未启用功能门禁(部署配置 KITE_FEATURE_GATING),各项功能均可用。"}
-          </div>
-        </div>
-      </div>
-
-      {groups.map((g) => (
-        <div key={g.title} className="settings-row">
-          <div className="w-semi fs-md t-strong">{g.title}</div>
-          <div className="row gap-8 wrap jend" style={{ maxWidth: 300 }}>
-            {g.items.map((it) => (
-              <span key={it.label} className={it.on ? "badge badge-success" : "badge badge-neutral"}>
-                <span className="dot" />
-                {it.label}
-              </span>
-            ))}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
 
 export function SettingsScreen() {
   const { settings, setSettings } = useUiStore();
@@ -196,8 +74,6 @@ export function SettingsScreen() {
             <Switch on={settings.cursorBlink} onChange={(on) => setSettings({ cursorBlink: on })} />
           </div>
         </div>
-
-        <PlatformCard />
 
         <div className="card pad-band mb-16">
           <div className="settings-section-title">行为</div>

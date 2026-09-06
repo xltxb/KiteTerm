@@ -429,10 +429,8 @@ pub async fn features_refresh(state: State<'_, AppState>) -> Result<crate::featu
 }
 
 #[tauri::command]
-pub async fn account_register_policy(
-    state: State<'_, AppState>,
-) -> Result<crate::account::RegisterPolicy> {
-    crate::account::register_policy(&state.db).await
+pub async fn account_register_policy() -> Result<crate::account::RegisterPolicy> {
+    crate::account::register_policy().await
 }
 
 #[tauri::command]
@@ -492,17 +490,6 @@ pub async fn account_totp_disable(
 #[tauri::command]
 pub async fn account_refresh(state: State<'_, AppState>) -> Result<crate::account::AccountInfo> {
     crate::account::refresh(&state.db, &state.vault).await
-}
-
-#[tauri::command]
-pub fn platform_url_get(state: State<AppState>) -> Result<String> {
-    Ok(crate::account::platform_url(&state.db))
-}
-
-#[tauri::command]
-/// 返回规范化后的地址,前端据此回填输入框
-pub fn platform_url_set(state: State<AppState>, url: String) -> Result<String> {
-    crate::account::set_platform_url(&state.db, &url)
 }
 
 // ---- AI 助手 ----
