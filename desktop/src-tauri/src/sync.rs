@@ -30,6 +30,9 @@ const KV_MK: &str = "sync_mk_enc";
 const KV_LAST: &str = "sync_last_at";
 const KV_PUSHED: &str = "sync_pushed_seq";
 const KV_SNAP_SEEN: &str = "sync_snapshot_seen";
+/// 上一次 sync_once 里平台 key_sync 开关的生效值("0"/"1");用于探测「关→开」翻转,
+/// 好在开关重新放行时补发被跳过的密钥 oplog 条目。kv 为空视为「首次,不补发」。
+const KV_FLAG_KEY_SYNC: &str = "sync_flag_key_sync";
 
 /// 压实阈值:早于该秒数且已被本机应用的 oplog 对象并入快照后删除(默认 30 天;测试可用环境变量收窄)
 fn compact_max_age_secs() -> i64 {
@@ -130,16 +133,23 @@ pub fn save_config(db: &Db, vault: &Vault, mut cfg: SyncConfig) -> Result<()> {
         }
     }
     if cfg.scopes.keys && !old.scopes.keys {
-        for k in db.list_keys()? {
-            if k.sync_enabled {
-                let p = db.key_payload(&k.id)?;
-                db.oplog_append("key", &k.id, "put", Some(p))?;
-            }
-        }
+        backfill_keys(db)?;
     }
     if cfg.scopes.settings && !old.scopes.settings {
         if let Some(s) = db.kv_get("settings")? {
             db.oplog_append("settings", "app", "put", Some(s))?;
+        }
+    }
+    Ok(())
+}
+
+/// 遍历本地已启用同步的密钥,补发 oplog put 条目 —— scope 关→开(此函数)、
+/// 平台 key_sync 开关关→开(sync_once)都要用同一份逻辑,否则老数据进不了增量流。
+fn backfill_keys(db: &Db) -> Result<()> {
+    for k in db.list_keys()? {
+        if k.sync_enabled {
+            let p = db.key_payload(&k.id)?;
+            db.oplog_append("key", &k.id, "put", Some(p))?;
         }
     }
     Ok(())
@@ -539,6 +549,15 @@ pub async fn sync_once(db: &Db, vault: &Vault) -> Result<()> {
     let me = db.device_id();
     let flags = crate::features::cached(db);
 
+    // 平台 key_sync 开关重新放行(上次关→这次开)时,补发被跳过的密钥 put 条目 ——
+    // 否则关闭期间 push 循环跳过的那些 oplog 条目,KV_PUSHED 已无条件前移,永远补不回来。
+    // 首次(kv 为空)不补发;每次都把这次的生效值写回,供下次比对。
+    let prev_key_sync = db.kv_get(KV_FLAG_KEY_SYNC)?;
+    if prev_key_sync.as_deref() == Some("0") && flags.key_sync && cfg.scopes.keys {
+        backfill_keys(db)?;
+    }
+    db.kv_set(KV_FLAG_KEY_SYNC, if flags.key_sync { "1" } else { "0" })?;
+
     db.bootstrap_oplog()?;
 
     // ---- push:未推送的本地条目,逐条加密上传(append-only,幂等)----
@@ -730,12 +749,15 @@ async fn sync_recordings(
     for page in listing {
         for obj in page.contents {
             let Some(id) = obj.key.strip_prefix(&list_prefix).and_then(|k| k.strip_suffix(".meta")) else { continue };
+            // 防御性校验:id 混入路径分隔符/上跳会让下面的 dir.join 逃逸出 recordings 目录
+            if id.contains('/') || id.contains("..") { continue; }
             if db.recording_exists(id)? { continue; }
-            let meta_resp = bucket.get_object(&obj.key).await.map_err(|e| AppError(e.to_string()))?;
+            // 单条对象缺失/网络错误不该把整轮同步 Err 掉(否则后面的 maybe_compact 永远跑不到)
+            let Ok(meta_resp) = bucket.get_object(&obj.key).await else { continue };
             let Ok(meta) = unseal(cipher, meta_resp.bytes(), &obj.key)
                 .and_then(|p| serde_json::from_slice::<serde_json::Value>(&p).map_err(Into::into)) else { continue };
             let cast_key = format!("{list_prefix}{id}.cast");
-            let cast_resp = bucket.get_object(&cast_key).await.map_err(|e| AppError(e.to_string()))?;
+            let Ok(cast_resp) = bucket.get_object(&cast_key).await else { continue };
             let Ok(plain) = unseal(cipher, cast_resp.bytes(), &cast_key) else { continue };
             let local = dir.join(format!("{id}.cast"));
             std::fs::write(&local, plain)?;
