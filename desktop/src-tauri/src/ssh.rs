@@ -17,9 +17,11 @@ use tokio::sync::mpsc;
 
 use crate::db::Db;
 use crate::error::{AppError, Result};
-use crate::models::{AppSettings, SessionInfo, TermData};
+use crate::models::{AppSettings, SessionInfo, TermData, TransferJob};
 use crate::recorder::Recorder;
+use crate::sftp::TransferManager;
 use crate::vault::{self, Vault};
+use crate::zmodem::{self, Detected, Detector, ProgressSink, RunCtx, ZChannel};
 
 /// R 型远程转发的投递目标(远端监听端口 → 本地 host:port)
 pub struct RTarget {
@@ -142,6 +144,10 @@ pub enum Ctl {
     Data(Vec<u8>),
     Resize(u16, u16),
     Close,
+    /// rz:前端选好文件后回传(空列表表示用户取消)
+    SendFiles(Vec<std::path::PathBuf>),
+    /// 用户在浮条点取消
+    CancelTransfer,
 }
 
 pub struct SessionEntry {
@@ -319,11 +325,13 @@ async fn open_shell_channel(
     Ok(channel)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn open_shell_session(
     app: AppHandle,
     db: Arc<Db>,
     vault: Arc<Vault>,
     manager: Arc<SessionManager>,
+    transfers: Arc<crate::sftp::TransferManager>,
     host_id: &str,
     password: Option<String>,
 ) -> Result<SessionInfo> {
@@ -374,6 +382,7 @@ pub async fn open_shell_session(
         db,
         vault,
         manager,
+        transfers,
         id,
         host.id.clone(),
         password,
@@ -393,6 +402,7 @@ async fn run_session(
     db: Arc<Db>,
     vault: Arc<Vault>,
     manager: Arc<SessionManager>,
+    transfers: Arc<crate::sftp::TransferManager>,
     id: String,
     host_id: String,
     password: Option<String>,
@@ -403,14 +413,43 @@ async fn run_session(
 ) {
     'outer: loop {
         let mut user_closed = false;
+        // 每个连接维护一个握手探测器;命中并接管后复位
+        let mut detector = Detector::new();
         loop {
             tokio::select! {
                 msg = channel.wait() => {
                     match msg {
                         Some(ChannelMsg::Data { ref data }) => {
-                            emit_data(&app, &id, data);
-                            if let Some(rec) = recorder.lock().unwrap().as_mut() {
-                                rec.write_output(data);
+                            match detector.push(data) {
+                                None => {
+                                    emit_data(&app, &id, data);
+                                    if let Some(rec) = recorder.lock().unwrap().as_mut() {
+                                        rec.write_output(data);
+                                    }
+                                }
+                                Some((mode, at)) => {
+                                    // 命中点之前的字节仍照常送终端与录制
+                                    if at > 0 {
+                                        emit_data(&app, &id, &data[..at]);
+                                        if let Some(rec) = recorder.lock().unwrap().as_mut() {
+                                            rec.write_output(&data[..at]);
+                                        }
+                                    }
+                                    // 命中点之后已到达的字节作为 zmodem 通道的预置缓冲,
+                                    // 避免握手头之后紧跟的字节被丢掉
+                                    let seed = data[at..].to_vec();
+                                    let closed = handle_zmodem(
+                                        &app, &db, &transfers, &id,
+                                        &mut channel, &mut ctl_rx, mode, seed,
+                                    )
+                                    .await;
+                                    // 传输结束:复位探测器,恢复正常循环
+                                    detector = Detector::new();
+                                    if closed {
+                                        user_closed = true;
+                                        break;
+                                    }
+                                }
                             }
                         }
                         Some(ChannelMsg::ExtendedData { ref data, .. }) => {
@@ -434,6 +473,9 @@ async fn run_session(
                             user_closed = true;
                             let _ = channel.eof().await;
                             break;
+                        }
+                        Some(Ctl::SendFiles(_)) | Some(Ctl::CancelTransfer) => {
+                            // 非传输态收到,忽略(仅传输态由 zmodem::run 消费)
                         }
                     }
                 }
@@ -503,6 +545,352 @@ async fn run_session(
         emit_state(&app, &info);
     }
     emit_line(&app, &id, "[会话已断开]");
+}
+
+// ============================ ZMODEM 接管 ============================
+
+/// zmodem 中止序列:5×CAN(0x18)后 5×BS(0x08)。lrzsz 收到即中止当前 sz/rz。
+const ZMODEM_ABORT: [u8; 10] = [0x18, 0x18, 0x18, 0x18, 0x18, 0x08, 0x08, 0x08, 0x08, 0x08];
+
+/// 把 russh 交互式 shell 通道适配成 zmodem 的 `ZChannel`:russh 的 `channel.wait()` 取的是
+/// 整条 `ChannelMsg`,而 zmodem 状态机要的是字节流,故内部缓存 `ChannelMsg::Data` 的字节,
+/// `read` 从缓存里按需切出。构造时用 `seed` 预置探测握手头之后已到达的字节,避免丢失。
+struct RusshChannel<'a> {
+    channel: &'a mut Channel<client::Msg>,
+    buf: Vec<u8>,
+    pos: usize,
+}
+
+impl<'a> RusshChannel<'a> {
+    fn new(channel: &'a mut Channel<client::Msg>, seed: Vec<u8>) -> Self {
+        Self { channel, buf: seed, pos: 0 }
+    }
+}
+
+impl ZChannel for RusshChannel<'_> {
+    async fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        if out.is_empty() {
+            return Ok(0);
+        }
+        loop {
+            // 先把缓存里剩余字节吐给调用方
+            if self.pos < self.buf.len() {
+                let n = (self.buf.len() - self.pos).min(out.len());
+                out[..n].copy_from_slice(&self.buf[self.pos..self.pos + n]);
+                self.pos += n;
+                if self.pos >= self.buf.len() {
+                    self.buf.clear();
+                    self.pos = 0;
+                }
+                return Ok(n);
+            }
+            // 缓存空:等下一条通道消息
+            match self.channel.wait().await {
+                Some(ChannelMsg::Data { data }) => {
+                    self.buf = data[..].to_vec();
+                    self.pos = 0;
+                }
+                Some(ChannelMsg::ExtendedData { data, .. }) => {
+                    self.buf = data[..].to_vec();
+                    self.pos = 0;
+                }
+                // EOF/Close/通道结束:按 ZChannel 约定返回 Ok(0)
+                Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => return Ok(0),
+                // 窗口调整、ExitStatus 等与字节流无关的消息:忽略,继续等
+                _ => {}
+            }
+        }
+    }
+
+    async fn write_all(&mut self, data: &[u8]) -> std::io::Result<()> {
+        self.channel
+            .data(data)
+            .await
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::BrokenPipe, e.to_string()))
+    }
+}
+
+/// zmodem 进度回调适配到 TransferManager:`start` push 一个 protocol="zmodem" 的
+/// TransferJob(state="running"),`advance` 按字节算百分比与速率(200ms 节流),
+/// `finish` 置 done/failed。`ProgressSink` 的方法都是 `&self`,故内部用 Mutex 存可变状态。
+struct JobSink {
+    app: AppHandle,
+    transfers: Arc<TransferManager>,
+    session_id: String,
+    inner: Mutex<JobSinkState>,
+}
+
+struct JobSinkState {
+    id: Option<String>,
+    total: u64,
+    start: Option<Instant>,
+    last_emit: Option<Instant>,
+}
+
+impl JobSink {
+    fn new(app: AppHandle, transfers: Arc<TransferManager>, session_id: String) -> Self {
+        Self {
+            app,
+            transfers,
+            session_id,
+            inner: Mutex::new(JobSinkState { id: None, total: 0, start: None, last_emit: None }),
+        }
+    }
+}
+
+impl ProgressSink for JobSink {
+    fn start(&self, direction: &str, name: &str, total: u64, _index: usize, _count: usize) {
+        let job_id = uuid::Uuid::new_v4().to_string();
+        let job = TransferJob {
+            id: job_id.clone(),
+            direction: direction.to_string(),
+            name: name.to_string(),
+            local_path: String::new(),
+            remote_path: String::new(),
+            session_id: self.session_id.clone(),
+            progress: 0.0,
+            rate_bps: 0,
+            state: "running".into(),
+            error: None,
+            elapsed_ms: 0,
+            protocol: "zmodem".into(),
+        };
+        self.transfers.jobs.lock().unwrap().push(job.clone());
+        crate::sftp::emit_job(&self.app, &job);
+        let mut st = self.inner.lock().unwrap();
+        st.id = Some(job_id);
+        st.total = total;
+        st.start = Some(Instant::now());
+        st.last_emit = None;
+    }
+
+    fn advance(&self, transferred: u64) {
+        let (id, total, start) = {
+            let mut st = self.inner.lock().unwrap();
+            let Some(id) = st.id.clone() else { return };
+            // 200ms 节流,避免大文件每个子包都推事件
+            let now = Instant::now();
+            if let Some(last) = st.last_emit {
+                if now.duration_since(last).as_millis() < 200 {
+                    return;
+                }
+            }
+            st.last_emit = Some(now);
+            (id, st.total, st.start)
+        };
+        let elapsed = start.map(|s| s.elapsed()).unwrap_or_default();
+        let rate = if elapsed.as_secs_f64() > 0.0 {
+            (transferred as f64 / elapsed.as_secs_f64()) as u64
+        } else {
+            0
+        };
+        let pct = if total > 0 {
+            (transferred as f64 / total as f64 * 100.0).min(99.9)
+        } else {
+            99.9
+        };
+        crate::sftp::update_job(&self.app, &self.transfers.jobs, &id, |j| {
+            j.progress = pct;
+            j.rate_bps = rate;
+            j.elapsed_ms = elapsed.as_millis() as u64;
+        });
+    }
+
+    fn finish(&self, ok: bool, error: Option<String>) {
+        let (id, start) = {
+            let st = self.inner.lock().unwrap();
+            let Some(id) = st.id.clone() else { return };
+            (id, st.start)
+        };
+        let elapsed = start.map(|s| s.elapsed()).unwrap_or_default();
+        crate::sftp::update_job(&self.app, &self.transfers.jobs, &id, |j| {
+            if ok {
+                j.state = "done".into();
+                j.progress = 100.0;
+                j.rate_bps = 0;
+            } else {
+                j.state = "failed".into();
+                j.error = error.clone();
+            }
+            j.elapsed_ms = elapsed.as_millis() as u64;
+        });
+    }
+}
+
+/// 解析下载目录:优先 `AppSettings.download_dir`(支持 `~` 展开),空则回退到系统下载目录、
+/// 再回退到用户主目录,最后回退到当前目录。
+fn resolve_download_dir(db: &Db) -> std::path::PathBuf {
+    let s = read_settings(db);
+    let dir = s.download_dir.trim();
+    if !dir.is_empty() {
+        return std::path::PathBuf::from(crate::sftp::shellexpand_home(dir));
+    }
+    dirs::download_dir()
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+}
+
+/// 一次 zmodem 传输的结局。
+enum TransferEnd {
+    /// 状态机跑完(Ok 成功,Err 协议失败)。
+    Completed(std::io::Result<()>),
+    /// 传输期间被取消;`close` 表示取消源自会话关闭(需结束会话)。
+    Cancelled { close: bool },
+}
+
+/// 在给定通道上驱动一次 zmodem 传输,同时监听 `ctl_rx`:
+/// `CancelTransfer`/`Close` 中止传输,`Resize` 暂存到 `deferred_resize` 待传输后补发。
+/// `zmodem::run` 借用了通道(经 `RusshChannel`),而取消后要用同一通道发中止序列,
+/// 故把 `run` 的 future 与 `RusshChannel` 一起限定在内层作用域,块结束时先 drop 掉它们、
+/// 释放对 `channel` 的借用,再在块外发中止序列——保持 `zmodem::run` 本身不感知 ctl。
+async fn run_with_cancel(
+    channel: &mut Channel<client::Msg>,
+    ctl_rx: &mut mpsc::UnboundedReceiver<Ctl>,
+    mode: Detected,
+    seed: Vec<u8>,
+    sink: &JobSink,
+    download_dir: std::path::PathBuf,
+    files: Option<Vec<std::path::PathBuf>>,
+    deferred_resize: &mut Option<(u16, u16)>,
+) -> TransferEnd {
+    let end;
+    {
+        let mut rchan = RusshChannel::new(channel, seed);
+        let run_fut = zmodem::run(
+            mode,
+            RunCtx { chan: &mut rchan, sink, download_dir, files },
+        );
+        tokio::pin!(run_fut);
+        end = loop {
+            tokio::select! {
+                r = &mut run_fut => break TransferEnd::Completed(r),
+                ctl = ctl_rx.recv() => match ctl {
+                    Some(Ctl::CancelTransfer) => break TransferEnd::Cancelled { close: false },
+                    Some(Ctl::Close) | None => break TransferEnd::Cancelled { close: true },
+                    Some(Ctl::Resize(c, r)) => { *deferred_resize = Some((c, r)); }
+                    // 传输期间键入与迟到的选文件消息一律忽略
+                    Some(Ctl::Data(_)) | Some(Ctl::SendFiles(_)) => {}
+                },
+            }
+        };
+        // rchan(及 run_fut)在此块结束时 drop,随后对 channel 的可变借用释放
+    }
+    if let TransferEnd::Cancelled { .. } = end {
+        // 向对端发 zmodem 中止序列,并把 job 标记为失败(run 被中途 drop,不会自行 finish)
+        let _ = channel.data(&ZMODEM_ABORT[..]).await;
+        sink.finish(false, Some("已取消".to_string()));
+    }
+    end
+}
+
+/// 接管一次 zmodem 传输:解析下载目录、构造 `JobSink`,`Send` 方向先请前端选文件,
+/// 随后驱动 `run_with_cancel`,最后补发暂存的窗口尺寸变化。
+/// 返回 `true` 表示用户在传输期间关闭了会话(调用方应结束会话)。
+#[allow(clippy::too_many_arguments)]
+async fn handle_zmodem(
+    app: &AppHandle,
+    db: &Db,
+    transfers: &Arc<TransferManager>,
+    id: &str,
+    channel: &mut Channel<client::Msg>,
+    ctl_rx: &mut mpsc::UnboundedReceiver<Ctl>,
+    mode: Detected,
+    seed: Vec<u8>,
+) -> bool {
+    let download_dir = resolve_download_dir(db);
+    let sink = JobSink::new(app.clone(), transfers.clone(), id.to_string());
+    let mut deferred_resize: Option<(u16, u16)> = None;
+
+    let files: Option<Vec<std::path::PathBuf>> = match mode {
+        Detected::Receive => {
+            emit_line(app, id, "检测到 ZMODEM 下载(sz),开始接收…");
+            None
+        }
+        Detected::Send => {
+            // 请前端弹出文件选择器,并阻塞等待其回传选择结果
+            let _ = app.emit("zmodem://pick-files", serde_json::json!({ "sessionId": id }));
+            emit_line(app, id, "检测到 ZMODEM 上传(rz),请选择要发送的文件…");
+            let mut chosen: Vec<std::path::PathBuf> = Vec::new();
+            let mut close = false;
+            loop {
+                match ctl_rx.recv().await {
+                    Some(Ctl::SendFiles(paths)) => {
+                        chosen = paths;
+                        break;
+                    }
+                    Some(Ctl::CancelTransfer) => break,
+                    Some(Ctl::Close) | None => {
+                        close = true;
+                        break;
+                    }
+                    Some(Ctl::Resize(c, r)) => deferred_resize = Some((c, r)),
+                    Some(Ctl::Data(_)) => {}
+                }
+            }
+            if chosen.is_empty() {
+                // 用户取消 / 会话关闭:发中止序列结束远端 rz
+                let _ = channel.data(&ZMODEM_ABORT[..]).await;
+                emit_line(app, id, "已取消 ZMODEM 上传");
+                if let Some((c, r)) = deferred_resize {
+                    let _ = channel.window_change(c as u32, r as u32, 0, 0).await;
+                }
+                return close;
+            }
+            emit_line(app, id, &format!("开始发送 {} 个文件…", chosen.len()));
+            Some(chosen)
+        }
+    };
+
+    let end = run_with_cancel(
+        channel,
+        ctl_rx,
+        mode,
+        seed,
+        &sink,
+        download_dir,
+        files,
+        &mut deferred_resize,
+    )
+    .await;
+
+    let close = match end {
+        TransferEnd::Completed(Ok(())) => {
+            emit_line(app, id, "ZMODEM 传输完成");
+            false
+        }
+        TransferEnd::Completed(Err(e)) => {
+            // 防御性收尾:receive 的传输层错误经 `?` 上抛时可能未走到其内部的 finish 分支
+            // (仅 unexpected-EOF / 过量 CRC 路径会 finish),否则 job 会永久停在 running。
+            // 在此接管点补一次 finish(false);JobSink::finish 在无 job id 时早退、对已失败 job
+            // 重复置失败也无害,故幂等安全。
+            sink.finish(false, Some(e.to_string()));
+            emit_line(app, id, &format!("ZMODEM 传输失败: {e}"));
+            false
+        }
+        TransferEnd::Cancelled { close } => {
+            emit_line(app, id, "ZMODEM 传输已取消");
+            close
+        }
+    };
+
+    // 补发传输期间暂存的窗口尺寸变化
+    if let Some((c, r)) = deferred_resize {
+        let _ = channel.window_change(c as u32, r as u32, 0, 0).await;
+    }
+    close
+}
+
+/// 向指定会话投递一条控制消息(仿 `write_session`),供 zmodem 命令使用。
+pub fn send_ctl(manager: &SessionManager, id: &str, ctl: Ctl) -> Result<()> {
+    let sessions = manager.sessions.lock().unwrap();
+    let entry = sessions
+        .get(id)
+        .ok_or_else(|| AppError(format!("会话不存在: {id}")))?;
+    entry
+        .ctl
+        .send(ctl)
+        .map_err(|_| AppError("会话已关闭".into()))?;
+    Ok(())
 }
 
 pub fn write_session(manager: &SessionManager, id: &str, data: &str) -> Result<()> {

@@ -60,6 +60,10 @@ export function createTauriIpc(): KiteIpc {
     retryTransfer: (id) => invoke("transfer_retry", { id }),
     onTransferProgress: (cb) => sub<TransferJob>("transfer://progress", cb),
 
+    zmodemSendFiles: (sessionId, paths) => invoke("zmodem_send_files", { sessionId, paths }),
+    zmodemCancel: (sessionId) => invoke("zmodem_cancel", { sessionId }),
+    onZmodemPickFiles: (cb) => sub<{ sessionId: string }>("zmodem://pick-files", (p) => cb(p.sessionId)),
+
     startRecording: (sessionId) => invoke("recording_start", { sessionId }),
     stopRecording: (sessionId) => invoke("recording_stop", { sessionId }),
     listRecordings: () => invoke("recording_list"),
