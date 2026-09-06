@@ -698,7 +698,7 @@ async fn admin_set_settings(
             snake.push(c.to_ascii_lowercase());
         }
         if !features::NAMES.iter().any(|(n, _, _)| *n == snake) {
-            return Err(err(StatusCode::BAD_REQUEST, "unknown_feature", &format!("未知功能开关 {key}")));
+            return Err(err(StatusCode::BAD_REQUEST, "UNKNOWN_FEATURE", &format!("未知功能开关 {key}")));
         }
         features::set(&conn, &snake, on).map_err(internal)?;
     }
