@@ -429,8 +429,9 @@ pub async fn account_login(
     state: State<'_, AppState>,
     email: String,
     password: String,
+    totp: Option<String>,
 ) -> Result<crate::account::AccountInfo> {
-    crate::account::login(&state.db, &state.vault, &email, &password).await
+    crate::account::login(&state.db, &state.vault, &email, &password, totp.as_deref()).await
 }
 
 #[tauri::command]
@@ -441,6 +442,45 @@ pub async fn account_logout(state: State<'_, AppState>) -> Result<()> {
 #[tauri::command]
 pub fn account_current(state: State<AppState>) -> Result<Option<crate::account::AccountInfo>> {
     crate::account::current(&state.db)
+}
+
+#[tauri::command]
+pub async fn account_verify_email(
+    state: State<'_, AppState>,
+    code: String,
+) -> Result<crate::account::AccountInfo> {
+    crate::account::verify_email(&state.db, &state.vault, &code).await
+}
+
+#[tauri::command]
+pub async fn account_resend_verification(state: State<'_, AppState>) -> Result<()> {
+    crate::account::resend_verification(&state.db, &state.vault).await
+}
+
+#[tauri::command]
+pub async fn account_totp_setup(state: State<'_, AppState>) -> Result<crate::account::TotpSetup> {
+    crate::account::totp_setup(&state.db, &state.vault).await
+}
+
+#[tauri::command]
+pub async fn account_totp_enable(
+    state: State<'_, AppState>,
+    code: String,
+) -> Result<crate::account::AccountInfo> {
+    crate::account::totp_enable(&state.db, &state.vault, &code).await
+}
+
+#[tauri::command]
+pub async fn account_totp_disable(
+    state: State<'_, AppState>,
+    code: String,
+) -> Result<crate::account::AccountInfo> {
+    crate::account::totp_disable(&state.db, &state.vault, &code).await
+}
+
+#[tauri::command]
+pub async fn account_refresh(state: State<'_, AppState>) -> Result<crate::account::AccountInfo> {
+    crate::account::refresh(&state.db, &state.vault).await
 }
 
 #[tauri::command]

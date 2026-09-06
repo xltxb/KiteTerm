@@ -57,8 +57,8 @@ async fn main() {
     account::register(&db_a, &v_a, &email, "check-password-123", None)
         .await
         .expect("注册");
-    let info_a = account::login(&db_a, &v_a, &email, "check-password-123").await.expect("A 登录");
-    let info_b = account::login(&db_b, &v_b, &email, "check-password-123").await.expect("B 登录");
+    let info_a = account::login(&db_a, &v_a, &email, "check-password-123", None).await.expect("A 登录");
+    let info_b = account::login(&db_b, &v_b, &email, "check-password-123", None).await.expect("B 登录");
     assert_eq!(info_a.id, info_b.id, "同一账户");
     assert!(info_a.sync_enabled, "新账户默认放开同步");
     println!("step0 注册/登录/凭据 OK(user={})", info_a.id);
@@ -248,7 +248,7 @@ async fn main() {
     let db_c = Db::open(scratch("dev-c")).unwrap();
     let v_c = Vault::open(&db_c.data_dir).unwrap();
     account::set_platform_url(&db_c, PLATFORM).unwrap();
-    account::login(&db_c, &v_c, &email, "check-password-123").await.expect("C 登录");
+    account::login(&db_c, &v_c, &email, "check-password-123", None).await.expect("C 登录");
     configure(&db_c, &v_c);
     sync::sync_once(&db_c, &v_c).await.expect("C 快照引导");
     assert!(
@@ -273,7 +273,7 @@ async fn main() {
     let db_d = Db::open(scratch("dev-d")).unwrap();
     let v_d = Vault::open(&db_d.data_dir).unwrap();
     account::set_platform_url(&db_d, PLATFORM).unwrap();
-    account::login(&db_d, &v_d, &email, "check-password-123").await.expect("D 登录");
+    account::login(&db_d, &v_d, &email, "check-password-123", None).await.expect("D 登录");
     sync::restore_master_from_phrase(&db_d, &v_d, &ph_a).expect("短语恢复");
     sync::sync_once(&db_d, &v_d).await.expect("D 恢复后同步");
     assert!(

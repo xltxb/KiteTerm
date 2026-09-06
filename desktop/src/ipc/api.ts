@@ -17,6 +17,7 @@ import type {
   SshKey,
   SyncConfig,
   SyncStatus,
+  TotpSetup,
   TransferJob,
 } from "@/types";
 
@@ -123,9 +124,21 @@ export interface KiteIpc {
   accountRegisterPolicy(): Promise<{ mode: string; passwordMinLength: number; passwordRule: string }>;
   /** 注册成功即完成登录(平台直接签发令牌) */
   accountRegister(email: string, password: string, inviteCode?: string): Promise<AccountInfo>;
-  accountLogin(email: string, password: string): Promise<AccountInfo>;
+  accountLogin(email: string, password: string, totp?: string): Promise<AccountInfo>;
   accountLogout(): Promise<void>;
   accountCurrent(): Promise<AccountInfo | null>;
+  /** 提交邮箱验证码;成功后返回刷新后的账户信息 */
+  accountVerifyEmail(code: string): Promise<AccountInfo>;
+  /** 重新发送邮箱验证码 */
+  accountResendVerification(): Promise<void>;
+  /** 生成 TOTP 密钥与 otpauth URL(供二维码展示) */
+  accountTotpSetup(): Promise<TotpSetup>;
+  /** 校验验证码后正式启用 TOTP */
+  accountTotpEnable(code: string): Promise<AccountInfo>;
+  /** 校验验证码后关闭 TOTP */
+  accountTotpDisable(code: string): Promise<AccountInfo>;
+  /** 向平台核对一次账户状态(GET /api/me);令牌失效抛 LOGIN_REQUIRED */
+  accountRefresh(): Promise<AccountInfo>;
   platformUrlGet(): Promise<string>;
   platformUrlSet(url: string): Promise<void>;
 

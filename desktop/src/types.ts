@@ -193,6 +193,15 @@ export interface AccountInfo {
   email: string;
   /** 平台是否放开该账户的云同步 */
   syncEnabled: boolean;
+  emailVerified: boolean;
+  totpEnabled: boolean;
+  /** 平台强制 2FA 且本账户尚未绑定 —— 同步会被拒,界面要引导绑定 */
+  totpSetupRequired: boolean;
+}
+
+export interface TotpSetup {
+  secret: string;
+  otpauthUrl: string;
 }
 
 export interface SyncStatus {
