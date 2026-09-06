@@ -1,0 +1,36 @@
+name: server-release
+# 打 tag `server-v*` 时构建 Linux 静态二进制并附到 GitHub Release
+on:
+  push:
+    tags: ["server-v*"]
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [x86_64, aarch64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.arch }}-unknown-linux-musl
+      - uses: goto-bus-stop/setup-zig@v2
+        with: { version: 0.13.0 }
+      - run: cargo install cargo-zigbuild --locked
+      - run: server/deploy/build-release.sh ${{ matrix.arch }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kite-server-linux-${{ matrix.arch }}
+          path: server/dist/*.tar.gz*
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions: { contents: write }
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: dist, merge-multiple: true }
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
