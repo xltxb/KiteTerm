@@ -8,6 +8,8 @@ import { hashPassword, newTotpSecret, otpauthUrl, totpVerify, verifyPassword } f
 import { rateLimitOk } from "../ratelimit";
 import { authenticate, issueToken, newTokenValue, passwordIssue, tokenInsertStatement, userPublic, validEmail } from "../auth";
 import { newCode, sendCode } from "../mail";
+import { isStorageConfigured, loadStorage } from "../storage";
+import { StsError, issueCredentials } from "../creds";
 
 export const accountRoutes = new Hono<{ Bindings: Env }>();
 
@@ -196,6 +198,46 @@ accountRoutes.get("/api/me", async (c) => {
       totpRequired: await features.raw(db, "totp_required"),
     },
   });
+});
+
+// ---- 同步凭据 ----
+
+/**
+ * 平台管控的同步凭据:登录且账户同步已放开时下发。优先经 STS/R2 签发按
+ * users/{id}/* 收敛的限权临时凭据(1h);不可用时回退共享凭据 + 前缀约定
+ * (stsMode=require 则直接报错)。检查顺序:存储未配置 → 平台总闸 → 用户级
+ * 开关 → 邮箱验证 → 强制 2FA —— 越靠前的检查越该先挡下,避免被停用账户走到
+ * 后面的检查里泄露"平台还要求什么"。
+ */
+accountRoutes.get("/api/sync/credentials", async (c) => {
+  const user = await authenticate(c);
+  if (user instanceof Response) return user;
+  const db = c.env.DB;
+  const { cfg } = await loadStorage(db, c.env);
+  if (!isStorageConfigured(cfg)) {
+    return apiError(c, 503, "STORAGE_UNCONFIGURED", "平台尚未配置存储,请联系管理员");
+  }
+  if (!(await features.effective(db, featureGating(c.env), "sync"))) {
+    return apiError(c, 403, "SYNC_DISABLED", "平台当前已关闭云同步");
+  }
+  if (!user.syncEnabled) {
+    return apiError(c, 403, "SYNC_DISABLED", "该账户的云同步已被平台停用,请联系管理员");
+  }
+  if ((await features.raw(db, "email_verify")) && !user.emailVerified) {
+    return apiError(c, 403, "EMAIL_UNVERIFIED", "请先完成邮箱验证");
+  }
+  if ((await features.raw(db, "totp_required")) && !user.totpEnabled) {
+    return apiError(c, 403, "TOTP_SETUP_REQUIRED", "平台要求绑定双因素认证后才能同步");
+  }
+  try {
+    const creds = await issueCredentials(cfg, c.env, user.id);
+    return c.json(creds);
+  } catch (e) {
+    if (e instanceof StsError) {
+      return apiError(c, 502, "sts_error", e.message);
+    }
+    throw e;
+  }
 });
 
 // ---- 邮箱验证 ----
