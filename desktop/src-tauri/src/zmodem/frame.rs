@@ -172,10 +172,9 @@ impl Parser {
         match self.expect_data {
             // 已显式切换到数据模式(收到 ZDATA/ZFILE 头之后):按其 crc 位解析子包
             Some(use_crc32) => self.parse_subpacket(use_crc32),
-            // 帧模式:真正的帧头总是以 ZPAD(0x2a)开头,据此与"未经协商直接喂入的
-            // 数据子包"区分(后者用于独立测试子包编解码,不依赖头部先行协商)
-            None if self.buf.first() == Some(&ZPAD) => self.parse_header(),
-            None => self.parse_subpacket(true),
+            // 帧模式:严格只解析帧头。子包解析必须经 set_data_mode 显式开启,
+            // 不允许在帧模式下靠"首字节是否 ZPAD"猜测性地退化为子包解析。
+            None => self.parse_header(),
         }
     }
 
@@ -190,8 +189,15 @@ impl Parser {
             i += 1;
         }
         if i >= buf.len() {
-            // 缓冲区里没有 ZDLE,清空(全是垃圾/ZPAD)
-            self.buf.clear();
+            // 缓冲区里没有 ZDLE:不能直接清空整个缓冲区,否则跨 feed 到达的
+            // ZPAD 前导(例如 [ZPAD] 后跟 [ZPAD, ZDLE, ...] 分两次 feed)会被
+            // 提前丢弃,导致后续帧头永远拼不完整。只丢弃尾部 ZPAD 连续段
+            // 之前的垃圾字节,保留这段 ZPAD 供下一次 feed 续接。
+            let mut keep_from = buf.len();
+            while keep_from > 0 && buf[keep_from - 1] == ZPAD {
+                keep_from -= 1;
+            }
+            self.buf.drain(0..keep_from);
             return None;
         }
         // 需要至少 ZDLE + 类型字节
@@ -230,13 +236,16 @@ impl Parser {
                 }
             }
         }
-        // 消费掉整帧(含结尾 CR LF)
-        self.buf.drain(0..need);
         let body = &raw[0..5];
         let crc = ((raw[5] as u16) << 8) | (raw[6] as u16);
         if crc16(body) != crc {
+            // CRC 不符:只跳过起始的 ZPAD..ZDLE 重同步,不吞掉整帧长度,
+            // 以免误伤紧随其后可能已经合法的下一帧。
+            self.buf.drain(0..=start);
             return Some(Event::GarbledCrc);
         }
+        // CRC 校验通过后才消费整帧(含结尾 CR LF)
+        self.buf.drain(0..need);
         let kind = raw[0];
         let arg = [raw[1], raw[2], raw[3], raw[4]];
         Some(Event::Header { kind, arg })
@@ -248,12 +257,14 @@ impl Parser {
         match unescape_upto(&self.buf[payload_start..], 9) {
             UnescapeResult::Incomplete => None,
             UnescapeResult::Ok { unescaped, consumed } => {
-                self.buf.drain(0..payload_start + consumed);
                 let body = &unescaped[0..5];
                 let crc = u32::from_le_bytes([unescaped[5], unescaped[6], unescaped[7], unescaped[8]]);
                 if crc32(body) != crc {
+                    // CRC 不符:只跳过起始的 ZPAD..ZDLE 重同步,不吞掉整段 payload。
+                    self.buf.drain(0..=start);
                     return Some(Event::GarbledCrc);
                 }
+                self.buf.drain(0..payload_start + consumed);
                 let kind = body[0];
                 let arg = [body[1], body[2], body[3], body[4]];
                 Some(Event::Header { kind, arg })
@@ -300,12 +311,15 @@ impl Parser {
                                 let crc = ((crc_bytes[0] as u16) << 8) | (crc_bytes[1] as u16);
                                 crc16(&crc_input) == crc
                             };
-                            self.buf.drain(0..total_consumed);
-                            return if crc_ok {
-                                Some(Event::Data { bytes: unescaped, end })
-                            } else {
-                                Some(Event::GarbledCrc)
-                            };
+                            if crc_ok {
+                                self.buf.drain(0..total_consumed);
+                                return Some(Event::Data { bytes: unescaped, end });
+                            }
+                            // CRC 不符:数据子包没有 ZPAD/ZDLE 式的帧起始标记可对齐,
+                            // 只跳过缓冲区最前一个字节做最小重同步,避免吞掉紧随其后
+                            // 可能仍然合法的数据。
+                            self.buf.drain(0..1);
+                            return Some(Event::GarbledCrc);
                         }
                     }
                 } else {
@@ -399,6 +413,8 @@ mod tests {
     fn parser_roundtrips_data_subpacket() {
         let bytes = encode_data_subpacket(b"hello", ZCRCE, true);
         let mut p = Parser::new();
+        // 子包解析必须经 set_data_mode 显式开启,帧模式下不会退化猜测。
+        p.set_data_mode(true);
         p.feed(&bytes);
         match p.next() {
             Some(Event::Data { bytes, end }) => {
@@ -422,6 +438,27 @@ mod tests {
                 assert_eq!(arg_to_pos(arg), 1024);
             }
             other => panic!("expected header, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parser_handles_split_feed_inside_zpad_run() {
+        // 十六进制头以 `** ZDLE 'B'` 开头(两个 ZPAD)。分两次 feed,断点恰好落在
+        // ZPAD 连续段内部(第 1 字节、第 2 字节处),验证前导 ZPAD 不会被
+        // parse_header 提前丢弃,导致后续帧头永久拼不完整。
+        for split in [1usize, 2] {
+            let bytes = encode_hex_header(ZRPOS, pos_to_arg(1024));
+            let mut p = Parser::new();
+            p.feed(&bytes[..split]);
+            assert!(matches!(p.next(), None), "split={split}: 不足一帧应返回 None");
+            p.feed(&bytes[split..]);
+            match p.next() {
+                Some(Event::Header { kind, arg }) => {
+                    assert_eq!(kind, ZRPOS, "split={split}");
+                    assert_eq!(arg_to_pos(arg), 1024, "split={split}");
+                }
+                other => panic!("split={split}: expected header, got {other:?}"),
+            }
         }
     }
 
