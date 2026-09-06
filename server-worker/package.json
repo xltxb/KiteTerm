@@ -1,0 +1,25 @@
+{
+  "name": "kite-server-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "sync-admin": "sh scripts/sync-admin.sh",
+    "dev": "pnpm sync-admin && wrangler dev --local",
+    "deploy": "pnpm sync-admin && wrangler deploy",
+    "test": "pnpm sync-admin && vitest run",
+    "typecheck": "tsc --noEmit",
+    "migrate:remote": "wrangler d1 migrations apply kite-server --remote"
+  },
+  "dependencies": {
+    "aws4fetch": "^1.0.20",
+    "hono": "^4.13.7"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.1.4",
+    "@cloudflare/workers-types": "^5",
+    "@types/node": "^26.4.1",
+    "typescript": "^5.6.3",
+    "vitest": "^4.1.0",
+    "wrangler": "^4.129.0"
+  }
+}

@@ -1,0 +1,15 @@
+CREATE TABLE users (
+  id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL,
+  sync_enabled INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL,
+  email_verified INTEGER NOT NULL DEFAULT 1, totp_secret TEXT,
+  totp_enabled INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE tokens (token TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at INTEGER NOT NULL);
+CREATE INDEX tokens_user ON tokens(user_id);
+CREATE TABLE platform_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE invites (code TEXT PRIMARY KEY, note TEXT NOT NULL DEFAULT '', max_uses INTEGER NOT NULL DEFAULT 0,
+  used_count INTEGER NOT NULL DEFAULT 0, expires_at INTEGER NOT NULL DEFAULT 0,
+  disabled INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL);
+CREATE TABLE invite_uses (code TEXT NOT NULL, user_id TEXT NOT NULL, used_at INTEGER NOT NULL);
+CREATE TABLE email_codes (user_id TEXT PRIMARY KEY, code TEXT NOT NULL, expires_at INTEGER NOT NULL,
+  sent_at INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0);
