@@ -122,11 +122,11 @@ async fn sha256_prefix<R: tokio::io::AsyncRead + Unpin>(r: &mut R, n: u64) -> Re
     Ok(hasher.finalize().into())
 }
 
-fn emit_job(app: &AppHandle, job: &TransferJob) {
+pub(crate) fn emit_job(app: &AppHandle, job: &TransferJob) {
     let _ = app.emit("transfer://progress", job.clone());
 }
 
-fn update_job(
+pub(crate) fn update_job(
     app: &AppHandle,
     jobs: &Mutex<Vec<TransferJob>>,
     id: &str,
@@ -157,6 +157,7 @@ pub fn enqueue(
         state: "queued".into(),
         error: None,
         elapsed_ms: 0,
+        protocol: "sftp".into(),
     };
     transfers.jobs.lock().unwrap().push(job.clone());
     emit_job(&app, &job);
