@@ -183,7 +183,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
     // 远端跑 rz 时后端发出此事件,弹多选文件框回传选中的本地路径(取消则传空数组)
     ipc.onZmodemPickFiles((sessionId) => {
-      void pickFiles().then((paths) => ipc.zmodemSendFiles(sessionId, paths));
+      // 对话框被拒绝(用户取消/异常)时回传空数组,解除后端对 SendFiles 的等待(等同取消)
+      void pickFiles()
+        .then((paths) => ipc.zmodemSendFiles(sessionId, paths))
+        .catch(() => ipc.zmodemSendFiles(sessionId, []));
     });
   },
 

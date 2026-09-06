@@ -25,6 +25,31 @@ const RX_CAPS: [u8; 4] = [0, 0, 0, 0x23];
 /// 连续 CRC 错误上限,超过则放弃本次传输。
 const MAX_CRC_ERRORS: u32 = 10;
 
+/// 单次阻塞读的停顿上限:对端存活但长时间不发数据时,避免接管永久挂起。
+/// 说明:未做逐帧重传,故采用单一较长的整体停顿上限(30s)替代 spec 的「每帧 10s + 重传」。
+const STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// 远端中止(ZCAN)判定:连续 5 个 CAN(0x18/ZDLE)即视为对端中止。
+/// 正常 ZMODEM 帧里 0x18 只作单个转义前缀出现,连续 5 个不会出现在合法帧中,故据此判定安全。
+/// 仅在单次 read 的字节内扫描(不跨 read 累计),lrzsz 的中止序列一次性发出 5×CAN,足以命中。
+const CAN_ABORT_RUN: usize = 5;
+
+/// 扫描字节里是否出现连续 `CAN_ABORT_RUN` 个 CAN(0x18)。
+fn has_can_run(bytes: &[u8]) -> bool {
+    let mut run = 0usize;
+    for &b in bytes {
+        if b == frame::ZDLE {
+            run += 1;
+            if run >= CAN_ABORT_RUN {
+                return true;
+            }
+        } else {
+            run = 0;
+        }
+    }
+    false
+}
+
 /// 当前 Data 事件的语义:决定收到数据子包后如何处理。
 enum DataCtx {
     /// 帧模式,不期待数据子包。
@@ -69,14 +94,37 @@ pub async fn receive<C: ZChannel, P: ProgressSink>(
     loop {
         match parser.next() {
             None => {
-                let n = chan.read(&mut read_buf).await?;
+                // 停顿超时:对端存活但长时间无数据,避免永久挂起
+                let n = match tokio::time::timeout(STALL_TIMEOUT, chan.read(&mut read_buf)).await {
+                    Ok(r) => r?,
+                    Err(_) => {
+                        sink.finish(false, Some("传输超时".to_string()));
+                        return Err(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "zmodem: stall timeout while receiving",
+                        ));
+                    }
+                };
                 if n == 0 {
-                    // 在收到 ZFIN 之前就遇到流结束:若仍有未收完的文件,报告失败。
+                    // 在收到 ZFIN 之前就遇到流结束:若仍有未收完的文件,报告失败并返回 Err,
+                    // 使终端提示与任务状态一致(不再走 Ok 分支被上层报「传输完成」)。
                     // (正常收尾走 ZFIN 分支,读到 OO 即返回,不会走到这里。)
                     if writer.is_some() {
                         sink.finish(false, Some("unexpected EOF".to_string()));
+                        return Err(io::Error::new(
+                            io::ErrorKind::UnexpectedEof,
+                            "zmodem: unexpected EOF mid-transfer",
+                        ));
                     }
                     break;
+                }
+                // 远端中止(ZCAN / 5×CAN):停止并按失败收尾
+                if has_can_run(&read_buf[..n]) {
+                    sink.finish(false, Some("远端中止传输".to_string()));
+                    return Err(io::Error::new(
+                        io::ErrorKind::ConnectionAborted,
+                        "zmodem: remote abort (ZCAN)",
+                    ));
                 }
                 parser.feed(&read_buf[..n]);
             }
@@ -680,6 +728,51 @@ mod tests {
         assert_eq!(files, vec![dir_path.join("noeof.txt")]);
         assert_eq!(std::fs::read(dir_path.join("noeof.txt")).unwrap(), b"hello");
         assert_eq!(sink.finishes.lock().unwrap()[0], (true, None));
+    }
+
+    /// Fix 2:远端中止(5×CAN)——传输中收到 CAN 连发,`receive` 应立即返回
+    /// `ConnectionAborted` 且 finish(false),而不是挂起或误报完成。
+    #[tokio::test]
+    async fn aborts_on_remote_can() {
+        use std::time::Duration;
+        let (mut local, mut peer) = MemChannel::pair();
+        let dir = TmpDir::new();
+        let dir_path = dir.path().to_path_buf();
+        let sink = RecordingSink::new();
+
+        let sender = async move {
+            let mut p = Parser::new();
+            wait_for(&mut peer, &mut p, frame::ZRINIT).await;
+            peer.write_all(&frame::encode_bin32_header(frame::ZFILE, [0; 4]))
+                .await
+                .unwrap();
+            peer.write_all(&frame::encode_data_subpacket(
+                &file_info("abort.bin", 100),
+                frame::ZCRCW,
+                true,
+            ))
+            .await
+            .unwrap();
+            wait_for(&mut peer, &mut p, frame::ZRPOS).await;
+            // 发送端改为中止:连发 5×CAN(0x18)
+            peer.write_all(&[0x18u8; 5]).await.unwrap();
+            // 保持通道存活,确保返回是由 CAN 触发而非 EOF
+            std::future::pending::<()>().await;
+        };
+
+        let recv = receive(&mut local, &sink, &dir_path);
+        let err = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::select! {
+                r = recv => r,
+                _ = sender => unreachable!("sender 的 pending future 不应完成"),
+            }
+        })
+        .await
+        .expect("应因远端中止立即返回,而非超时")
+        .expect_err("远端中止应返回 Err");
+
+        assert_eq!(err.kind(), std::io::ErrorKind::ConnectionAborted);
+        assert_eq!(sink.finishes.lock().unwrap().last().unwrap().0, false);
     }
 
     /// 连续 10 次 CRC 错误后中止:用一个总是返回坏帧的通道桩件驱动。
