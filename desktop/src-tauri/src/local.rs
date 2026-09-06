@@ -106,7 +106,10 @@ pub fn open_local_session(app: AppHandle, manager: Arc<SessionManager>) -> Resul
             let mut buf = [0u8; 8192];
             loop {
                 match reader.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
+                    Ok(0) => break,
+                    // 被信号打断不是 shell 退出,重试;否则退出循环会向控制线程发 Close 把活着的 shell 杀掉
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
                     Ok(n) => {
                         emit_data(&app, &id, &buf[..n]);
                         if let Some(rec) = recorder.lock().unwrap().as_mut() {
@@ -117,8 +120,8 @@ pub fn open_local_session(app: AppHandle, manager: Arc<SessionManager>) -> Resul
             }
             if let Some(info) = manager.update_info(&id, |i| i.state = "disconnected".into()) {
                 emit_state(&app, &info);
+                emit_line(&app, &id, "[进程已退出]");
             }
-            emit_line(&app, &id, "[进程已退出]");
             // shell 已自行退出:主动通知控制线程收尾,避免子进程与 master fd 一直挂着
             // (前端后续调用 session_close 会再发一次 Close,那时 receiver 多半已丢弃,Err 被忽略)
             let _ = ctl_tx.send(Ctl::Close);
