@@ -89,7 +89,7 @@ pub fn open_local_session(app: AppHandle, manager: Arc<SessionManager>) -> Resul
         id.clone(),
         SessionEntry {
             info: info.clone(),
-            ctl: ctl_tx,
+            ctl: ctl_tx.clone(),
             handle: None,
             recorder: recorder.clone(),
         },
@@ -101,6 +101,7 @@ pub fn open_local_session(app: AppHandle, manager: Arc<SessionManager>) -> Resul
         let app = app.clone();
         let id = id.clone();
         let manager = manager.clone();
+        let ctl_tx = ctl_tx.clone();
         std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
             loop {
@@ -118,12 +119,18 @@ pub fn open_local_session(app: AppHandle, manager: Arc<SessionManager>) -> Resul
                 emit_state(&app, &info);
             }
             emit_line(&app, &id, "[进程已退出]");
+            // shell 已自行退出:主动通知控制线程收尾,避免子进程与 master fd 一直挂着
+            // (前端后续调用 session_close 会再发一次 Close,那时 receiver 多半已丢弃,Err 被忽略)
+            let _ = ctl_tx.send(Ctl::Close);
         });
     }
 
-    // 控制任务:前端输入 → PTY;改尺寸;关闭时结束子进程
-    tokio::spawn(async move {
-        while let Some(ctl) = ctl_rx.recv().await {
+    // 控制线程:前端输入 → PTY;改尺寸;关闭时结束子进程。
+    // 用阻塞线程而非 tokio::spawn:master fd 是阻塞的(portable-pty 0.9 在 unix 上只设了
+    // cloexec、没设 O_NONBLOCK),write_all 在 PTY 输入缓冲区满时会阻塞;child.kill()
+    // 内部还会 sleep 到 ~200ms、child.wait() 是阻塞 waitpid——都不能占用 tokio worker。
+    std::thread::spawn(move || {
+        while let Some(ctl) = ctl_rx.blocking_recv() {
             match ctl {
                 Ctl::Data(bytes) => {
                     if writer.write_all(&bytes).is_err() {
