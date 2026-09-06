@@ -10,10 +10,22 @@ const UNKNOWN: Features = {
   login: true,
   sync: true,
   ai: true,
+  keySync: true,
+  recordingSync: true,
+  aiCommand: true,
+  aiDiagnose: true,
+  aiSummary: true,
+  emailVerify: false,
+  totpRequired: false,
+  multiDevice: true,
   passwordMinLength: 8,
   passwordRule: "",
   known: false,
 };
+
+/** 原型约定:变更在客户端下一次心跳(≤60 s)内生效 */
+const POLL_MS = 60_000;
+let pollTimer: ReturnType<typeof setInterval> | null = null;
 
 interface FeaturesState {
   features: Features;
@@ -33,6 +45,8 @@ export const useFeaturesStore = create<FeaturesState>((set) => ({
     }
     // 缓存先上屏,再去平台核对;拉不到就维持缓存值
     void useFeaturesStore.getState().refresh();
+    // 全局只起一个轮询,跟应用同生命周期,不清理
+    if (!pollTimer) pollTimer = setInterval(() => void useFeaturesStore.getState().refresh(), POLL_MS);
   },
 
   refresh: async () => {
@@ -44,7 +58,25 @@ export const useFeaturesStore = create<FeaturesState>((set) => ({
   },
 }));
 
+export type FeatureName =
+  | "login"
+  | "sync"
+  | "ai"
+  | "keySync"
+  | "recordingSync"
+  | "aiCommand"
+  | "aiDiagnose"
+  | "aiSummary"
+  | "emailVerify"
+  | "totpRequired"
+  | "multiDevice";
+
 /** 组件里取单个开关的便捷钩子 */
-export function useFeature(name: "login" | "sync" | "ai"): boolean {
+export function useFeature(name: FeatureName): boolean {
   return useFeaturesStore((s) => s.features[name]);
+}
+
+/** AI 子功能:总开关关了子项一律关 */
+export function useAiFeature(name: "aiCommand" | "aiDiagnose" | "aiSummary"): boolean {
+  return useFeaturesStore((s) => s.features.ai && s.features[name]);
 }

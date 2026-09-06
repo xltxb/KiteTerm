@@ -173,6 +173,15 @@ export interface Features {
   login: boolean;
   sync: boolean;
   ai: boolean;
+  /** 平台下发,安全策略仅提示 */
+  keySync: boolean;
+  recordingSync: boolean;
+  aiCommand: boolean;
+  aiDiagnose: boolean;
+  aiSummary: boolean;
+  emailVerify: boolean;
+  totpRequired: boolean;
+  multiDevice: boolean;
   /** 口令规则随开关一起下发 */
   passwordMinLength: number;
   passwordRule: string;

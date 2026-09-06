@@ -27,6 +27,10 @@ fn default_pw_len() -> usize {
     8
 }
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Features {
@@ -38,6 +42,23 @@ pub struct Features {
     pub login: bool,
     pub sync: bool,
     pub ai: bool,
+    #[serde(default = "default_true")]
+    pub key_sync: bool,
+    #[serde(default = "default_true")]
+    pub recording_sync: bool,
+    #[serde(default = "default_true")]
+    pub ai_command: bool,
+    #[serde(default = "default_true")]
+    pub ai_diagnose: bool,
+    #[serde(default = "default_true")]
+    pub ai_summary: bool,
+    /// 安全策略:由服务端拦截,客户端只用来提示
+    #[serde(default)]
+    pub email_verify: bool,
+    #[serde(default)]
+    pub totp_required: bool,
+    #[serde(default = "default_true")]
+    pub multi_device: bool,
     /// 口令规则随开关一起下发,省掉一次单独的 /api/register/policy 往返
     #[serde(default = "default_pw_len")]
     pub password_min_length: usize,
@@ -59,6 +80,14 @@ impl Features {
             login: true,
             sync: true,
             ai: true,
+            key_sync: true,
+            recording_sync: true,
+            ai_command: true,
+            ai_diagnose: true,
+            ai_summary: true,
+            email_verify: false,
+            totp_required: false,
+            multi_device: true,
             password_min_length: default_pw_len(),
             password_rule: String::new(),
             known: false,
