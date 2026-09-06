@@ -13,7 +13,6 @@ pub struct Db {
 
 /// certs 表完整行(含 pem/私钥等敏感字段,仅后端使用,不对外暴露)
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct CertRow {
     pub id: String,
     pub domains: Vec<String>,
@@ -641,7 +640,6 @@ impl Db {
     }
 
     // ---- certs(ACME 证书)----
-    #[allow(dead_code)]
     pub fn list_certs(&self) -> Result<Vec<CertInfo>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -670,7 +668,6 @@ impl Db {
         Ok(rows)
     }
 
-    #[allow(dead_code)]
     pub fn get_cert_full(&self, id: &str) -> Result<CertRow> {
         let conn = self.conn.lock().unwrap();
         let row = conn.query_row(
@@ -702,7 +699,6 @@ impl Db {
         Ok(row)
     }
 
-    #[allow(dead_code)]
     pub fn upsert_cert(&self, row: &CertRow) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -733,7 +729,6 @@ impl Db {
         Ok(())
     }
 
-    #[allow(dead_code)]
     pub fn delete_cert(&self, id: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM certs WHERE id = ?1", [id])?;
