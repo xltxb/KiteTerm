@@ -44,8 +44,8 @@ async fn handle_for_host(
     let existing = {
         let s = sessions.sessions.lock().unwrap();
         s.values()
-            .find(|e| e.info.host_id == host_id && e.info.state == "connected")
-            .map(|e| e.handle.lock().unwrap().clone())
+            .find(|e| e.info.host_id == host_id && e.info.state == "connected" && e.handle.is_some())
+            .map(|e| e.handle.as_ref().unwrap().lock().unwrap().clone())
     };
     if let Some(h) = existing {
         return Ok(h);

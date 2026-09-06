@@ -117,11 +117,9 @@ pub fn spawn_monitor_loop(app: AppHandle, sessions: Arc<SessionManager>, state: 
                 let s = sessions.sessions.lock().unwrap();
                 s.values()
                     .filter(|e| e.info.state == "connected")
-                    .map(|e| {
-                        (
-                            e.info.host_id.clone(),
-                            (e.info.host_name.clone(), e.handle.lock().unwrap().clone()),
-                        )
+                    .filter_map(|e| {
+                        let handle = e.handle.as_ref()?.lock().unwrap().clone();
+                        Some((e.info.host_id.clone(), (e.info.host_name.clone(), handle)))
                     })
                     .collect()
             };

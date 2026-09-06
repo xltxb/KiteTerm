@@ -147,8 +147,8 @@ pub enum Ctl {
 pub struct SessionEntry {
     pub info: SessionInfo,
     pub ctl: mpsc::UnboundedSender<Ctl>,
-    /// 重连后被替换,取用时克隆内层 Arc
-    pub handle: Arc<Mutex<Arc<Handle<ClientHandler>>>>,
+    /// SSH 会话持有连接句柄(重连后被替换,取用时克隆内层 Arc);本地终端为 None
+    pub handle: Option<Arc<Mutex<Arc<Handle<ClientHandler>>>>>,
     pub recorder: Arc<Mutex<Option<Recorder>>>,
 }
 
@@ -157,11 +157,11 @@ pub struct SessionManager {
     pub sessions: Mutex<HashMap<String, SessionEntry>>,
 }
 
-fn emit_state(app: &AppHandle, info: &SessionInfo) {
+pub(crate) fn emit_state(app: &AppHandle, info: &SessionInfo) {
     let _ = app.emit("session://state", info.clone());
 }
 
-fn emit_data(app: &AppHandle, id: &str, data: &[u8]) {
+pub(crate) fn emit_data(app: &AppHandle, id: &str, data: &[u8]) {
     let payload = TermData {
         id: id.to_string(),
         data: base64::engine::general_purpose::STANDARD.encode(data),
@@ -169,24 +169,28 @@ fn emit_data(app: &AppHandle, id: &str, data: &[u8]) {
     let _ = app.emit("term://data", payload);
 }
 
-fn emit_line(app: &AppHandle, id: &str, text: &str) {
+pub(crate) fn emit_line(app: &AppHandle, id: &str, text: &str) {
     emit_data(app, id, format!("\r\n\x1b[90m{text}\x1b[0m\r\n").as_bytes());
 }
 
 impl SessionManager {
     pub fn get_handle(&self, id: &str) -> Result<Arc<Handle<ClientHandler>>> {
         let sessions = self.sessions.lock().unwrap();
-        sessions
+        let entry = sessions
             .get(id)
-            .map(|e| e.handle.lock().unwrap().clone())
-            .ok_or_else(|| AppError(format!("会话不存在: {id}")))
+            .ok_or_else(|| AppError(format!("会话不存在: {id}")))?;
+        entry
+            .handle
+            .as_ref()
+            .map(|h| h.lock().unwrap().clone())
+            .ok_or_else(|| AppError("本地终端不支持此操作".into()))
     }
 
     pub fn list(&self) -> Vec<SessionInfo> {
         self.sessions.lock().unwrap().values().map(|e| e.info.clone()).collect()
     }
 
-    fn update_info(&self, id: &str, f: impl FnOnce(&mut SessionInfo)) -> Option<SessionInfo> {
+    pub(crate) fn update_info(&self, id: &str, f: impl FnOnce(&mut SessionInfo)) -> Option<SessionInfo> {
         let mut sessions = self.sessions.lock().unwrap();
         sessions.get_mut(id).map(|e| {
             f(&mut e.info);
@@ -344,6 +348,7 @@ pub async fn open_shell_session(
         rows,
         recording: false,
         recording_since: None,
+        kind: "ssh".into(),
     };
 
     let (ctl_tx, ctl_rx) = mpsc::unbounded_channel::<Ctl>();
@@ -357,7 +362,7 @@ pub async fn open_shell_session(
             SessionEntry {
                 info: info.clone(),
                 ctl: ctl_tx,
-                handle: shared_handle.clone(),
+                handle: Some(shared_handle.clone()),
                 recorder: recorder.clone(),
             },
         );
