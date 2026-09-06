@@ -6,23 +6,58 @@
 <title>KiteTerm 管理平台</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Manrope:wght@400;600;700&family=JetBrains+Mono:wght@400;600&family=Noto+Sans+SC:wght@400;500;700&display=swap');
+  /* Vela 语义 token(与 design/_ds tokens/colors.css 同值):
+     :root 为浅色档;[data-theme="dark"] 与系统深色为石墨覆盖(#0d0d0f 系,与桌面端一致)。 */
   :root{
-    --page:#0d0d0f; --card:#151517; --sunken:#0a0a0c; --raised:#1d1d20;
-    --border:rgba(255,255,255,.06); --border-md:rgba(255,255,255,.12);
-    --text-strong:#f4f7fc; --text:#c4ccda; --muted:#8893a8; --faint:#5b6478;
-    --azure:#3b6ef6; --azure-4:#5e83fb; --azure-3:#8facff; --cyan:#2dcde6;
-    --accent-subtle:rgba(59,110,246,.16); --accent-border:rgba(94,131,251,.36);
-    --success:#2ad07e; --success-t:#7be8b3; --success-s:rgba(24,179,104,.16);
-    --danger:#ff6259; --danger-t:#ff9d97; --danger-s:rgba(240,71,62,.18);
+    --page:#f6f8fb; --card:#ffffff; --sunken:#edf1f7; --raised:#ffffff;
+    --border:#dde3ec; --border-md:#c4ccda;
+    --text-strong:#161a27; --text:#353c4d; --muted:#69748b; --faint:#97a1b5;
+    --azure:#3b6ef6; --cyan:#2dcde6;
+    --accent:#3b6ef6; --accent-hover:#2553e0; --accent-text:#2553e0;
+    --accent-subtle:#eef3ff; --accent-border:#b9cdff; --focus-ring:rgba(59,110,246,.3);
+    --success:#18b368; --success-t:#0c7344; --success-s:#e7f9f0;
+    --warning:#f5a524; --warning-t:#a96606; --warning-s:#fff5e3;
+    --danger:#f0473e; --danger-t:#ac1f18; --danger-s:#fdecec;
+    --shadow-lg:0 12px 28px rgba(16,24,48,.12),0 4px 10px rgba(16,24,48,.07);
+    --glow-sm:0 0 0 1px rgba(59,110,246,.3),0 6px 18px rgba(59,110,246,.3);
     --sans:"Manrope","Noto Sans SC",-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
     --display:"Space Grotesk","Noto Sans SC",sans-serif;
     --mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
+    color-scheme:light;
+  }
+  [data-theme="dark"]{
+    --page:#0d0d0f; --card:#151517; --sunken:#0a0a0c; --raised:#1d1d20;
+    --border:rgba(255,255,255,.06); --border-md:rgba(255,255,255,.12);
+    --text-strong:#f4f7fc; --text:#c4ccda; --muted:#8893a8; --faint:#5b6478;
+    --accent:#5e83fb; --accent-hover:#8facff; --accent-text:#8facff;
+    --accent-subtle:rgba(59,110,246,.16); --accent-border:rgba(94,131,251,.36); --focus-ring:rgba(94,131,251,.45);
+    --success:#2ad07e; --success-t:#7be8b3; --success-s:rgba(24,179,104,.16);
+    --warning:#ffb648; --warning-t:#ffd391; --warning-s:rgba(245,165,36,.16);
+    --danger:#ff6259; --danger-t:#ff9d97; --danger-s:rgba(240,71,62,.18);
+    --shadow-lg:0 16px 40px rgba(0,0,0,.55);
+    --glow-sm:0 0 0 1px rgba(94,131,251,.45),0 8px 26px rgba(59,110,246,.45);
+    color-scheme:dark;
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --page:#0d0d0f; --card:#151517; --sunken:#0a0a0c; --raised:#1d1d20;
+      --border:rgba(255,255,255,.06); --border-md:rgba(255,255,255,.12);
+      --text-strong:#f4f7fc; --text:#c4ccda; --muted:#8893a8; --faint:#5b6478;
+      --accent:#5e83fb; --accent-hover:#8facff; --accent-text:#8facff;
+      --accent-subtle:rgba(59,110,246,.16); --accent-border:rgba(94,131,251,.36); --focus-ring:rgba(94,131,251,.45);
+      --success:#2ad07e; --success-t:#7be8b3; --success-s:rgba(24,179,104,.16);
+      --warning:#ffb648; --warning-t:#ffd391; --warning-s:rgba(245,165,36,.16);
+      --danger:#ff6259; --danger-t:#ff9d97; --danger-s:rgba(240,71,62,.18);
+      --shadow-lg:0 16px 40px rgba(0,0,0,.55);
+      --glow-sm:0 0 0 1px rgba(94,131,251,.45),0 8px 26px rgba(59,110,246,.45);
+      color-scheme:dark;
+    }
   }
   *{box-sizing:border-box}
   html,body{margin:0;min-height:100vh}
   body{background:var(--page);color:var(--text);font-family:var(--sans);font-size:14px}
   .wrap{max-width:1080px;margin:0 auto;padding:36px 28px}
-  .eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.12em;color:var(--azure-3);text-transform:uppercase;margin-bottom:8px}
+  .eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.12em;color:var(--accent-text);text-transform:uppercase;margin-bottom:8px}
   h1{margin:0;font-family:var(--display);font-size:26px;font-weight:700;letter-spacing:-.02em;color:var(--text-strong)}
   .card{background:var(--card);border:1px solid var(--border);border-radius:14px}
   .btn{display:inline-flex;align-items:center;gap:6px;height:34px;padding:0 15px;border:none;border-radius:10px;
@@ -31,32 +66,34 @@
   .btn:hover{background:var(--raised)}
   .btn:active{transform:translateY(1px)}
   .btn:disabled{opacity:.5;cursor:not-allowed}
-  .btn.primary{background:var(--azure);border-color:transparent;color:#fff}
-  .btn.primary:hover{background:var(--azure-4);box-shadow:0 0 0 1px rgba(59,110,246,.3),0 6px 18px rgba(59,110,246,.3)}
+  .btn.primary{background:var(--accent);border-color:transparent;color:#fff}
+  .btn.primary:hover{background:var(--accent-hover);box-shadow:var(--glow-sm)}
   .btn.ghost{background:transparent;border-color:transparent;color:var(--muted)}
   .btn.ghost:hover{background:var(--sunken);color:var(--text-strong)}
   .btn.danger-ghost{background:transparent;border-color:transparent;color:var(--danger-t)}
   .btn.danger-ghost:hover{background:var(--danger-s)}
   .input{height:36px;background:var(--sunken);border:1px solid var(--border-md);border-radius:10px;
          padding:0 12px;font:13px var(--sans);color:var(--text-strong);outline:none;transition:all .14s}
-  .input:focus{border-color:var(--azure);box-shadow:0 0 0 3px rgba(59,110,246,.28)}
+  .input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--focus-ring)}
   .input::placeholder{color:var(--faint)}
   .badge{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 9px;border-radius:99px;font-size:11px;font-weight:600;white-space:nowrap}
   .badge .dot{width:6px;height:6px;border-radius:99px;background:currentColor}
   .badge.ok{background:var(--success-s);color:var(--success-t)}
   .badge.off{background:var(--danger-s);color:var(--danger-t)}
+  .badge.accent{background:var(--accent-subtle);color:var(--accent-text)}
+  .badge.warn{background:var(--warning-s);color:var(--warning-t)}
   .seg{display:inline-flex;gap:2px;background:var(--sunken);border:1px solid var(--border-md);border-radius:10px;padding:3px}
   .seg-item{padding:5px 14px;border-radius:8px;font:600 12.5px var(--sans);color:var(--muted);
             cursor:pointer;user-select:none;white-space:nowrap;transition:all .14s cubic-bezier(.16,1,.3,1)}
   .seg-item:hover{color:var(--text)}
-  .seg-item[data-active="true"]{background:var(--card);color:var(--azure-3)}
+  .seg-item[data-active="true"]{background:var(--card);color:var(--accent-text)}
   .pill{font-size:11px;padding:2px 9px;border-radius:99px;border:1px solid var(--border);color:var(--muted)}
-  .pill.ok{background:rgba(42,208,126,.14);border-color:rgba(42,208,126,.35);color:#2ad07e}
-  .pill.warn{background:rgba(255,182,72,.14);border-color:rgba(255,182,72,.35);color:#ffb648}
+  .pill.ok{background:var(--success-s);border-color:var(--success);color:var(--success-t)}
+  .pill.warn{background:var(--warning-s);border-color:var(--warning);color:var(--warning-t)}
   .feat{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--muted);cursor:pointer}
   .switch{position:relative;width:40px;height:24px;border-radius:99px;background:var(--sunken);
           border:1px solid var(--border-md);cursor:pointer;transition:all .14s;flex:none;padding:0}
-  .switch[data-on="true"]{background:var(--azure);border-color:var(--azure)}
+  .switch[data-on="true"]{background:var(--accent);border-color:var(--accent)}
   .switch .thumb{position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:99px;background:#fff;
                  transition:transform .22s cubic-bezier(.34,1.56,.64,1)}
   .switch[data-on="true"] .thumb{transform:translateX(16px)}
@@ -64,7 +101,7 @@
   .stat{padding:18px 20px}
   .stat .label{font-family:var(--mono);font-size:10.5px;letter-spacing:.09em;color:var(--muted);text-transform:uppercase}
   .stat .num{margin-top:6px;font-family:var(--display);font-size:34px;font-weight:700;letter-spacing:-.02em;
-             background:linear-gradient(90deg,var(--azure-4),var(--cyan));-webkit-background-clip:text;background-clip:text;color:transparent}
+             background:linear-gradient(90deg,var(--azure),var(--cyan));-webkit-background-clip:text;background-clip:text;color:transparent}
   .stat .sub{font-size:11.5px;color:var(--faint);margin-top:2px}
   table{width:100%;border-collapse:collapse;font-size:13px}
   th{text-align:left;font-size:11px;font-weight:700;letter-spacing:.04em;color:var(--muted);
@@ -75,14 +112,19 @@
   .mono{font-family:var(--mono);font-size:11.5px;color:var(--faint)}
   .email{font-weight:600;color:var(--text-strong)}
   .toolbar{display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--border)}
-  .muted-note{font-size:12px;color:var(--faint);margin-top:14px;line-height:1.6}
+  .muted-note{display:flex;align-items:flex-start;gap:8px;font-size:12px;color:var(--faint);margin-top:14px;line-height:1.6}
+  .muted-note svg{flex:none;margin-top:3px}
+  .login-note{margin-top:16px;font-size:11.5px;color:var(--faint);line-height:1.6}
+  code{font-family:var(--mono);font-size:.95em}
   .toast{position:fixed;right:22px;bottom:22px;background:var(--raised);border:1px solid var(--border-md);
          border-radius:10px;padding:10px 16px;font-size:12.5px;color:var(--text-strong);
-         box-shadow:0 16px 40px rgba(0,0,0,.55);opacity:0;transition:opacity .2s;pointer-events:none;max-width:420px}
+         box-shadow:var(--shadow-lg);opacity:0;transition:opacity .2s;pointer-events:none;max-width:420px;
+         display:flex;align-items:center;gap:8px}
+  .toast svg{flex:none}
   .toast.show{opacity:1}
   .toast.err{border-color:var(--danger);color:var(--danger-t)}
   .logo{width:34px;height:34px;border-radius:10px;background:linear-gradient(135deg,var(--azure),var(--cyan));
-        display:flex;align-items:center;justify-content:center;box-shadow:0 0 0 1px rgba(94,131,251,.45),0 8px 26px rgba(59,110,246,.45)}
+        display:flex;align-items:center;justify-content:center;box-shadow:var(--glow-sm)}
   .hidden{display:none !important}
   #login-box{max-width:420px;margin:14vh auto 0;padding:28px}
 </style>
@@ -103,6 +145,7 @@
       <input id="key-input" class="input" type="password" style="width:100%" placeholder="输入管理密钥">
       <div id="login-err" style="font-size:12px;color:var(--danger-t);margin-top:10px;min-height:16px"></div>
       <button class="btn primary" style="width:100%;margin-top:8px;height:38px" onclick="doLogin()">进入控制台</button>
+      <div class="login-note">密钥由平台部署方通过 <code>KITE_ADMIN_KEY</code> 配置,仅用于管理接口鉴权;不参与用户数据加解密。</div>
     </div>
   </div>
 
@@ -113,7 +156,7 @@
         <div class="eyebrow">KiteTerm Platform · Admin</div>
         <h1>用户与同步管控</h1>
       </div>
-      <button class="btn" onclick="refresh()">刷新</button>
+      <button class="btn" onclick="refresh(true)">刷新</button>
       <button class="btn ghost" onclick="logout()">退出</button>
     </div>
 
@@ -140,6 +183,7 @@
         <span style="flex:1"></span>
       </div>
       <div style="border-top:1px solid var(--border);padding:10px 16px;font-size:12px;color:var(--muted);line-height:1.7">
+        <div id="gating-hint" style="margin-bottom:4px;color:var(--text)"></div>
         客户端启动时拉取 <code>/api/features</code> 并缓存;关闭的功能在客户端隐藏入口。
         登录与云同步在服务端一并拦截,AI 助手完全跑在客户端本地、无对应服务端调用,
         因此只能靠客户端遵守 —— 它是产品管控,不是安全边界。
@@ -178,6 +222,7 @@
         <input id="search" class="input" style="width:260px" placeholder="搜索邮箱 / 用户 ID…" oninput="render()">
         <span style="flex:1"></span>
         <span class="mono" id="bucket-info"></span>
+        <span class="badge accent" id="sts-badge"><span class="dot"></span>—</span>
       </div>
       <div style="overflow-x:auto">
         <table>
@@ -189,8 +234,9 @@
       </div>
     </div>
     <div class="muted-note">
-      同步开关即时生效:停用后该账户下一次同步请求将被拒绝(SYNC_DISABLED),客户端会提示联系管理员。
-      桶内均为用户主密码加密的密文,平台与管理员均无法解读。
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg>
+      <span>同步开关即时生效:停用后该账户下一次同步请求被拒(<code>SYNC_DISABLED</code>),客户端提示联系管理员;强制下线吊销该用户全部登录令牌。
+      桶内均为用户主密码派生密钥加密的密文,平台与管理员均无法解读。</span>
     </div>
   </div>
 </div>
@@ -209,13 +255,32 @@ let SETTINGS = {
 };
 const $ = (id) => document.getElementById(id);
 
-function toast(msg, isErr) {
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+// lucide 线条图标(与原型 v-icon 同名)
+const ICONS = {
+  check: '<path d="M20 6 9 17l-5-5"/>',
+  ban: '<circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/>',
+  "log-out": '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/>',
+  "refresh-cw": '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>',
+  "alert-circle": '<circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/>',
+};
+const icon = (name, size = 14) =>
+  `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS[name] || ICONS.check}</svg>`;
+
+function toast(msg, isErr, iconName) {
   const t = $("toast");
-  t.textContent = msg;
+  t.innerHTML = icon(iconName || (isErr ? "alert-circle" : "check")) + "<span>" + esc(msg) + "</span>";
   t.className = "toast show" + (isErr ? " err" : "");
   clearTimeout(t._h);
   t._h = setTimeout(() => (t.className = "toast"), 2600);
 }
+
+const STS_BADGE = {
+  require: ["accent", "STS 限权凭据"],
+  auto: ["accent", "STS 限权凭据 · 可回退"],
+  off: ["warn", "共享凭据(回退)"],
+};
 
 async function api(path, opts = {}) {
   const resp = await fetch(path, {
@@ -260,7 +325,7 @@ function logout() {
   location.reload();
 }
 
-async function refresh() {
+async function refresh(manual) {
   try {
     const [stats, users, settings] = await Promise.all([
       api("/api/admin/stats"),
@@ -272,11 +337,15 @@ async function refresh() {
     $("st-tokens").textContent = stats.activeTokens;
     $("st-endpoint").textContent = stats.endpoint;
     $("bucket-info").textContent = "bucket: " + stats.bucket;
+    const [stsCls, stsLabel] = STS_BADGE[stats.stsMode] || STS_BADGE.auto;
+    $("sts-badge").className = "badge " + stsCls;
+    $("sts-badge").innerHTML = '<span class="dot"></span>' + esc(stsLabel);
     USERS = users.users;
     SETTINGS = settings;
     renderSettings();
     render();
     if (settings.registrationMode === "invite") loadInvites();
+    if (manual === true) toast("已刷新", false, "refresh-cw");
   } catch (e) {
     toast("加载失败:" + e.message, true);
   }
@@ -407,7 +476,7 @@ async function disableInvite(code) {
   if (!confirm(`停用邀请码 ${code}?已注册的用户不受影响。`)) return;
   try {
     await api(`/api/admin/invites/${encodeURIComponent(code)}/disable`, { method: "POST" });
-    toast("已停用 " + code);
+    toast("已停用 " + code, false, "ban");
     loadInvites();
   } catch (e) {
     toast("停用失败:" + e.message, true);
@@ -452,7 +521,7 @@ async function toggleSync(email, enabled) {
       method: "POST",
       body: JSON.stringify({ enabled }),
     });
-    toast(`${email} 同步${enabled ? "已放开" : "已停用"}`);
+    toast(`${email} 同步${enabled ? "已放开" : "已停用"}`, false, enabled ? "check" : "ban");
     refresh();
   } catch (e) {
     toast("操作失败:" + e.message, true);
@@ -463,7 +532,7 @@ async function revoke(email) {
   if (!confirm(`吊销 ${email} 的全部登录令牌?该用户所有设备将被强制下线。`)) return;
   try {
     const r = await api(`/api/admin/users/${encodeURIComponent(email)}/revoke`, { method: "POST" });
-    toast(`已吊销 ${r.revoked} 个令牌`);
+    toast(`已吊销 ${email} 的 ${r.revoked} 个登录令牌`, false, "log-out");
     refresh();
   } catch (e) {
     toast("操作失败:" + e.message, true);
@@ -475,8 +544,7 @@ async function loadUsage(email, btn) {
   try {
     const u = await api(`/api/admin/users/${encodeURIComponent(email)}/usage`);
     btn.closest(".usage-cell").innerHTML =
-      `<span style="font-family:var(--mono);font-size:12px;color:var(--text)">${fmtBytes(u.bytes)}</span>` +
-      `<span class="mono" style="margin-left:8px">${u.objects} objs</span>`;
+      `<span class="mono" style="color:var(--text)">${fmtBytes(u.bytes)} · ${u.objects} objs</span>`;
   } catch (e) {
     btn.textContent = "查看";
     toast("用量获取失败:" + e.message, true);

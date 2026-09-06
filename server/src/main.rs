@@ -577,6 +577,8 @@ async fn admin_stats(
         "activeTokens": tokens,
         "bucket": state.cfg.s3_bucket,
         "endpoint": state.cfg.s3_endpoint,
+        // 控制台据此显示凭据模式徽章(STS 限权 / 共享回退)
+        "stsMode": state.cfg.sts_mode,
     })))
 }
 
@@ -826,10 +828,7 @@ async fn admin_list_users(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let key = headers.get("x-admin-key").and_then(|v| v.to_str().ok()).unwrap_or("");
-    if key.is_empty() || key != state.cfg.admin_key {
-        return Err(err(StatusCode::UNAUTHORIZED, "unauthorized", "管理密钥错误"));
-    }
+    require_admin(&state, &headers)?;
     let conn = state.db.lock().unwrap();
     let mut stmt = conn
         .prepare("SELECT id, email, sync_enabled, created_at FROM users ORDER BY created_at")
