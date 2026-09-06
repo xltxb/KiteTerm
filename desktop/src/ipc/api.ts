@@ -65,6 +65,8 @@ export interface KiteIpc {
   // ---- sessions / terminal ----
   /** password 仅在主机未配置密钥时需要;错误消息含 PASSWORD_REQUIRED / HOSTKEY_CHANGED 标记 */
   openSession(hostId: string, password?: string): Promise<SessionInfo>;
+  /** 打开本地终端(本机默认 shell) */
+  openLocalSession(): Promise<SessionInfo>;
   /** 主机密钥指纹变更后用户确认信任(清除旧记录,下次连接重新 TOFU) */
   trustHostKey(hostId: string): Promise<void>;
   writeSession(id: string, data: string): Promise<void>;

@@ -91,6 +91,7 @@ export interface SessionInfo {
   rows: number;
   recording: boolean;
   recordingSince: number | null;
+  kind: "ssh" | "local";
 }
 
 export interface FileEntry {
