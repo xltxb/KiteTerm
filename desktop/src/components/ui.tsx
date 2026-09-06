@@ -112,9 +112,18 @@ export function Segmented<T extends string>({
   );
 }
 
-export function Progress({ value }: { value: number }) {
+export function Progress({
+  value,
+  className,
+  style,
+}: {
+  value: number;
+  /** 追加修饰类,如 "thin"(细条,填充色取 currentColor,配合 style.color 换色) */
+  className?: string;
+  style?: CSSProperties;
+}) {
   return (
-    <div className="progress">
+    <div className={`progress${className ? ` ${className}` : ""}`} style={style}>
       <div style={{ width: `${Math.max(0, Math.min(100, value))}%` }} />
     </div>
   );
