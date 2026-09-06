@@ -3,13 +3,13 @@
 // `fetchMock`,改用 `vi.stubGlobal("fetch", ...)` 拦截出站请求 —— 已用一个临时用例验证过
 // 这在本插件下对 Worker 的出站 fetch(包括经 `exports.default.fetch` 触发的路由内部调用)
 // 同样生效,故路由级用例与单元级用例都用这一套。
-// R2 场景需要 R2_ACCOUNT_ID / R2_API_TOKEN 两个 env 绑定,而 vitest 的全局 binding
+// R2 场景需要 R2_API_TOKEN(R2_ACCOUNT_ID 可留空由 endpoint 解析)env 绑定,而 vitest 的全局 binding
 // 没法按用例覆盖,所以 R2 / 通用 STS 的凭据换取直接单元调用 `issueCredentials`,
 // 传入自定义 env 对象;检查顺序、共享回退等经 HTTP 路由验证。
 import { env, exports } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Env } from "../src/env";
-import { issueCredentials, isR2Endpoint, StsError } from "../src/creds";
+import { issueCredentials, isR2Endpoint, r2AccountId, StsError } from "../src/creds";
 import { probe, type StorageConfig } from "../src/storage";
 
 const base = "https://kite.test";
@@ -70,6 +70,16 @@ describe("isR2Endpoint", () => {
     expect(isR2Endpoint("https://acct123.r2.cloudflarestorage.com")).toBe(true);
     expect(isR2Endpoint("https://s3.amazonaws.com")).toBe(false);
     expect(isR2Endpoint("not a url")).toBe(false);
+  });
+});
+
+describe("r2AccountId", () => {
+  it("从 R2 endpoint 的首段子域解析账号 ID,含 jurisdiction 端点;非 R2 返回 undefined", () => {
+    expect(r2AccountId("https://acct123.r2.cloudflarestorage.com")).toBe("acct123");
+    expect(r2AccountId("https://acct123.eu.r2.cloudflarestorage.com")).toBe("acct123");
+    expect(r2AccountId("https://s3.amazonaws.com")).toBeUndefined();
+    expect(r2AccountId("https://r2.cloudflarestorage.com")).toBeUndefined();
+    expect(r2AccountId("not a url")).toBeUndefined();
   });
 });
 
@@ -136,7 +146,27 @@ describe("issueCredentials —— R2 临时凭据(单元调用,注入 R2_ACCOUNT
     warn.mockRestore();
   });
 
-  it("endpoint 是 R2 但缺 R2_ACCOUNT_ID/R2_API_TOKEN → 落到通用 STS(不会去请求 api.cloudflare.com)", async () => {
+  it("R2_ACCOUNT_ID 为空时从 endpoint 解析账号 ID;显式设置时以显式值为准", async () => {
+    const urls: string[] = [];
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+      urls.push(fakeRequestUrl(input));
+      return new Response(
+        JSON.stringify({ success: true, result: { accessKeyId: "ak", secretAccessKey: "sk", sessionToken: "st" } }),
+        { status: 200 },
+      );
+    });
+    const cfg: StorageConfig = { ...baseCfg, endpoint: "https://fromhost.r2.cloudflarestorage.com" };
+    await issueCredentials(cfg, { R2_ACCOUNT_ID: "", R2_API_TOKEN: "tok" } as unknown as Env, "user-1");
+    await issueCredentials(cfg, { R2_API_TOKEN: "tok" } as unknown as Env, "user-1");
+    await issueCredentials(cfg, { R2_ACCOUNT_ID: "explicit", R2_API_TOKEN: "tok" } as unknown as Env, "user-1");
+    expect(urls).toEqual([
+      "https://api.cloudflare.com/client/v4/accounts/fromhost/r2/temp-access-credentials",
+      "https://api.cloudflare.com/client/v4/accounts/fromhost/r2/temp-access-credentials",
+      "https://api.cloudflare.com/client/v4/accounts/explicit/r2/temp-access-credentials",
+    ]);
+  });
+
+  it("endpoint 是 R2 但缺 R2_API_TOKEN → 落到通用 STS(不会去请求 api.cloudflare.com)", async () => {
     vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
       expect(fakeRequestUrl(input)).not.toContain("api.cloudflare.com");
       const xml =

@@ -45,7 +45,7 @@ npx wrangler tail   # 看首个请求日志,确认部署成功
 | `S3_PREFIX` | var | 空 | 对象路径前缀,规范化后必以 `/` 结尾 |
 | `S3_PATH_STYLE` | var | `on` | MinIO/自建网关需开启;AWS S3/R2 关闭(填 `off`) |
 | `KITE_STS` | var | `auto` | `auto`(优先限权临时凭据,失败回退共享凭据)/`require`(失败即报错,生产建议)/`off`(直接共享凭据) |
-| `R2_ACCOUNT_ID` | var | 空 | R2 临时凭据 API 用,仅 R2 端点需要 |
+| `R2_ACCOUNT_ID` | var | 空 | R2 临时凭据 API 用;留空则从 R2 endpoint 子域自动解析,仅需显式覆盖时填写 |
 | `KITE_SMTP_FROM` | var | 空 | Resend 发信人地址 |
 | `KITE_ADMIN_KEY` | secret | — | 管理控制台/管理 API 密钥,`X-Admin-Key` 头 |
 | `S3_ACCESS_KEY` | secret | — | S3 Access Key |

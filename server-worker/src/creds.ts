@@ -30,6 +30,17 @@ export function isR2Endpoint(endpoint: string): boolean {
   }
 }
 
+/**
+ * 从 R2 endpoint 解析账号 ID:`<accountId>.r2.cloudflarestorage.com` 或带 jurisdiction 的
+ * `<accountId>.eu.r2.cloudflarestorage.com`,取 host 的首段子域。非 R2 端点返回 undefined。
+ */
+export function r2AccountId(endpoint: string): string | undefined {
+  if (!isR2Endpoint(endpoint)) return undefined;
+  const host = new URL(endpoint).host;
+  const first = host.split(".")[0];
+  return first && first !== "r2" ? first : undefined;
+}
+
 function sharedCreds(cfg: StorageConfig, userId: string): Creds {
   return {
     endpoint: cfg.endpoint,
@@ -48,9 +59,9 @@ function sharedCreds(cfg: StorageConfig, userId: string): Creds {
  * 只对通用 STS 分支生效,对 R2 分支没有意义 —— R2 侧统一走 Cloudflare 这份临时凭据接口
  * 固定的 1 小时,不做 900s/3600s 的区分)。
  */
-async function r2TempCredentials(cfg: StorageConfig, env: Env, userId: string): Promise<Creds> {
+async function r2TempCredentials(cfg: StorageConfig, env: Env, accountId: string, userId: string): Promise<Creds> {
   const prefix = userPrefix(cfg, userId);
-  const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${env.R2_ACCOUNT_ID}/r2/temp-access-credentials`, {
+  const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}/r2/temp-access-credentials`, {
     method: "POST",
     headers: {
       authorization: `Bearer ${env.R2_API_TOKEN}`,
@@ -168,8 +179,10 @@ async function stsAssumeRole(cfg: StorageConfig, userId: string, durationSecs: n
  * (`AssumeRole` 的 `DurationSeconds`);R2 分支固定 1 小时,见 `r2TempCredentials` 的注释。
  */
 async function rawTempCredentials(cfg: StorageConfig, env: Env, userId: string, durationSecs: number): Promise<Creds> {
-  if (isR2Endpoint(cfg.endpoint) && env.R2_ACCOUNT_ID && env.R2_API_TOKEN) {
-    return r2TempCredentials(cfg, env, userId);
+  // R2_ACCOUNT_ID 未显式设置时,从 endpoint 的子域解析(账号 ID 本就写在 R2 域名里)
+  const accountId = env.R2_ACCOUNT_ID || r2AccountId(cfg.endpoint);
+  if (accountId && isR2Endpoint(cfg.endpoint) && env.R2_API_TOKEN) {
+    return r2TempCredentials(cfg, env, accountId, userId);
   }
   return stsAssumeRole(cfg, userId, durationSecs);
 }
