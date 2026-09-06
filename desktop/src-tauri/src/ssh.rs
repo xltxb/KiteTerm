@@ -859,6 +859,11 @@ async fn handle_zmodem(
             false
         }
         TransferEnd::Completed(Err(e)) => {
+            // 防御性收尾:receive 的传输层错误经 `?` 上抛时可能未走到其内部的 finish 分支
+            // (仅 unexpected-EOF / 过量 CRC 路径会 finish),否则 job 会永久停在 running。
+            // 在此接管点补一次 finish(false);JobSink::finish 在无 job id 时早退、对已失败 job
+            // 重复置失败也无害,故幂等安全。
+            sink.finish(false, Some(e.to_string()));
             emit_line(app, id, &format!("ZMODEM 传输失败: {e}"));
             false
         }
