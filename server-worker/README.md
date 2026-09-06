@@ -92,11 +92,11 @@ S3_SECRET_KEY=devsecretkey
 
 `/admin` 是内嵌的管理控制台静态页,构建/开发/部署前都会先跑 `pnpm sync-admin`(`scripts/sync-admin.sh`),从 `server/src/admin.html` 复制到 `server-worker/public/`,保持前端单一来源、不手改。
 
-`pnpm-workspace.yaml` 仅用于 pnpm 的 build 脚本审批记录(`onlyBuiltDependencies`),与 monorepo 结构无关。
+`pnpm-workspace.yaml` 仅用于 pnpm 的 build 脚本审批记录(`allowBuilds`),与 monorepo 结构无关。
 
 ## 从 VPS 版(`server/`)迁移
 
-- **口令必须重设**:VPS 版用 Argon2id,这里用 PBKDF2-SHA256(600000 轮),两种哈希互不兼容。迁移用户数据后,老用户首次登录会因哈希格式不认得而失败;需要引导其走「忘记密码」邮箱验证码重设,或管理员在控制台手工标记后让用户重新注册。当前实现没有自动识别 `argon2$` 前缀并转发校验的兼容层。
+- **口令必须重设**:VPS 版用 Argon2id,这里用 PBKDF2-SHA256(600000 轮),两种哈希互不兼容。迁移用户数据后,老用户首次登录会因哈希格式不认得而失败;两版都没有「忘记密码」找回接口,管理控制台也没有删除用户的入口(`/api/register` 用 `INSERT OR IGNORE` 按邮箱去重,只清空 `password_hash` 并不能让原邮箱重新注册),需要管理员直接在 D1 执行 SQL 删除该用户所在行(如 `wrangler d1 execute kite-server --remote --command "DELETE FROM users WHERE email='...'"`),再引导其用同一邮箱重新注册。当前实现也没有自动识别 `argon2$` 前缀并转发校验的兼容层。
 - **数据迁移**(可选):`sqlite3 kite-server.db .dump` 去掉 `CREATE TABLE` 只留 `INSERT`,`wrangler d1 execute kite-server --remote --file dump.sql` 导入 D1。
 - **对象数据**:桶内对象是客户端主密钥加密的密文,原样复制到 R2 即可(如 `rclone copy`),`S3_PREFIX` 保持一致。
 
@@ -107,3 +107,5 @@ S3_SECRET_KEY=devsecretkey
 - **口令哈希算法与 VPS 版不同**:PBKDF2-SHA256(60 万轮)而非 Argon2id,见上文「迁移」。
 - **S3 Secret 与 TOTP 密钥明文落 D1**:与 VPS 版明文放环境变量/SQLite 的强度一致,不是本版本引入的新风险,但同样需要限制谁能访问 D1 控制台。
 - **R2 临时凭据 TTL 固定 1 小时**:`ttlSeconds: 3600` 写死在 `src/creds.ts`,未做成可配置项(R2 API 允许 15 分钟 ~ 7 天)。
+- **`authorization` 头的 `bearer` 大小写宽松**:`/^Bearer\s+/i` 不区分大小写匹配前缀;VPS 版(`server/src/main.rs`)用 `strip_prefix("Bearer ")` 严格匹配大小写与单个空格。
+- **缺字段/类型错误的请求体返回 400 而非 422**:本版本手工校验并统一走 `{error:{code,message}}` 的 400;VPS 版用 axum 的 `Json<T>` 提取器,反序列化失败时框架默认返回 422 Unprocessable Entity。

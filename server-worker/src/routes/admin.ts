@@ -124,7 +124,10 @@ adminRoutes.post("/api/admin/users/:email/sync", async (c) => {
   const rawEmail = c.req.param("email");
   const normalizedEmail = rawEmail.trim().toLowerCase();
   const body = await c.req.json<{ enabled?: boolean }>().catch(() => ({}) as Record<string, unknown>);
-  const enabled = body.enabled === true;
+  if (typeof body.enabled !== "boolean") {
+    return apiError(c, 400, "INVALID_BODY", "enabled 必须是布尔值");
+  }
+  const enabled = body.enabled;
   const res = await c.env.DB.prepare("UPDATE users SET sync_enabled = ?2 WHERE email = ?1").bind(normalizedEmail, enabled ? 1 : 0).run();
   if ((res.meta.changes ?? 0) === 0) {
     return apiError(c, 404, "not_found", "用户不存在");

@@ -91,12 +91,16 @@ export async function totpCodeAt(secretB32: string, ts: number): Promise<string>
   return String(await hotp(base32Decode(secretB32), Math.floor(ts / 30))).padStart(6, "0");
 }
 
-/** 允许前后各一个时间步(±30 s)的时钟漂移;非 6 位数字直接判否 */
+/** 允许前后各一个时间步(±30 s)的时钟漂移;非 6 位数字直接判否;非法密钥(空/非 base32)一律判否而非抛错 */
 export async function totpVerify(secretB32: string, code: string, now: number): Promise<boolean> {
   code = code.trim();
   if (!/^\d{6}$/.test(code)) return false;
-  for (const d of [-1, 0, 1]) if ((await totpCodeAt(secretB32, now + d * 30)) === code) return true;
-  return false;
+  try {
+    for (const d of [-1, 0, 1]) if ((await totpCodeAt(secretB32, now + d * 30)) === code) return true;
+    return false;
+  } catch {
+    return false;
+  }
 }
 
 export const otpauthUrl = (secret: string, email: string) =>

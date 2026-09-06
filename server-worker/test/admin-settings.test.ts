@@ -105,4 +105,18 @@ describe("admin settings", () => {
     // SQL 匹配用归一化(trim+小写)后的邮箱,但响应体 "email" 是原始路径参数 "A@X.COM"
     expect(j).toMatchObject({ ok: true, email: "A@X.COM", syncEnabled: true });
   });
+
+  it("设置同步开关:enabled 不是布尔值 → 400 INVALID_BODY", async () => {
+    await env.DB.prepare(
+      "INSERT INTO users (id, email, password_hash, created_at) VALUES ('u2', 'b@x.com', 'hash', 0)",
+    ).run();
+    const r = await exports.default.fetch(`${base}/api/admin/users/b%40x.com/sync`, {
+      method: "POST",
+      headers: adminHeaders,
+      body: JSON.stringify({ enabled: "yes" }),
+    });
+    expect(r.status).toBe(400);
+    const j = await r.json() as Record<string, unknown>;
+    expect(j).toMatchObject({ error: { code: "INVALID_BODY", message: "enabled 必须是布尔值" } });
+  });
 });

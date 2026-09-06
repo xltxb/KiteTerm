@@ -2,8 +2,16 @@
 // 小规模自建没有邮件服务时,管理员在控制台也能直接「标记已验证」。
 import type { Env } from "./env";
 
-/** 生成 6 位数字验证码(可能带前导零) */
-export const newCode = () => String(Math.floor(Math.random() * 1_000_000)).padStart(6, "0");
+/** 生成 6 位数字验证码(可能带前导零)。用 CSPRNG 而非 Math.random(),并丢弃靠近 2^32 上界的样本以消除取模偏置 */
+export function newCode(): string {
+  const buf = new Uint32Array(1);
+  let v: number;
+  do {
+    crypto.getRandomValues(buf);
+    v = buf[0];
+  } while (v >= 4_294_000_000); // 去掉取模偏置
+  return String(v % 1_000_000).padStart(6, "0");
+}
 
 /** 发送邮箱验证码;失败抛错,调用方按语义映射为 502 MAIL_ERROR 或忽略(注册路径走 waitUntil) */
 export async function sendCode(env: Env, to: string, code: string): Promise<void> {

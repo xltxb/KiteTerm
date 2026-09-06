@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "description": "KiteTerm — 桌面端 SSH 终端(desktop/)与管理系统(server/)",
+  "packageManager": "pnpm@10.33.2",
   "scripts": {
     "install:desktop": "pnpm -C desktop install",
     "dev": "pnpm -C desktop dev",

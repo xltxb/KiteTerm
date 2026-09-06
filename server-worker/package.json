@@ -2,6 +2,7 @@
   "name": "kite-server-worker",
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@10.33.2",
   "scripts": {
     "sync-admin": "sh scripts/sync-admin.sh",
     "dev": "pnpm sync-admin && wrangler dev --local",

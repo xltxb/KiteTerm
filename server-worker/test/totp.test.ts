@@ -34,6 +34,12 @@ describe("totp", () => {
     expect(await totpVerify(secret, "abcdef", now)).toBe(false);
   });
 
+  it("非法密钥(非 base32 字符 / 空字符串)一律返回 false 而非抛错", async () => {
+    const now = 1_700_000_000;
+    expect(await totpVerify("!!!", "123456", now)).toBe(false);
+    expect(await totpVerify("", "123456", now)).toBe(false);
+  });
+
   it("otpauthUrl 格式正确", () => {
     const secret = newTotpSecret();
     expect(otpauthUrl(secret, "a@b.c")).toBe(
