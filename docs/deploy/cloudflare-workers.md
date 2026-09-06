@@ -1,6 +1,6 @@
 # KiteTerm 管理平台 —— Cloudflare Workers 部署方案
 
-> 状态:方案(2026-09-06)。现有 `server/`(Rust axum + SQLite)保持为 VPS 部署形态;Workers 形态是**同一 API 契约的另一实现**,放在新目录 `server-worker/`,桌面端零改动。
+> 状态:**已实现**(2026-09-06)。现有 `server/`(Rust axum + SQLite)保持为 VPS 部署形态;Workers 形态是**同一 API 契约的另一实现**,放在 `server-worker/`,桌面端零改动。全部 26 条路由、D1 迁移、KV 限流、PBKDF2/TOTP、Resend/日志兜底邮件、S3 存储配置与探测、R2 临时凭据/通用 STS/共享凭据回退均已落地;`pnpm test` 79 用例、`pnpm typecheck` 通过。初始化步骤、vars/secrets 清单、R2 令牌申请、自定义域、迁移与已知限制见 `server-worker/README.md`(本文档保留设计取舍与背景,操作以该 README 为准)。
 
 ## 1. 结论
 
@@ -29,19 +29,30 @@
 ```
 server-worker/
   wrangler.toml
-  package.json          hono, aws4fetch, otpauth(或自写 HMAC), vitest, @cloudflare/vitest-pool-workers
+  package.json            hono, aws4fetch, vitest, @cloudflare/vitest-plugin
   migrations/0001_init.sql
-  public/admin.html     ← 复用 server/src/admin.html(构建时复制,保持单一来源)
-  src/index.ts          Hono app,路由与现有 /api/* 一一对应
-  src/features.ts       11 项开关注册表(与 server/src/features.rs 同表)
-  src/storage.ts        存储配置读写、prefix 校验、aws4fetch 探测
-  src/creds.ts          R2 临时凭据 / 共享凭据回退
-  src/auth.ts           PBKDF2、令牌、TOTP、限流
-  src/mail.ts           Resend
-  test/*.test.ts        用 vitest-pool-workers 跑在 workerd 里,直连 D1/KV 的本地实现
+  scripts/sync-admin.sh   复制 server/src/admin.html → public/(admin.html + index.html),保持单一来源
+  public/                 sync-admin 生成,不入库
+  src/index.ts            Hono app 装配 + scheduled(每日清理过期令牌,替代 Rust 版按需过滤)
+  src/env.ts              Env 类型 + featureGating/registrationDefault
+  src/http.ts             apiError/requireAdmin/nowTs/clientIp/bearerToken
+  src/settings.ts         platform_settings 键值读写
+  src/features.ts         11 项开关注册表(与 server/src/features.rs 同表)
+  src/crypto.ts           PBKDF2 口令哈希、TOTP(RFC 6238)、base32、常量时间比较
+  src/auth.ts             令牌签发、authenticate、邀请码
+  src/ratelimit.ts        KV 滑动窗口限流
+  src/storage.ts          存储配置读写、prefix 校验、aws4fetch 探测(probe)/ 用量统计
+  src/creds.ts            R2 临时凭据 / 通用 STS AssumeRole / 共享凭据回退
+  src/mail.ts             Resend,未配置时验证码打日志
+  src/routes/public.ts    /api/health、/api/features、/api/register/policy
+  src/routes/account.ts   注册/登录/登出/me/同步凭据/邮箱验证/2FA(8 条)
+  src/routes/admin.ts     设置/邀请码/用户/统计/存储配置与探测(12 条)
+  test/*.test.ts          @cloudflare/vitest-plugin 跑在 workerd 里,直连本地 D1/KV(79 用例)
 ```
 
-## 4. wrangler.toml(草案)
+## 4. wrangler.toml
+
+现状(`server-worker/wrangler.toml`),`database_id`/`kv id` 两处占位需在 `wrangler d1 create` / `wrangler kv namespace create RATE` 后填入实际输出:
 
 ```toml
 name = "kite-server"
@@ -55,25 +66,31 @@ directory = "./public"
 [[d1_databases]]
 binding = "DB"
 database_name = "kite-server"
-database_id = "<wrangler d1 create 输出>"
+database_id = "00000000-0000-0000-0000-000000000000"   # wrangler d1 create kite-server 后替换
 
 [[kv_namespaces]]
 binding = "RATE"
-id = "<wrangler kv namespace create RATE 输出>"
+id = "00000000000000000000000000000000"                 # wrangler kv namespace create RATE 后替换
+
+[triggers]
+crons = ["0 4 * * *"]
 
 [vars]
-KITE_REGISTRATION = "invite"
+KITE_REGISTRATION = "open"
 KITE_FEATURE_GATING = "off"
 KITE_REGISTER_LIMIT = "5"
-S3_ENDPOINT = "https://<account_id>.r2.cloudflarestorage.com"
+S3_ENDPOINT = ""
 S3_BUCKET = "kite-sync"
 S3_REGION = "auto"
+S3_PREFIX = ""
 S3_PATH_STYLE = "on"
-KITE_STS = "require"           # R2 走临时凭据;非 R2 存储可设 auto
-R2_ACCOUNT_ID = "<account_id>"
+KITE_STS = "auto"
+R2_ACCOUNT_ID = ""
+KITE_SMTP_FROM = ""
+# secrets(wrangler secret put):KITE_ADMIN_KEY S3_ACCESS_KEY S3_SECRET_KEY R2_API_TOKEN RESEND_API_KEY
 ```
 
-密钥用 `wrangler secret put` 注入:`KITE_ADMIN_KEY`、`S3_ACCESS_KEY`、`S3_SECRET_KEY`、`R2_API_TOKEN`(仅需 R2 临时凭据签发权限)、`RESEND_API_KEY`、`KITE_SMTP_FROM`(发件人,可放 vars)。
+`KITE_SMTP_FROM`(Resend 发件人地址)与 `R2_ACCOUNT_ID` 是明文 `vars`,不是 secret;生产环境建议把 `KITE_REGISTRATION` 改回 `invite`、`KITE_STS` 改 `require`(R2 场景),`S3_ENDPOINT`/`R2_ACCOUNT_ID` 填实际值。密钥清单与 R2 两种令牌的区别见 `server-worker/README.md`。
 
 ## 5. 接口对照
 
@@ -117,26 +134,32 @@ CREATE TABLE email_codes (user_id TEXT PRIMARY KEY, code TEXT NOT NULL, expires_
 
 ## 7. 部署步骤
 
+实际脚本名与顺序(`package.json` scripts,与 `.github/workflows/worker-deploy.yml` 一致):
+
 ```bash
 cd server-worker && pnpm install
-wrangler login
-wrangler d1 create kite-server                 # 把 database_id 填进 wrangler.toml
-wrangler kv namespace create RATE              # 把 id 填进 wrangler.toml
-wrangler r2 bucket create kite-sync
-wrangler d1 migrations apply kite-server --remote
-for s in KITE_ADMIN_KEY S3_ACCESS_KEY S3_SECRET_KEY R2_API_TOKEN RESEND_API_KEY; do wrangler secret put $s; done
-pnpm test && wrangler deploy
-wrangler tail                                   # 看首个请求日志
+npx wrangler login
+npx wrangler d1 create kite-server              # 把 database_id 填进 wrangler.toml
+npx wrangler kv namespace create RATE           # 把 id 填进 wrangler.toml
+npx wrangler r2 bucket create kite-sync
+npx wrangler d1 migrations apply kite-server --remote   # 等价于 pnpm migrate:remote
+for s in KITE_ADMIN_KEY S3_ACCESS_KEY S3_SECRET_KEY R2_API_TOKEN RESEND_API_KEY; do
+  npx wrangler secret put $s
+done
+pnpm test && pnpm deploy   # deploy 脚本内部先跑 pnpm sync-admin 再 wrangler deploy
+npx wrangler tail          # 看首个请求日志
 ```
 
-R2 的 S3 API 凭据:在 Cloudflare 面板「R2 → 管理 API 令牌」创建一对只限 `kite-sync` 桶的 Access Key,填 `S3_ACCESS_KEY/S3_SECRET_KEY`;`R2_API_TOKEN` 是另一个 API Token,只勾「Workers R2 Storage: Edit」用于签发临时凭据。
+之后的部署由 CI 完成:打 tag `worker-v*`(或手动触发 `worker-deploy` workflow)即依次执行
+`pnpm install --frozen-lockfile → pnpm test → pnpm typecheck → pnpm sync-admin → wrangler d1 migrations apply --remote → wrangler deploy`,
+`CLOUDFLARE_API_TOKEN`/`CLOUDFLARE_ACCOUNT_ID` 取自仓库 secrets。本机没有登录态,不要在本地执行 `wrangler deploy` 等 `--remote` 命令。
 
-自定义域:`wrangler.toml` 加 `routes = [{ pattern = "kite.example.com", custom_domain = true }]`,桌面端「设置 → 管理平台」填 `https://kite.example.com`。
+R2 的 S3 API 凭据与 `R2_API_TOKEN` 的区别、自定义域配置、本地开发与测试见 `server-worker/README.md`。
 
 ## 8. 从 VPS 版迁移(可选)
 
 - 数据:`sqlite3 kite-server.db .dump` 去掉 `CREATE TABLE`,只留 `INSERT`,`wrangler d1 execute kite-server --remote --file dump.sql`。
-- 口令:Argon2 哈希无法在 Workers 内校验(CPU 与 WASM 体积都不划算)。两种做法:① 迁移后要求用户重设密码(登录时对 `argon2$` 前缀的哈希返回 `PASSWORD_RESET_REQUIRED`,走邮件验证码重设);② 迁移窗口期内 VPS 与 Worker 并跑,Worker 对 Argon2 用户反向调用 VPS `/api/login` 校验并顺手改写成 PBKDF2。
+- 口令:Workers 版用 PBKDF2-SHA256,VPS 版用 Argon2id,两种哈希互不兼容,当前实现**没有**识别旧哈希前缀并转发校验的兼容层——迁移后的用户用旧密码登录会直接收到 `bad_credentials`。需要引导用户走邮箱验证码重设密码,或由管理员在控制台手工处理(见 `server-worker/README.md`「从 VPS 版迁移」)。
 - 桶内数据是客户端主密钥加密的密文,换到 R2 只需原样复制对象(`rclone copy`),`prefix` 保持一致。
 
 ## 9. 限制与成本

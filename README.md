@@ -10,7 +10,7 @@
 | 组件 | 形态 | 说明 |
 |---|---|---|
 | **KiteTerm(APP)** | **macOS / Windows 桌面端** | 无 Web 版本 —— SSH/SFTP/密钥/同步能力均由本地 Rust 核心提供,前端只在 Tauri WebView 内运行;直接用浏览器打开开发服务器会显示提示页而非应用 |
-| **管理平台** | **Web** | `server/` 提供管理控制台(`/admin`)与账户、授权、凭据下发接口 |
+| **管理平台** | **Web** | `server/` 提供管理控制台(`/admin`)与账户、授权、凭据下发接口;也可部署到 Cloudflare Workers,见 `server-worker/README.md` |
 
 ## 技术栈
 
