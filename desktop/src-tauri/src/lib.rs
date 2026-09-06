@@ -9,6 +9,7 @@ pub mod models;
 mod monitor;
 mod recorder;
 pub mod rewrap;
+mod local;
 mod sftp;
 pub mod ssh;
 pub mod sync;
@@ -93,6 +94,7 @@ pub fn run() {
             commands::toggle_forward,
             commands::delete_forward,
             commands::session_open,
+            commands::local_session_open,
             commands::trust_host_key,
             commands::session_write,
             commands::session_resize,
