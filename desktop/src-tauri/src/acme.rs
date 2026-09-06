@@ -9,7 +9,6 @@ use russh_sftp::client::SftpSession;
 use tauri::{AppHandle, Emitter};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Notify;
-use tokio::task::JoinHandle;
 
 use instant_acme::{
     Account, AccountCredentials, AuthorizationStatus, ChallengeType, Identifier, LetsEncrypt,
@@ -28,29 +27,22 @@ use crate::vault::Vault;
 /// HTTP-01 校验文件默认写入的 Web 根目录。
 /// IssueRequest 目前没有 webroot 字段(该模型被前端复用,不改签名),
 /// 因此取常见的 Nginx/Apache 默认站点根;如需自定义,后续可给 IssueRequest 增补字段。
-#[allow(dead_code)]
 const DEFAULT_WEBROOT: &str = "/var/www/html";
 /// reload_cmd 为空时的默认服务重载命令
-#[allow(dead_code)]
 const DEFAULT_RELOAD_CMD: &str = "sudo nginx -s reload";
 /// DNS-01 手动确认的等待超时(秒)
-#[allow(dead_code)]
 const DNS_CONFIRM_TIMEOUT_SECS: u64 = 300;
 /// 订单/证书轮询的超时(秒)
-#[allow(dead_code)]
 const POLL_TIMEOUT_SECS: u64 = 120;
 
 /// 跟踪进行中的签发/续期任务;续期守护单独 spawn
 #[derive(Default)]
-#[allow(dead_code)]
 pub struct CertManager {
-    pub jobs: Mutex<HashMap<String, JoinHandle<()>>>,
     /// DNS-01 手动校验的等待器:cert_id → Notify,由 confirm_dns 唤醒
     pub dns_waiters: Mutex<HashMap<String, Arc<Notify>>>,
 }
 
 /// 发送五步进度事件。事件名固定为 `cert://progress`,payload 携带 certId。
-#[allow(dead_code)]
 fn emit_progress(app: &AppHandle, cert_id: &str, step: Step, state: &str, error: Option<&str>) {
     let _ = app.emit(
         "cert://progress",
@@ -65,7 +57,6 @@ fn emit_progress(app: &AppHandle, cert_id: &str, step: Step, state: &str, error:
 }
 
 /// 唤醒等待 DNS-01 手动确认的签发流程
-#[allow(dead_code)]
 pub fn confirm_dns(manager: &CertManager, cert_id: &str) {
     let waiter = manager.dns_waiters.lock().unwrap().get(cert_id).cloned();
     if let Some(notify) = waiter {
@@ -76,7 +67,6 @@ pub fn confirm_dns(manager: &CertManager, cert_id: &str) {
 /// 失败时落库为 error 状态(尽力而为,忽略落库自身的错误)。
 /// 若该 cert_id 已存在(续期失败场景),保留原有到期时间与证书材料,仅改 state,
 /// 避免一次失败的续期把仍然有效的证书数据清空。
-#[allow(dead_code)]
 fn upsert_error(db: &Db, cert_id: &str, req: &IssueRequest, created_at: &str) {
     let row = match db.get_cert_full(cert_id) {
         Ok(mut existing) => {
@@ -105,7 +95,6 @@ fn upsert_error(db: &Db, cert_id: &str, req: &IssueRequest, created_at: &str) {
 }
 
 /// 从 deploy_path 推导同目录下另一文件的完整路径
-#[allow(dead_code)]
 fn sibling_path(path: &str, name: &str) -> String {
     match path.rfind('/') {
         Some(i) => format!("{}/{}", &path[..i], name),
@@ -114,7 +103,6 @@ fn sibling_path(path: &str, name: &str) -> String {
 }
 
 /// 取证书链 PEM 中的第一段(叶证书)
-#[allow(dead_code)]
 fn first_cert_pem(chain: &str) -> String {
     const END: &str = "-----END CERTIFICATE-----";
     match chain.find(END) {
@@ -124,7 +112,6 @@ fn first_cert_pem(chain: &str) -> String {
 }
 
 /// 解析叶证书 PEM 的 not_after,返回毫秒时间戳
-#[allow(dead_code)]
 fn parse_not_after_ms(chain_pem: &str) -> Result<i64> {
     let (_, pem) = parse_x509_pem(chain_pem.as_bytes())
         .map_err(|e| AppError(format!("解析证书 PEM 失败: {e}")))?;
@@ -135,7 +122,6 @@ fn parse_not_after_ms(chain_pem: &str) -> Result<i64> {
 }
 
 /// 复用 sftp.rs 的开会话方式,创建并写入一个远端文件
-#[allow(dead_code)]
 async fn sftp_upload(handle: &Handle<ClientHandler>, path: &str, data: &[u8]) -> Result<()> {
     let channel = handle
         .channel_open_session()
@@ -162,7 +148,6 @@ async fn sftp_upload(handle: &Handle<ClientHandler>, path: &str, data: &[u8]) ->
 /// ACME 签发:生成新 cert_id 后跑签发内核。首次签发入口。
 ///
 /// 步骤:Place(账户/订单/放置校验)→ Verify(CA 校验)→ Sign(签发)→ Upload(上传)→ Reload(重载)。
-#[allow(dead_code)]
 pub async fn issue(
     app: AppHandle,
     db: Arc<Db>,
@@ -179,7 +164,6 @@ pub async fn issue(
 /// 签发内核:issue(新 cert_id)与 renew(沿用已存 cert_id/created_at)共用,避免重复五步流程。
 ///
 /// 步骤:Place(账户/订单/放置校验)→ Verify(CA 校验)→ Sign(签发)→ Upload(上传)→ Reload(重载)。
-#[allow(dead_code)]
 #[allow(clippy::too_many_arguments)]
 async fn run_issue(
     app: AppHandle,
@@ -438,7 +422,6 @@ async fn run_issue(
 }
 
 /// 从已存 CertRow 重建 IssueRequest(纯函数,便于单测续期参数还原)
-#[allow(dead_code)]
 pub fn req_from_row(row: &CertRow) -> IssueRequest {
     IssueRequest {
         domains: row.domains.clone(),
@@ -452,7 +435,6 @@ pub fn req_from_row(row: &CertRow) -> IssueRequest {
 
 /// 续期:用库中已存参数重建 IssueRequest 后重跑签发内核,沿用原 cert_id 与 created_at 就地更新。
 /// 要求该 host 有活跃会话(内核门禁 get_handle → ERR_NO_SESSION)。
-#[allow(dead_code)]
 pub async fn renew(
     app: AppHandle,
     db: Arc<Db>,
@@ -467,7 +449,6 @@ pub async fn renew(
 }
 
 /// 尽力发起 ACME 网络吊销(需账户凭据 + 叶证书)。失败由调用方忽略。
-#[allow(dead_code)]
 async fn try_acme_revoke(vault: &Vault, acct_enc: &[u8], leaf_pem: &str) -> Result<()> {
     // 还原账户凭据(vault 解密 → AccountCredentials)
     let cred_json = vault.decrypt(acct_enc)?;
@@ -493,7 +474,6 @@ async fn try_acme_revoke(vault: &Vault, acct_enc: &[u8], leaf_pem: &str) -> Resu
 }
 
 /// 吊销:尽力调 ACME revoke(有账户凭据 + 叶证书时),网络吊销失败仅记录、不阻断,最终始终本地删除。
-#[allow(dead_code)]
 pub async fn revoke(db: Arc<Db>, vault: Arc<Vault>, cert_id: &str) -> Result<()> {
     if let Ok(row) = db.get_cert_full(cert_id) {
         if let (Some(acct_enc), Some(leaf_pem)) =
@@ -513,7 +493,6 @@ pub async fn revoke(db: Arc<Db>, vault: Arc<Vault>, cert_id: &str) -> Result<()>
 ///
 /// 注:私钥经 vault 加密存于 key_pem_enc,故本函数比 brief 里的签名多需 `vault` 参数用于解密;
 /// 否则无法拿到私钥,也就无法部署到其他主机。
-#[allow(dead_code)]
 pub async fn deploy(
     app: AppHandle,
     db: Arc<Db>,
@@ -581,7 +560,6 @@ pub async fn deploy(
 /// 续期守护:仿 ssh::spawn_latency_loop。每 12h 扫全部证书,对开启自动续期且进入续期窗口
 /// (≤30 天到期)者尝试续期。单张证书失败只落状态(仍有效→expiring,已过期→error)并 emit,
 /// 绝不 panic 整个任务;成功由 renew 就地更新为 active。
-#[allow(dead_code)]
 pub fn spawn_renew_loop(
     app: AppHandle,
     db: Arc<Db>,
@@ -625,24 +603,22 @@ pub fn spawn_renew_loop(
     });
 }
 
-#[allow(dead_code)]
 pub fn renew_due(not_after_ms: i64, now_ms: i64) -> bool {
     // 距到期 ≤ 30 天(含已过期)即应续期
     not_after_ms - now_ms <= 30 * 24 * 60 * 60 * 1000
 }
 
+/// 仅供单测使用(前端自行计算剩余天数);保留窄化 allow 而非放宽整模块
 #[allow(dead_code)]
 pub fn days_left(not_after_ms: i64, now_ms: i64) -> i64 {
     (not_after_ms - now_ms) / (24 * 60 * 60 * 1000)
 }
 
-#[allow(dead_code)]
 pub fn challenge_path(token: &str) -> String {
     format!("/.well-known/acme-challenge/{token}")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[allow(dead_code)]
 pub enum Step {
     Place,
     Verify,
@@ -651,7 +627,6 @@ pub enum Step {
     Reload,
 }
 
-#[allow(dead_code)]
 impl Step {
     pub fn as_index(self) -> u8 {
         match self {
