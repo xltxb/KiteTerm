@@ -17,12 +17,14 @@
     "@xterm/addon-webgl": "^0.18.0",
     "@xterm/xterm": "^5.5.0",
     "lucide-react": "^0.462.0",
+    "qrcode": "^1.5.4",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "zustand": "^5.0.8"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.9.6",
+    "@types/qrcode": "^1.5.6",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",

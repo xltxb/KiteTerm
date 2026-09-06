@@ -25,6 +25,8 @@ export function AccountCard() {
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [invite, setInvite] = useState("");
+  const [totp, setTotp] = useState("");
+  const [needTotp, setNeedTotp] = useState(false);
   const [busy, setBusy] = useState<"login" | "register" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showPlatform, setShowPlatform] = useState(false);
@@ -47,6 +49,20 @@ export function AccountCard() {
       setBusy(null);
     }
   };
+
+  const doLogin = () =>
+    run("login", async () => {
+      try {
+        await login(email.trim(), password, needTotp ? totp.trim() : undefined);
+      } catch (e) {
+        if (String(e).includes("TOTP_REQUIRED")) {
+          setNeedTotp(true);
+          setError("该账户已绑定双因素认证,请输入验证器里的 6 位动态码");
+          return;
+        }
+        throw e;
+      }
+    });
 
   if (account) return <AccountSummary account={account} />;
 
@@ -112,11 +128,22 @@ export function AccountCard() {
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && !isRegister && loginOn && email.trim() && password) {
-              void run("login", () => login(email.trim(), password));
+            if (e.key === "Enter" && !isRegister && loginOn && email.trim() && password && !needTotp) {
+              void doLogin();
             }
           }}
         />
+        {!isRegister && needTotp && (
+          <TextInput
+            label="动态验证码"
+            placeholder="6 位数字"
+            value={totp}
+            inputMode="numeric"
+            maxLength={6}
+            onChange={(e) => setTotp(e.target.value.replace(/\D/g, ""))}
+            onKeyDown={(e) => e.key === "Enter" && totp.length === 6 && void doLogin()}
+          />
+        )}
         {isRegister && (
           <TextInput
             label="确认密码"
@@ -182,8 +209,10 @@ export function AccountCard() {
           <Button
             variant="primary"
             loading={busy === "login"}
-            disabled={!loginOn || !email.trim() || !password || busy !== null}
-            onClick={() => void run("login", () => login(email.trim(), password))}
+            disabled={
+              !loginOn || !email.trim() || !password || busy !== null || (needTotp && totp.length !== 6)
+            }
+            onClick={() => void doLogin()}
           >
             登录
           </Button>
