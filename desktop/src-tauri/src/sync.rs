@@ -79,7 +79,13 @@ pub fn get_config(db: &Db) -> Result<SyncConfig> {
             access_key: String::new(),
             has_secret: false,
             has_master_key: false,
-            scopes: SyncScopes { hosts: true, keys: true, snippets: true, settings: false },
+            scopes: SyncScopes {
+                hosts: true,
+                keys: true,
+                snippets: true,
+                settings: false,
+                recordings: false,
+            },
             secret_key: None,
             master_password: None,
         },
@@ -244,10 +250,10 @@ pub fn restore_master_from_phrase(db: &Db, vault: &Vault, phrase: &str) -> Resul
     Ok(())
 }
 
-fn scope_allows(cfg: &SyncConfig, entity: &str) -> bool {
+fn scope_allows(cfg: &SyncConfig, flags: &crate::features::Features, entity: &str) -> bool {
     match entity {
         "host" | "forward" | "group" => cfg.scopes.hosts,
-        "key" => cfg.scopes.keys,
+        "key" => cfg.scopes.keys && flags.key_sync,
         "snippet" => cfg.scopes.snippets,
         "settings" => cfg.scopes.settings,
         _ => false,
@@ -338,7 +344,12 @@ fn apply_wire(db: &Db, vault: &Vault, wire: &WireOp) -> Result<()> {
 }
 
 /// 本地全量终态 → 压实快照(每实体一条,保留原 lamport/device 供 LWW 幂等合并)
-fn build_snapshot(db: &Db, vault: &Vault, cfg: &SyncConfig) -> Result<Snapshot> {
+fn build_snapshot(
+    db: &Db,
+    vault: &Vault,
+    cfg: &SyncConfig,
+    flags: &crate::features::Features,
+) -> Result<Snapshot> {
     let now = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
     let hosts = db.list_hosts()?;
     let snippets = db.list_snippets()?;
@@ -346,7 +357,7 @@ fn build_snapshot(db: &Db, vault: &Vault, cfg: &SyncConfig) -> Result<Snapshot> 
     let groups = db.list_groups()?;
     let mut entries = Vec::new();
     for (entity, entity_id, lamport, device_id, op) in db.list_sync_versions()? {
-        if !scope_allows(cfg, &entity) {
+        if !scope_allows(cfg, flags, &entity) {
             continue;
         }
         let payload = if op == "put" {
@@ -411,6 +422,7 @@ async fn pull_snapshot(
     bucket: &Bucket,
     cipher: &XChaCha20Poly1305,
     cfg: &SyncConfig,
+    flags: &crate::features::Features,
     prefix: &str,
 ) -> Result<()> {
     let snap_prefix = format!("{prefix}/snapshot/");
@@ -438,7 +450,7 @@ async fn pull_snapshot(
     let mut snap: Snapshot = serde_json::from_slice(&plain)?;
     snap.entries.sort_by_key(|e| e.lamport); // 兼容旧版未排序的快照
     for wire in &snap.entries {
-        if scope_allows(cfg, &wire.entity)
+        if scope_allows(cfg, flags, &wire.entity)
             && db.version_accept_remote(&wire.entity, &wire.entity_id, wire.lamport, &wire.device_id, &wire.op)?
         {
             apply_wire(db, vault, wire)?;
@@ -455,6 +467,7 @@ async fn maybe_compact(
     bucket: &Bucket,
     cipher: &XChaCha20Poly1305,
     cfg: &SyncConfig,
+    flags: &crate::features::Features,
     prefix: &str,
     me: &str,
     objects: Vec<(String, i64, String, String)>,
@@ -475,7 +488,7 @@ async fn maybe_compact(
     if candidates.is_empty() {
         return Ok(());
     }
-    let snapshot = build_snapshot(db, vault, cfg)?;
+    let snapshot = build_snapshot(db, vault, cfg, flags)?;
     let snap_key = format!("{prefix}/snapshot/{:020}.bin", snapshot.lamport);
     let blob = seal(cipher, &serde_json::to_vec(&snapshot)?, &snap_key)?;
     bucket
@@ -524,6 +537,7 @@ pub async fn sync_once(db: &Db, vault: &Vault) -> Result<()> {
     let (bucket, cfg, prefix) = open_bucket(db, vault).await?;
     let cipher = master_cipher(db, vault)?;
     let me = db.device_id();
+    let flags = crate::features::cached(db);
 
     db.bootstrap_oplog()?;
 
@@ -533,7 +547,7 @@ pub async fn sync_once(db: &Db, vault: &Vault) -> Result<()> {
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
     for row in db.oplog_after(pushed)? {
-        if scope_allows(&cfg, &row.entity) {
+        if scope_allows(&cfg, &flags, &row.entity) {
             let wire = to_wire(vault, &me, &row)?;
             let key = oplog_object_key(&prefix, &me, row.seq);
             let blob = seal(&cipher, &serde_json::to_vec(&wire)?, &key)?;
@@ -614,7 +628,7 @@ pub async fn sync_once(db: &Db, vault: &Vault) -> Result<()> {
     }
 
     // ---- 快照引导:先应用最新压实快照(新设备快速引导 / 补齐被压实历史)----
-    pull_snapshot(db, vault, &bucket, &cipher, &cfg, &prefix).await?;
+    pull_snapshot(db, vault, &bucket, &cipher, &cfg, &flags, &prefix).await?;
 
     // ---- pull:其他设备前缀,按游标增量下载并 LWW 合并 ----
     let list_prefix = format!("{prefix}/oplog/");
@@ -654,7 +668,7 @@ pub async fn sync_once(db: &Db, vault: &Vault) -> Result<()> {
             .and_then(|plain| serde_json::from_slice::<WireOp>(&plain).map_err(Into::into))
         {
             Ok(wire) => {
-                if scope_allows(&cfg, &wire.entity)
+                if scope_allows(&cfg, &flags, &wire.entity)
                     && db.version_accept_remote(
                         &wire.entity,
                         &wire.entity_id,
@@ -671,7 +685,70 @@ pub async fn sync_once(db: &Db, vault: &Vault) -> Result<()> {
         db.cursor_set(&dev, seq)?;
     }
 
+    // ---- 录制:与 oplog 无关的独立推拉(受同步范围与平台开关双重约束)----
+    sync_recordings(db, &bucket, &cipher, &cfg, &flags, &prefix).await?;
+
     // ---- 压实:早于阈值且已应用的条目并入快照后删除(文档 3.5)----
-    maybe_compact(db, vault, &bucket, &cipher, &cfg, &prefix, &me, seen_objects).await?;
+    maybe_compact(db, vault, &bucket, &cipher, &cfg, &flags, &prefix, &me, seen_objects).await?;
+    Ok(())
+}
+
+/// 录制文件同步:与 oplog 无关的独立推拉。
+/// 推:本地 sync_enabled 且未上传过(kv rec_pushed_{id})的 .cast + .meta;
+/// 拉:桶里有 .meta 而本地没有该 id 的,下载 .cast 到 data_dir/recordings/ 并入库。
+async fn sync_recordings(
+    db: &Db, bucket: &Bucket, cipher: &XChaCha20Poly1305, cfg: &SyncConfig,
+    flags: &crate::features::Features, prefix: &str,
+) -> Result<()> {
+    if !cfg.scopes.recordings || !flags.recording_sync {
+        return Ok(());
+    }
+    let dir = db.data_dir.join("recordings");
+    std::fs::create_dir_all(&dir)?;
+    let metas: std::collections::HashMap<String, (String, String, u64, String)> = db
+        .list_recordings()?
+        .into_iter()
+        .map(|r| (r.id, (r.session_host, r.name, r.duration_ms, r.started_at)))
+        .collect();
+    for (id, path, on) in db.recording_paths()? {
+        let mark = format!("rec_pushed_{id}");
+        if !on || db.kv_get(&mark)?.is_some() { continue; }
+        let Ok(bytes) = std::fs::read(&path) else { continue };
+        let cast_key = format!("{prefix}/recordings/{id}.cast");
+        let meta_key = format!("{prefix}/recordings/{id}.meta");
+        let (host, name, dur, started) = metas.get(&id).cloned().unwrap_or_default();
+        let meta = serde_json::json!({ "id": id, "sessionHost": host, "name": name, "durationMs": dur, "startedAt": started });
+        bucket.put_object(&cast_key, &seal(cipher, &bytes, &cast_key)?).await
+            .map_err(|e| AppError(format!("上传录制 {id} 失败: {e}")))?;
+        bucket.put_object(&meta_key, &seal(cipher, &serde_json::to_vec(&meta)?, &meta_key)?).await
+            .map_err(|e| AppError(format!("上传录制元数据 {id} 失败: {e}")))?;
+        db.kv_set(&mark, "1")?;
+    }
+    let list_prefix = format!("{prefix}/recordings/");
+    let listing = bucket.list(list_prefix.clone(), None).await
+        .map_err(|e| AppError(format!("列举录制失败: {e}")))?;
+    for page in listing {
+        for obj in page.contents {
+            let Some(id) = obj.key.strip_prefix(&list_prefix).and_then(|k| k.strip_suffix(".meta")) else { continue };
+            if db.recording_exists(id)? { continue; }
+            let meta_resp = bucket.get_object(&obj.key).await.map_err(|e| AppError(e.to_string()))?;
+            let Ok(meta) = unseal(cipher, meta_resp.bytes(), &obj.key)
+                .and_then(|p| serde_json::from_slice::<serde_json::Value>(&p).map_err(Into::into)) else { continue };
+            let cast_key = format!("{list_prefix}{id}.cast");
+            let cast_resp = bucket.get_object(&cast_key).await.map_err(|e| AppError(e.to_string()))?;
+            let Ok(plain) = unseal(cipher, cast_resp.bytes(), &cast_key) else { continue };
+            let local = dir.join(format!("{id}.cast"));
+            std::fs::write(&local, plain)?;
+            db.insert_recording_with_id(
+                id,
+                meta["sessionHost"].as_str().unwrap_or("远端"),
+                meta["name"].as_str().unwrap_or("云端录制"),
+                &local.to_string_lossy(),
+                meta["durationMs"].as_u64().unwrap_or(0),
+                meta["startedAt"].as_str().unwrap_or(""),
+            )?;
+            db.kv_set(&format!("rec_pushed_{id}"), "1")?;
+        }
+    }
     Ok(())
 }

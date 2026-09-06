@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Play } from "lucide-react";
 import { AiDock } from "@/components/AiDock";
 import { CastPlayer } from "@/components/CastPlayer";
+import { Switch } from "@/components/ui";
 import { fmtDuration } from "@/lib/format";
 import { useDataStore } from "@/stores/data";
 import { useFeaturesStore } from "@/stores/features";
@@ -24,6 +25,8 @@ export function RightDock() {
   const bump = useDataStore((s) => s.bumpSnippet);
   const [playRec, setPlayRec] = useState<Recording | null>(null);
   const aiOn = useFeaturesStore((s) => s.features.ai);
+  const recSyncOn = useFeaturesStore((s) => s.features.recordingSync);
+  const setRecordingSync = useDataStore((s) => s.setRecordingSync);
   // AI 关掉时页签消失,若当时正停在 AI 页就退回片段,避免右栏空白
   const tab = rightTab === "ai" && !aiOn ? "snip" : rightTab;
 
@@ -81,11 +84,17 @@ export function RightDock() {
                   {r.sessionHost} · {r.startedAt}
                 </div>
               </div>
+              <span
+                title={recSyncOn ? (r.syncEnabled ? "随云同步上传" : "仅本地") : "平台已禁止录制同步"}
+                style={{ opacity: recSyncOn ? 1 : 0.45 }}
+              >
+                <Switch on={r.syncEnabled && recSyncOn} onChange={(on) => recSyncOn && void setRecordingSync(r.id, on)} />
+              </span>
               <span className="mono fs-xs t-muted">{fmtDuration(r.durationMs)}</span>
             </div>
           ))}
           <div className="fs-xs t-faint lh-normal" style={{ padding: "4px 2px" }}>
-            录制以 asciicast 格式保存,可随会话云同步。
+            录制以 asciicast 格式保存;打开开关后随云同步上传(需在同步范围里启用「会话录制」)。
           </div>
         </div>
       )}

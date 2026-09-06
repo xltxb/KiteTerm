@@ -981,4 +981,35 @@ impl Db {
         )?;
         Ok(id)
     }
+
+    pub fn set_recording_sync(&self, id: &str, enabled: bool) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("UPDATE recordings SET sync_enabled = ?2 WHERE id = ?1", params![id, enabled as i64])?;
+        Ok(())
+    }
+
+    pub fn recording_exists(&self, id: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn.query_row("SELECT 1 FROM recordings WHERE id = ?1", [id], |_| Ok(())).optional()?.is_some())
+    }
+
+    /// 从云端拉下来的录制:沿用远端 id,标记为已同步
+    pub fn insert_recording_with_id(&self, id: &str, session_host: &str, name: &str, path: &str, duration_ms: u64, started_at: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO recordings (id, session_host, name, path, duration_ms, started_at, sync_enabled)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1)",
+            params![id, session_host, name, path, duration_ms as i64, started_at],
+        )?;
+        Ok(())
+    }
+
+    /// (id, path, sync_enabled) —— 同步上传用
+    pub fn recording_paths(&self) -> Result<Vec<(String, String, bool)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT id, path, sync_enabled FROM recordings")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? != 0)))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
 }

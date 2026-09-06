@@ -94,6 +94,7 @@ export interface KiteIpc {
   listRecordings(): Promise<Recording[]>;
   /** 返回 asciicast v2 原文(首行 header,随后事件行) */
   readRecording(id: string): Promise<string>;
+  setRecordingSync(id: string, enabled: boolean): Promise<void>;
 
   // ---- host latency ----
   onHostLatency(cb: (latency: Record<string, number | null>) => void): Unsubscribe;

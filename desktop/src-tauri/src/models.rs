@@ -179,6 +179,9 @@ pub struct SyncScopes {
     pub keys: bool,
     pub snippets: bool,
     pub settings: bool,
+    /// 会话录制(asciicast)是否参与同步:文件较大,默认关闭,需用户显式开启
+    #[serde(default)]
+    pub recordings: bool,
 }
 
 /// 同步配置:S3 端点与凭据由管理平台下发,本地只保留分项开关与主密码派生密钥。

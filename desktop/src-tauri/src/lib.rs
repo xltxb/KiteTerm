@@ -107,6 +107,7 @@ pub fn run() {
             commands::recording_stop,
             commands::recording_list,
             commands::recording_read,
+            commands::set_recording_sync,
             commands::monitor_samples,
             commands::sync_status,
             commands::sync_get_config,
