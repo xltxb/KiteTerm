@@ -46,7 +46,7 @@ function PlatformCard() {
     setBusy(true);
     setMsg(null);
     try {
-      await ipc.platformUrlSet(url.trim());
+      setUrl(await ipc.platformUrlSet(url));
       await refresh();
       const now = useFeaturesStore.getState().features;
       setMsg(
@@ -101,12 +101,12 @@ function PlatformCard() {
         <div className="grow lh-snug">
           <div className="w-semi fs-md t-strong">平台地址</div>
           <div className="fs-sm t-faint">
-            功能开关由管理平台下发。改完地址点「连接」即可重新拉取。
+            功能开关由管理平台下发。改完地址点「连接」即可重新拉取;公网地址必须走 https。
           </div>
         </div>
         <TextInput
           value={url}
-          placeholder="http://127.0.0.1:8787"
+          placeholder="https://m.kiteterm.com"
           onChange={(e) => setUrl(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && void save()}
           style={{ width: 240 }}

@@ -500,7 +500,8 @@ pub fn platform_url_get(state: State<AppState>) -> Result<String> {
 }
 
 #[tauri::command]
-pub fn platform_url_set(state: State<AppState>, url: String) -> Result<()> {
+/// 返回规范化后的地址,前端据此回填输入框
+pub fn platform_url_set(state: State<AppState>, url: String) -> Result<String> {
     crate::account::set_platform_url(&state.db, &url)
 }
 
