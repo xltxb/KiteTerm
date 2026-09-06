@@ -38,6 +38,7 @@ export function TerminalScreen() {
   const [, forceTick] = useState(0);
   const active = sessions.find((s) => s.id === activeId) ?? null;
   const setRightTab = useUiStore((s) => s.setRightTab);
+  const paletteOpen = useUiStore((s) => s.paletteOpen);
   const explain = useAiStore((s) => s.explain);
   const summarize = useAiStore((s) => s.summarize);
   const pendingAiInput = useSessionStore((s) => s.pendingAiInput);
@@ -91,7 +92,7 @@ export function TerminalScreen() {
       } else if (mod && (e.key === "w" || e.key === "W") && active) {
         e.preventDefault();
         void close(active.id);
-      } else if (mod && (e.key === "t" || e.key === "T")) {
+      } else if (mod && (e.key === "t" || e.key === "T") && !paletteOpen) {
         e.preventDefault();
         void openLocal();
       } else if (cmdOn && mod && e.shiftKey && (e.key === "a" || e.key === "A")) {
@@ -111,7 +112,7 @@ export function TerminalScreen() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, close, openLocal, cmdOn, diagOn, sumOn]);
+  }, [active, close, openLocal, cmdOn, diagOn, sumOn, paletteOpen]);
 
   return (
     <>
