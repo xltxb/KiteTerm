@@ -66,9 +66,11 @@ export function AiDock() {
                 终端内还可以:
                 <br />
                 <span className="mono t-accent">
-                  {diagOn && "⌘I 解释最近输出"}
-                  {sumOn && " · ⌘⇧S 摘要长输出"}
-                  {cmdOn && " · ⌘⇧A 生成命令"}
+                  {[
+                    diagOn && "⌘I 解释最近输出",
+                    sumOn && "⌘⇧S 摘要长输出",
+                    cmdOn && "⌘⇧A 生成命令",
+                  ].filter(Boolean).join(" · ")}
                 </span>
               </>
             )}
