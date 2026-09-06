@@ -2,6 +2,7 @@ import { Moon, PanelLeftClose, PanelLeftOpen, Sun } from "lucide-react";
 import type { ReactNode } from "react";
 import { KiteMark } from "@/components/KiteMark";
 import {
+  KtCerts,
   KtCommand,
   KtForward,
   KtHosts,
@@ -23,6 +24,7 @@ const NAV: { screen: Screen; label: string; icon: ReactNode }[] = [
   { screen: "hosts", label: "主机", icon: <KtHosts size={18} /> },
   { screen: "transfer", label: "传输", icon: <KtTransfer size={18} /> },
   { screen: "forwards", label: "转发", icon: <KtForward size={18} /> },
+  { screen: "certs", label: "证书", icon: <KtCerts size={18} /> },
   { screen: "monitor", label: "监控", icon: <KtMonitor size={18} /> },
   { screen: "keys", label: "密钥", icon: <KtKeys size={18} /> },
   { screen: "snippets", label: "片段", icon: <KtSnippets size={18} /> },
