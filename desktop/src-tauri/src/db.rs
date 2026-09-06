@@ -11,6 +11,26 @@ pub struct Db {
     pub data_dir: PathBuf,
 }
 
+/// certs 表完整行(含 pem/私钥等敏感字段,仅后端使用,不对外暴露)
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct CertRow {
+    pub id: String,
+    pub domains: Vec<String>,
+    pub challenge: String,
+    pub ca: String,
+    pub host_id: String,
+    pub deploy_path: String,
+    pub reload_cmd: String,
+    pub not_after: i64,
+    pub auto_renew: bool,
+    pub state: String,
+    pub account_key_enc: Option<Vec<u8>>,
+    pub cert_pem: Option<String>,
+    pub chain_pem: Option<String>,
+    pub created_at: String,
+}
+
 /// 本地变更日志条目(增量同步用)
 #[derive(Debug, Clone)]
 pub struct OplogRow {
@@ -99,6 +119,16 @@ impl Db {
                 entity TEXT NOT NULL, entity_id TEXT NOT NULL,
                 lamport INTEGER NOT NULL, device_id TEXT NOT NULL, op TEXT NOT NULL,
                 PRIMARY KEY (entity, entity_id)
+            );
+            -- ACME 证书:domains 以 JSON 文本存取(仿 hosts.tags);account_key_enc/cert_pem/chain_pem 为敏感列
+            CREATE TABLE IF NOT EXISTS certs (
+                id TEXT PRIMARY KEY, domains TEXT NOT NULL DEFAULT '[]',
+                challenge TEXT NOT NULL, ca TEXT NOT NULL, host_id TEXT NOT NULL,
+                deploy_path TEXT NOT NULL DEFAULT '', reload_cmd TEXT NOT NULL DEFAULT '',
+                not_after INTEGER NOT NULL DEFAULT 0, auto_renew INTEGER NOT NULL DEFAULT 1,
+                state TEXT NOT NULL DEFAULT 'active',
+                account_key_enc BLOB, cert_pem TEXT, chain_pem TEXT,
+                created_at TEXT NOT NULL
             );
             "#,
         )?;
@@ -605,6 +635,104 @@ impl Db {
         conn.execute("DELETE FROM forwards WHERE id = ?1", [id])?;
         drop(conn);
         self.oplog_append("forward", id, "del", None)?;
+        Ok(())
+    }
+
+    // ---- certs(ACME 证书)----
+    #[allow(dead_code)]
+    pub fn list_certs(&self) -> Result<Vec<CertInfo>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, domains, challenge, ca, host_id, deploy_path, reload_cmd,
+                    not_after, auto_renew, state, created_at
+             FROM certs ORDER BY created_at",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                let domains: String = r.get(1)?;
+                Ok(CertInfo {
+                    id: r.get(0)?,
+                    domains: serde_json::from_str(&domains).unwrap_or_default(),
+                    challenge: r.get(2)?,
+                    ca: r.get(3)?,
+                    host_id: r.get(4)?,
+                    deploy_path: r.get(5)?,
+                    reload_cmd: r.get(6)?,
+                    not_after: r.get(7)?,
+                    auto_renew: r.get::<_, i64>(8)? != 0,
+                    state: r.get(9)?,
+                    created_at: r.get(10)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    #[allow(dead_code)]
+    pub fn get_cert_full(&self, id: &str) -> Result<CertRow> {
+        let conn = self.conn.lock().unwrap();
+        let row = conn.query_row(
+            "SELECT id, domains, challenge, ca, host_id, deploy_path, reload_cmd,
+                    not_after, auto_renew, state, account_key_enc, cert_pem, chain_pem, created_at
+             FROM certs WHERE id = ?1",
+            [id],
+            |r| {
+                let domains: String = r.get(1)?;
+                Ok(CertRow {
+                    id: r.get(0)?,
+                    domains: serde_json::from_str(&domains).unwrap_or_default(),
+                    challenge: r.get(2)?,
+                    ca: r.get(3)?,
+                    host_id: r.get(4)?,
+                    deploy_path: r.get(5)?,
+                    reload_cmd: r.get(6)?,
+                    not_after: r.get(7)?,
+                    auto_renew: r.get::<_, i64>(8)? != 0,
+                    state: r.get(9)?,
+                    account_key_enc: r.get(10)?,
+                    cert_pem: r.get(11)?,
+                    chain_pem: r.get(12)?,
+                    created_at: r.get(13)?,
+                })
+            },
+        )?;
+        Ok(row)
+    }
+
+    #[allow(dead_code)]
+    pub fn upsert_cert(&self, row: &CertRow) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO certs (id, domains, challenge, ca, host_id, deploy_path, reload_cmd,
+                                 not_after, auto_renew, state, account_key_enc, cert_pem, chain_pem, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+             ON CONFLICT(id) DO UPDATE SET
+                domains=?2, challenge=?3, ca=?4, host_id=?5, deploy_path=?6, reload_cmd=?7,
+                not_after=?8, auto_renew=?9, state=?10, account_key_enc=?11, cert_pem=?12, chain_pem=?13",
+            params![
+                row.id,
+                serde_json::to_string(&row.domains).unwrap(),
+                row.challenge,
+                row.ca,
+                row.host_id,
+                row.deploy_path,
+                row.reload_cmd,
+                row.not_after,
+                row.auto_renew as i64,
+                row.state,
+                row.account_key_enc,
+                row.cert_pem,
+                row.chain_pem,
+                row.created_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub fn delete_cert(&self, id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM certs WHERE id = ?1", [id])?;
         Ok(())
     }
 
