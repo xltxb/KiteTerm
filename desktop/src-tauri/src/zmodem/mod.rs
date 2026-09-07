@@ -16,7 +16,16 @@ pub trait ZChannel {
 
 /// 状态机向外报告进度,由 Tauri 侧实现为 TransferJob 事件,测试侧实现为记录器
 pub trait ProgressSink {
-    fn start(&self, direction: &str, name: &str, total: u64, index: usize, count: usize);
+    /// 一个文件开始传输。`path` 是本地路径:下载为实际落盘路径(已同名去重),上传为源文件。
+    fn start(
+        &self,
+        direction: &str,
+        name: &str,
+        path: &std::path::Path,
+        total: u64,
+        index: usize,
+        count: usize,
+    );
     fn advance(&self, transferred: u64);
     fn finish(&self, ok: bool, error: Option<String>);
 }
@@ -165,6 +174,8 @@ pub(crate) mod testutil {
     #[derive(Default)]
     pub struct RecordingSink {
         pub starts: Mutex<Vec<(String, String, u64, usize, usize)>>,
+        /// 每次 start 报上来的本地路径(下载=落盘路径,上传=源文件路径),与 starts 一一对应
+        pub paths: Mutex<Vec<std::path::PathBuf>>,
         pub advances: Mutex<Vec<u64>>,
         pub finishes: Mutex<Vec<(bool, Option<String>)>>,
     }
@@ -177,7 +188,16 @@ pub(crate) mod testutil {
     }
 
     impl ProgressSink for RecordingSink {
-        fn start(&self, direction: &str, name: &str, total: u64, index: usize, count: usize) {
+        fn start(
+            &self,
+            direction: &str,
+            name: &str,
+            path: &std::path::Path,
+            total: u64,
+            index: usize,
+            count: usize,
+        ) {
+            self.paths.lock().unwrap().push(path.to_path_buf());
             self.starts.lock().unwrap().push((
                 direction.to_string(),
                 name.to_string(),

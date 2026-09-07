@@ -299,6 +299,20 @@ pub fn zmodem_send_files(state: State<AppState>, session_id: String, paths: Vec<
     ssh::send_ctl(&state.sessions, &session_id, ssh::Ctl::SendFiles(files))
 }
 
+/// ZMODEM 下载:前端选好保存目录后回传(None 表示用户取消,后端会中止远端 sz)
+#[tauri::command]
+pub fn zmodem_receive_into(state: State<AppState>, session_id: String, dir: Option<String>) -> Result<()> {
+    let dir = dir.filter(|d| !d.trim().is_empty()).map(std::path::PathBuf::from);
+    ssh::send_ctl(&state.sessions, &session_id, ssh::Ctl::ReceiveInto(dir))
+}
+
+/// 拖文件到 SSH 终端:后端自动向远端敲 rz,并把这些文件作为发送列表(仿 Xshell)
+#[tauri::command]
+pub fn zmodem_drop_upload(state: State<AppState>, session_id: String, paths: Vec<String>) -> Result<()> {
+    let files = paths.into_iter().map(std::path::PathBuf::from).collect();
+    ssh::send_ctl(&state.sessions, &session_id, ssh::Ctl::DropUpload(files))
+}
+
 /// ZMODEM 取消:用户在传输浮条点取消,投递 Ctl::CancelTransfer 中止当前传输
 #[tauri::command]
 pub fn zmodem_cancel(state: State<AppState>, session_id: String) -> Result<()> {

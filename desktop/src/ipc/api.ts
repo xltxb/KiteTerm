@@ -114,6 +114,12 @@ export interface KiteIpc {
   zmodemCancel(sessionId: string): Promise<void>;
   /** 远端跑 rz 时触发,前端需弹多选文件框并回传选择结果 */
   onZmodemPickFiles(cb: (sessionId: string) => void): Unsubscribe;
+  /** 用户为 sz 下载选中的保存目录;null 表示用户取消(后端会中止远端 sz) */
+  zmodemReceiveInto(sessionId: string, dir: string | null): Promise<void>;
+  /** 远端跑 sz 时触发,前端需弹目录选择框(默认目录由后端按设置解析)并回传结果 */
+  onZmodemPickDir(cb: (sessionId: string, defaultDir: string) => void): Unsubscribe;
+  /** 拖文件到 SSH 终端:后端自动向远端敲 rz,并把这些文件作为发送列表(仿 Xshell) */
+  zmodemDropUpload(sessionId: string, paths: string[]): Promise<void>;
 
   // ---- recording ----
   startRecording(sessionId: string): Promise<void>;

@@ -104,7 +104,7 @@ async fn send_impl<C: ZChannel, P: ProgressSink>(
         // >4GB 守卫:ZMODEM 帧头偏移为 u32,超过 4GB 会在 pos_to_arg 处静默截断。
         // 在开文件前拦下:登记一个失败任务并跳过,不进入该文件的协议交互(故无需 ZSKIP)。
         if total > u32::MAX as u64 {
-            sink.start("upload", &name, total, index, count);
+            sink.start("upload", &name, path, total, index, count);
             sink.finish(false, Some("文件超过 4GB,ZMODEM 不支持".to_string()));
             continue;
         }
@@ -116,7 +116,7 @@ async fn send_impl<C: ZChannel, P: ProgressSink>(
         chan.write_all(&frame::encode_data_subpacket(&info, frame::ZCRCW, USE_CRC32))
             .await?;
 
-        sink.start("upload", &name, total, index, count);
+        sink.start("upload", &name, path, total, index, count);
 
         // 等 ZRPOS(起始偏移)或 ZSKIP
         let start_offset = loop {
@@ -547,7 +547,7 @@ mod tests {
         let path = write_file(&dir, "hello.txt", b"hello");
         let sink = RecordingSink::new();
 
-        let files = [path];
+        let files = [path.clone()];
         let peer_task = async move { rz_peer(&mut peer, &[false]).await };
         let send_task = send(&mut local, &sink, &files);
 
@@ -557,6 +557,8 @@ mod tests {
         assert_eq!(received.len(), 1);
         assert_eq!(received[0], b"hello");
 
+        // start 报上来的路径就是被发送的本地源文件
+        assert_eq!(*sink.paths.lock().unwrap(), vec![path]);
         let starts = sink.starts.lock().unwrap();
         assert_eq!(starts.len(), 1);
         assert_eq!(starts[0].0, "upload");

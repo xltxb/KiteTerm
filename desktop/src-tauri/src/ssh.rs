@@ -146,6 +146,10 @@ pub enum Ctl {
     Close,
     /// rz:前端选好文件后回传(空列表表示用户取消)
     SendFiles(Vec<std::path::PathBuf>),
+    /// sz:前端选好保存目录后回传(None 表示用户取消)
+    ReceiveInto(Option<std::path::PathBuf>),
+    /// 拖文件到终端:自动向远端敲 rz,并把这些文件作为随后 rz 的发送列表(仿 Xshell)
+    DropUpload(Vec<std::path::PathBuf>),
     /// 用户在浮条点取消
     CancelTransfer,
 }
@@ -415,6 +419,8 @@ async fn run_session(
         let mut user_closed = false;
         // 每个连接维护一个握手探测器;命中并接管后复位
         let mut detector = Detector::new();
+        // 拖入文件后的待发列表,等远端 rz 启动时消费
+        let mut pending_drop: Option<PendingDrop> = None;
         loop {
             tokio::select! {
                 msg = channel.wait() => {
@@ -438,9 +444,14 @@ async fn run_session(
                                     // 命中点之后已到达的字节作为 zmodem 通道的预置缓冲,
                                     // 避免握手头之后紧跟的字节被丢掉
                                     let seed = data[at..].to_vec();
+                                    // 远端 rz 是我们替用户敲的:直接用拖入的文件,不再弹框
+                                    let preset = match mode {
+                                        Detected::Send => PendingDrop::take_fresh(&mut pending_drop, Instant::now()),
+                                        Detected::Receive => None,
+                                    };
                                     let closed = handle_zmodem(
                                         &app, &db, &transfers, &id,
-                                        &mut channel, &mut ctl_rx, mode, seed,
+                                        &mut channel, &mut ctl_rx, mode, seed, preset,
                                     )
                                     .await;
                                     // 传输结束:复位探测器,恢复正常循环
@@ -474,7 +485,23 @@ async fn run_session(
                             let _ = channel.eof().await;
                             break;
                         }
-                        Some(Ctl::SendFiles(_)) | Some(Ctl::CancelTransfer) => {
+                        Some(Ctl::DropUpload(paths)) => {
+                            let (files, rejected) = split_droppable(paths);
+                            if !rejected.is_empty() {
+                                let names: Vec<String> = rejected
+                                    .iter()
+                                    .map(|p| p.display().to_string())
+                                    .collect();
+                                emit_line(&app, &id, &format!("暂不支持上传目录,已跳过: {}", names.join(", ")));
+                            }
+                            if files.is_empty() {
+                                continue;
+                            }
+                            emit_line(&app, &id, &format!("已拖入 {} 个文件,正在启动远端 rz…", files.len()));
+                            pending_drop = Some(PendingDrop::new(files, Instant::now()));
+                            if channel.data(DROP_RZ_COMMAND).await.is_err() { break; }
+                        }
+                        Some(Ctl::SendFiles(_)) | Some(Ctl::ReceiveInto(_)) | Some(Ctl::CancelTransfer) => {
                             // 非传输态收到,忽略(仅传输态由 zmodem::run 消费)
                         }
                     }
@@ -548,6 +575,42 @@ async fn run_session(
 }
 
 // ============================ ZMODEM 接管 ============================
+
+/// 拖入文件后等远端 rz 启动的最长时间:超时视为远端没起 rz(多半是没装 lrzsz),
+/// 列表作废,之后手动敲 rz 仍走弹框流程。
+pub(crate) const DROP_PENDING_TTL: Duration = Duration::from_secs(15);
+
+/// 拖入文件后自动敲的远端命令:`-E` 同名自动改名,既不静默覆盖也不触发 ZSKIP 跳过。
+const DROP_RZ_COMMAND: &[u8] = b"rz -E\r";
+
+/// 拖文件后暂存的待发列表,等探测到远端 rz 启动时一次性消费。
+#[derive(Debug)]
+pub(crate) struct PendingDrop {
+    files: Vec<std::path::PathBuf>,
+    at: Instant,
+}
+
+impl PendingDrop {
+    pub(crate) fn new(files: Vec<std::path::PathBuf>, at: Instant) -> Self {
+        Self { files, at }
+    }
+
+    /// 取走未过期的列表;过期的直接丢弃。两种情况槽位都被清空。
+    pub(crate) fn take_fresh(
+        slot: &mut Option<PendingDrop>,
+        now: Instant,
+    ) -> Option<Vec<std::path::PathBuf>> {
+        let p = slot.take()?;
+        (now.duration_since(p.at) <= DROP_PENDING_TTL).then_some(p.files)
+    }
+}
+
+/// 拖入路径分拣:ZMODEM 只发普通文件,目录与不存在的路径剔除并返回供提示。
+pub(crate) fn split_droppable(
+    paths: Vec<std::path::PathBuf>,
+) -> (Vec<std::path::PathBuf>, Vec<std::path::PathBuf>) {
+    paths.into_iter().partition(|p| p.is_file())
+}
 
 /// zmodem 中止序列:5×CAN(0x18)后 5×BS(0x08)。lrzsz 收到即中止当前 sz/rz。
 const ZMODEM_ABORT: [u8; 10] = [0x18, 0x18, 0x18, 0x18, 0x18, 0x08, 0x08, 0x08, 0x08, 0x08];
@@ -625,6 +688,9 @@ struct JobSinkState {
     total: u64,
     start: Option<Instant>,
     last_emit: Option<Instant>,
+    /// 当前文件的方向与本地路径,finish 成功时打到终端上
+    direction: String,
+    path: std::path::PathBuf,
 }
 
 impl JobSink {
@@ -633,19 +699,34 @@ impl JobSink {
             app,
             transfers,
             session_id,
-            inner: Mutex::new(JobSinkState { id: None, total: 0, start: None, last_emit: None }),
+            inner: Mutex::new(JobSinkState {
+                id: None,
+                total: 0,
+                start: None,
+                last_emit: None,
+                direction: String::new(),
+                path: std::path::PathBuf::new(),
+            }),
         }
     }
 }
 
 impl ProgressSink for JobSink {
-    fn start(&self, direction: &str, name: &str, total: u64, _index: usize, _count: usize) {
+    fn start(
+        &self,
+        direction: &str,
+        name: &str,
+        path: &std::path::Path,
+        total: u64,
+        _index: usize,
+        _count: usize,
+    ) {
         let job_id = uuid::Uuid::new_v4().to_string();
         let job = TransferJob {
             id: job_id.clone(),
             direction: direction.to_string(),
             name: name.to_string(),
-            local_path: String::new(),
+            local_path: path.to_string_lossy().into_owned(),
             remote_path: String::new(),
             session_id: self.session_id.clone(),
             progress: 0.0,
@@ -662,6 +743,8 @@ impl ProgressSink for JobSink {
         st.total = total;
         st.start = Some(Instant::now());
         st.last_emit = None;
+        st.direction = direction.to_string();
+        st.path = path.to_path_buf();
     }
 
     fn advance(&self, transferred: u64) {
@@ -697,10 +780,10 @@ impl ProgressSink for JobSink {
     }
 
     fn finish(&self, ok: bool, error: Option<String>) {
-        let (id, start) = {
+        let (id, start, line) = {
             let st = self.inner.lock().unwrap();
             let Some(id) = st.id.clone() else { return };
-            (id, st.start)
+            (id, st.start, transfer_done_line(&st.direction, &st.path))
         };
         let elapsed = start.map(|s| s.elapsed()).unwrap_or_default();
         crate::sftp::update_job(&self.app, &self.transfers.jobs, &id, |j| {
@@ -714,6 +797,20 @@ impl ProgressSink for JobSink {
             }
             j.elapsed_ms = elapsed.as_millis() as u64;
         });
+        // 每个文件成功收尾时把本地路径打到终端上,用户不用再去传输页找文件
+        if ok {
+            emit_line(&self.app, &self.session_id, &line);
+        }
+    }
+}
+
+/// 单个文件传输完成时打到终端的提示行:下载说明落盘位置,上传说明发的是哪个本地文件
+fn transfer_done_line(direction: &str, path: &std::path::Path) -> String {
+    let p = path.display();
+    if direction == "download" {
+        format!("已保存到 {p}")
+    } else {
+        format!("已发送 {p}")
     }
 }
 
@@ -768,8 +865,8 @@ async fn run_with_cancel(
                     Some(Ctl::CancelTransfer) => break TransferEnd::Cancelled { close: false },
                     Some(Ctl::Close) | None => break TransferEnd::Cancelled { close: true },
                     Some(Ctl::Resize(c, r)) => { *deferred_resize = Some((c, r)); }
-                    // 传输期间键入与迟到的选文件消息一律忽略
-                    Some(Ctl::Data(_)) | Some(Ctl::SendFiles(_)) => {}
+                    // 传输期间键入与迟到的选文件/选目录消息一律忽略
+                    Some(Ctl::Data(_)) | Some(Ctl::SendFiles(_)) | Some(Ctl::ReceiveInto(_)) | Some(Ctl::DropUpload(_)) => {}
                 },
             }
         };
@@ -783,8 +880,34 @@ async fn run_with_cancel(
     end
 }
 
-/// 接管一次 zmodem 传输:解析下载目录、构造 `JobSink`,`Send` 方向先请前端选文件,
-/// 随后驱动 `run_with_cancel`,最后补发暂存的窗口尺寸变化。
+/// sz 方向等前端选保存目录的结果。
+enum DirChoice {
+    Chosen(std::path::PathBuf),
+    /// 用户取消或会话关闭;`close` 为真表示应结束会话
+    Cancelled { close: bool },
+}
+
+/// 阻塞等待前端回传保存目录:期间键入忽略、窗口尺寸暂存到 `deferred_resize`,
+/// 取消/关闭即返回 `Cancelled`(与 rz 等选文件的循环语义一致)。
+async fn await_receive_dir(
+    ctl_rx: &mut mpsc::UnboundedReceiver<Ctl>,
+    deferred_resize: &mut Option<(u16, u16)>,
+) -> DirChoice {
+    loop {
+        match ctl_rx.recv().await {
+            Some(Ctl::ReceiveInto(Some(dir))) => return DirChoice::Chosen(dir),
+            Some(Ctl::ReceiveInto(None)) | Some(Ctl::CancelTransfer) => {
+                return DirChoice::Cancelled { close: false }
+            }
+            Some(Ctl::Close) | None => return DirChoice::Cancelled { close: true },
+            Some(Ctl::Resize(c, r)) => *deferred_resize = Some((c, r)),
+            Some(Ctl::Data(_)) | Some(Ctl::SendFiles(_)) | Some(Ctl::DropUpload(_)) => {}
+        }
+    }
+}
+
+/// 接管一次 zmodem 传输:构造 `JobSink`,`Receive` 方向先请前端选保存目录、
+/// `Send` 方向先请前端选文件,随后驱动 `run_with_cancel`,最后补发暂存的窗口尺寸变化。
 /// 返回 `true` 表示用户在传输期间关闭了会话(调用方应结束会话)。
 #[allow(clippy::too_many_arguments)]
 async fn handle_zmodem(
@@ -796,35 +919,59 @@ async fn handle_zmodem(
     ctl_rx: &mut mpsc::UnboundedReceiver<Ctl>,
     mode: Detected,
     seed: Vec<u8>,
+    preset: Option<Vec<std::path::PathBuf>>,
 ) -> bool {
-    let download_dir = resolve_download_dir(db);
+    let mut download_dir = resolve_download_dir(db);
     let sink = JobSink::new(app.clone(), transfers.clone(), id.to_string());
     let mut deferred_resize: Option<(u16, u16)> = None;
 
     let files: Option<Vec<std::path::PathBuf>> = match mode {
         Detected::Receive => {
-            emit_line(app, id, "检测到 ZMODEM 下载(sz),开始接收…");
+            // 请前端弹目录选择框(默认目录按设置解析),阻塞等其回传;远端 sz 此时在等我们的 ZRINIT
+            let _ = app.emit(
+                "zmodem://pick-dir",
+                serde_json::json!({ "sessionId": id, "defaultDir": download_dir.to_string_lossy() }),
+            );
+            emit_line(app, id, "检测到 ZMODEM 下载(sz),请选择保存目录…");
+            match await_receive_dir(ctl_rx, &mut deferred_resize).await {
+                DirChoice::Chosen(dir) => download_dir = dir,
+                DirChoice::Cancelled { close } => {
+                    // 用户取消 / 会话关闭:发中止序列结束远端 sz
+                    let _ = channel.data(&ZMODEM_ABORT[..]).await;
+                    emit_line(app, id, "已取消 ZMODEM 下载");
+                    if let Some((c, r)) = deferred_resize {
+                        let _ = channel.window_change(c as u32, r as u32, 0, 0).await;
+                    }
+                    return close;
+                }
+            }
+            emit_line(app, id, &format!("开始接收,保存到 {}…", download_dir.display()));
             None
         }
         Detected::Send => {
-            // 请前端弹出文件选择器,并阻塞等待其回传选择结果
-            let _ = app.emit("zmodem://pick-files", serde_json::json!({ "sessionId": id }));
-            emit_line(app, id, "检测到 ZMODEM 上传(rz),请选择要发送的文件…");
             let mut chosen: Vec<std::path::PathBuf> = Vec::new();
             let mut close = false;
-            loop {
-                match ctl_rx.recv().await {
-                    Some(Ctl::SendFiles(paths)) => {
-                        chosen = paths;
-                        break;
+            if let Some(files) = preset {
+                // 拖入文件触发的 rz:发送列表已定,跳过选文件框
+                chosen = files;
+            } else {
+                // 请前端弹出文件选择器,并阻塞等待其回传选择结果
+                let _ = app.emit("zmodem://pick-files", serde_json::json!({ "sessionId": id }));
+                emit_line(app, id, "检测到 ZMODEM 上传(rz),请选择要发送的文件…");
+                loop {
+                    match ctl_rx.recv().await {
+                        Some(Ctl::SendFiles(paths)) => {
+                            chosen = paths;
+                            break;
+                        }
+                        Some(Ctl::CancelTransfer) => break,
+                        Some(Ctl::Close) | None => {
+                            close = true;
+                            break;
+                        }
+                        Some(Ctl::Resize(c, r)) => deferred_resize = Some((c, r)),
+                        Some(Ctl::Data(_)) | Some(Ctl::ReceiveInto(_)) | Some(Ctl::DropUpload(_)) => {}
                     }
-                    Some(Ctl::CancelTransfer) => break,
-                    Some(Ctl::Close) | None => {
-                        close = true;
-                        break;
-                    }
-                    Some(Ctl::Resize(c, r)) => deferred_resize = Some((c, r)),
-                    Some(Ctl::Data(_)) => {}
                 }
             }
             if chosen.is_empty() {
@@ -969,4 +1116,92 @@ pub fn spawn_latency_loop(app: AppHandle, db: Arc<Db>) {
             tokio::time::sleep(Duration::from_secs(30)).await;
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        await_receive_dir, split_droppable, transfer_done_line, Ctl, DirChoice, PendingDrop,
+        DROP_PENDING_TTL,
+    };
+    use std::path::{Path, PathBuf};
+    use std::time::{Duration, Instant};
+    use tokio::sync::mpsc;
+
+    #[test]
+    fn pending_drop_is_consumed_once_while_fresh() {
+        let now = Instant::now();
+        let mut slot = Some(PendingDrop::new(vec![PathBuf::from("/a.txt")], now));
+        let got = PendingDrop::take_fresh(&mut slot, now + Duration::from_secs(1));
+        assert_eq!(got, Some(vec![PathBuf::from("/a.txt")]));
+        // 消费后槽位清空,再来一次 rz 走弹框流程
+        assert!(slot.is_none());
+        assert_eq!(PendingDrop::take_fresh(&mut slot, now), None);
+    }
+
+    #[test]
+    fn pending_drop_expires_after_ttl() {
+        let now = Instant::now();
+        let mut slot = Some(PendingDrop::new(vec![PathBuf::from("/a.txt")], now));
+        let got = PendingDrop::take_fresh(&mut slot, now + DROP_PENDING_TTL + Duration::from_secs(1));
+        assert_eq!(got, None);
+        assert!(slot.is_none(), "过期列表应被丢弃");
+    }
+
+    #[test]
+    fn split_droppable_keeps_files_and_reports_dirs() {
+        let dir = std::env::temp_dir().join(format!("kiteterm-drop-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        let file = dir.join("f.txt");
+        std::fs::write(&file, b"x").unwrap();
+        let missing = dir.join("missing.bin");
+
+        let (files, rejected) = split_droppable(vec![file.clone(), dir.join("sub"), missing.clone()]);
+        assert_eq!(files, vec![file]);
+        assert_eq!(rejected, vec![dir.join("sub"), missing]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn await_receive_dir_returns_chosen_dir() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        tx.send(Ctl::ReceiveInto(Some(PathBuf::from("/tmp/dl")))).unwrap();
+        let mut resize = None;
+        let got = await_receive_dir(&mut rx, &mut resize).await;
+        assert!(matches!(got, DirChoice::Chosen(p) if p == Path::new("/tmp/dl")));
+    }
+
+    #[tokio::test]
+    async fn await_receive_dir_cancel_keeps_session_and_defers_resize() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        // 等待期间的键入忽略、窗口尺寸暂存,用户取消选择 → 不关会话
+        tx.send(Ctl::Data(b"x".to_vec())).unwrap();
+        tx.send(Ctl::Resize(100, 40)).unwrap();
+        tx.send(Ctl::ReceiveInto(None)).unwrap();
+        let mut resize = None;
+        let got = await_receive_dir(&mut rx, &mut resize).await;
+        assert!(matches!(got, DirChoice::Cancelled { close: false }));
+        assert_eq!(resize, Some((100, 40)));
+    }
+
+    #[tokio::test]
+    async fn await_receive_dir_close_requests_session_close() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        tx.send(Ctl::Close).unwrap();
+        let mut resize = None;
+        let got = await_receive_dir(&mut rx, &mut resize).await;
+        assert!(matches!(got, DirChoice::Cancelled { close: true }));
+        // 发送端 drop 后通道结束,同样视为关闭
+        let (tx2, mut rx2) = mpsc::unbounded_channel::<Ctl>();
+        drop(tx2);
+        let got = await_receive_dir(&mut rx2, &mut None).await;
+        assert!(matches!(got, DirChoice::Cancelled { close: true }));
+    }
+
+    #[test]
+    fn transfer_done_line_distinguishes_direction() {
+        let p = Path::new("/Users/me/Downloads/foo (1).txt");
+        assert_eq!(transfer_done_line("download", p), "已保存到 /Users/me/Downloads/foo (1).txt");
+        assert_eq!(transfer_done_line("upload", p), "已发送 /Users/me/Downloads/foo (1).txt");
+    }
 }
