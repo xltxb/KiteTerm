@@ -29,7 +29,13 @@ export function XtermPane({ sessionId }: { sessionId: string }) {
     term.focus();
     const ro = new ResizeObserver(() => addons.fit.fit());
     ro.observe(el);
-    return () => ro.disconnect();
+    return () => {
+      ro.disconnect();
+      // 切换会话时这个 div 会被 React 复用:不把旧实例的 DOM 摘掉,term.open 会把
+      // 新画布追加到旧画布后面,旧的仍盖在上面 —— 表现为标签/状态栏是新会话、
+      // 画面却还是上一个会话。实例本身留在注册表里,切回来时再挂回去,缓冲不丢。
+      term.element?.remove();
+    };
   }, [sessionId]);
 
   useEffect(() => {
