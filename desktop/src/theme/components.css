@@ -36,7 +36,20 @@
   color: var(--accent-text);
   margin-bottom: 6px;
   text-transform: uppercase;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
+/* 品牌强调:小标题前的 azure→cyan 渐变短横 */
+.eyebrow::before {
+  content: "";
+  width: 16px;
+  height: 2px;
+  border-radius: 99px;
+  background: linear-gradient(90deg, var(--azure-500), var(--cyan-400));
+  flex: none;
+}
+
 .screen-title {
   margin: 0;
   font-family: var(--font-display);
@@ -45,13 +58,14 @@
   letter-spacing: -0.02em;
   color: var(--text-strong);
 }
-.screen-title .count { color: var(--text-faint); font-size: 18px; font-weight: 500; }
+.screen-title .count { font-size: 18px; font-weight: 600; background: linear-gradient(90deg, var(--azure-500), var(--cyan-400)); -webkit-background-clip: text; background-clip: text; color: transparent; }
 .screen-header { display: flex; align-items: flex-end; gap: 16px; margin-bottom: 22px; }
 
 .card {
   background: var(--surface-card);
   border: 1px solid var(--border-subtle);
   border-radius: 14px;
+  box-shadow: var(--shadow-xs);
 }
 
 .icon-chip {
@@ -85,7 +99,7 @@
 .hover-row { transition: background 140ms var(--ease-out); }
 .hover-row:hover { background: var(--surface-hover); }
 .hover-card { transition: border-color 140ms var(--ease-out); }
-.hover-card:hover { border-color: var(--accent-subtle-border); }
+.hover-card:hover { border-color: var(--accent-subtle-border); box-shadow: var(--shadow-sm); }
 
 /* ---- 按钮(Vela DS Button 对齐) ---- */
 .btn {
@@ -384,6 +398,7 @@
 .nav-item[data-active="true"] {
   color: var(--accent-text);
   background: var(--accent-subtle);
+  box-shadow: inset 2.5px 0 0 var(--accent);
 }
 .nav-item[data-active="true"]:hover { background: var(--accent-subtle); }
 .nav-item.sm { gap: 10px; font-size: var(--ui-sm); }
@@ -582,7 +597,7 @@
   cursor: pointer;
   transition: border-color 140ms var(--ease-out);
 }
-.snip:hover { border-color: var(--accent-subtle-border); }
+.snip:hover { border-color: var(--accent-subtle-border); box-shadow: var(--shadow-sm); }
 .snip-name {
   font-size: var(--ui-sm);
   font-weight: var(--weight-semibold);
