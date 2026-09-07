@@ -81,6 +81,10 @@ export function createTauriIpc(): KiteIpc {
     zmodemSendFiles: (sessionId, paths) => invoke("zmodem_send_files", { sessionId, paths }),
     zmodemCancel: (sessionId) => invoke("zmodem_cancel", { sessionId }),
     onZmodemPickFiles: (cb) => sub<{ sessionId: string }>("zmodem://pick-files", (p) => cb(p.sessionId)),
+    zmodemReceiveInto: (sessionId, dir) => invoke("zmodem_receive_into", { sessionId, dir }),
+    onZmodemPickDir: (cb) =>
+      sub<{ sessionId: string; defaultDir: string }>("zmodem://pick-dir", (p) => cb(p.sessionId, p.defaultDir)),
+    zmodemDropUpload: (sessionId, paths) => invoke("zmodem_drop_upload", { sessionId, paths }),
 
     startRecording: (sessionId) => invoke("recording_start", { sessionId }),
     stopRecording: (sessionId) => invoke("recording_stop", { sessionId }),

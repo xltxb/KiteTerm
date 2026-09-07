@@ -1,7 +1,7 @@
 import { create, type StoreApi } from "zustand";
 import { Terminal } from "@xterm/xterm";
 import { ipc } from "@/ipc";
-import { confirmAction, pickFiles, showError } from "@/lib/dialog";
+import { confirmAction, pickDirectory, pickFiles, showError } from "@/lib/dialog";
 import { looksLikeError } from "@/lib/errorDetect";
 import { looksLikeNaturalLanguage, stripPrompt } from "@/lib/nlDetect";
 import { terminalTheme } from "@/theme/terminal";
@@ -189,6 +189,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       void pickFiles()
         .then((paths) => ipc.zmodemSendFiles(sessionId, paths))
         .catch(() => ipc.zmodemSendFiles(sessionId, []));
+    });
+    // 远端跑 sz 时后端发出此事件,弹目录选择框回传保存位置(取消/异常则传 null,后端中止 sz)
+    ipc.onZmodemPickDir((sessionId, defaultDir) => {
+      void pickDirectory(defaultDir || undefined)
+        .then((dir) => ipc.zmodemReceiveInto(sessionId, dir))
+        .catch(() => ipc.zmodemReceiveInto(sessionId, null));
     });
   },
 
