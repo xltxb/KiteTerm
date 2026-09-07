@@ -17,3 +17,6 @@ design/
 
 # 服务端发布产物
 server/dist/
+
+# CodeGraph 代码索引缓存
+.codegraph/
