@@ -18,22 +18,21 @@ id = "4a623fb9fb614b76a6f36f66e06cf8a8"                 # wrangler kv namespace 
 [triggers]
 crons = ["0 4 * * *"]
 
+# 注意:每次 deploy 都会用这里的 [vars] 整体覆盖控制台里手工改过的同名变量,
+# 所以普通变量的值以本文件为准;机密一律用 `wrangler secret put` 设置,不要写进 [vars],
+# 否则部署会把它清空:KITE_ADMIN_KEY R2_API_TOKEN RESEND_API_KEY。
+# S3_ACCESS_KEY / S3_SECRET_KEY / R2_ACCOUNT_ID 由控制台「S3 存储」页入库,无需环境变量。
 [vars]
 KITE_REGISTRATION = "open"
-KITE_FEATURE_GATING = "off"
+KITE_FEATURE_GATING = "on"
 KITE_REGISTER_LIMIT = "5"
 S3_ENDPOINT = "https://cfaf6bf9c9f639a960ac3be2d7f31418.r2.cloudflarestorage.com"
 S3_BUCKET = "kiteterm"
 S3_REGION = "auto"
 S3_PREFIX = ""
-S3_ACCESS_KEY = ""
-S3_SECRET_KEY = ""
 S3_PATH_STYLE = "on"
 KITE_STS = "auto"
-KITE_ADMIN_KEY = ""
-R2_ACCOUNT_ID = ""
 KITE_SMTP_FROM = ""
-# secrets(wrangler secret put):KITE_ADMIN_KEY S3_ACCESS_KEY S3_SECRET_KEY R2_API_TOKEN RESEND_API_KEY
 
 [observability.logs]
 enabled = true

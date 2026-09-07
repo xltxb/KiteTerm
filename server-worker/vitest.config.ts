@@ -13,6 +13,8 @@ export default defineConfig(async () => {
             TEST_MIGRATIONS: migrations,
             KITE_ADMIN_KEY: "test-admin-key",
             KITE_REGISTER_LIMIT: "3",
+            // 测试按「门禁总闸默认关闭」编写;线上 wrangler.toml 里是 on,这里固定住不随之漂移
+            KITE_FEATURE_GATING: "off",
           },
         },
       }),
