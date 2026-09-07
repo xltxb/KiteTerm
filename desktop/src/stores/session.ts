@@ -100,7 +100,9 @@ function attach(
   const term = new Terminal({
     fontFamily: '"JetBrains Mono", "SF Mono", ui-monospace, Menlo, monospace',
     fontSize: 13,
-    lineHeight: 1.8,
+    // 行距别再往上调:xterm 的方块/竖线光标永远撑满整格,1.2 时光标≈16px,
+    // 才对得上原型里 8×15px 的小方块;原型的 1.75 行距在 xterm 里换不来同样的光标。
+    lineHeight: 1.2,
     cursorBlink: true,
     scrollback: 10_000,
     theme: terminalTheme(),
