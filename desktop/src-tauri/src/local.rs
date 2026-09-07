@@ -146,7 +146,7 @@ pub fn open_local_session(app: AppHandle, manager: Arc<SessionManager>) -> Resul
                 }
                 Ctl::Close => break,
                 // 本地会话不涉及 zmodem 传输,忽略
-                Ctl::SendFiles(_) | Ctl::CancelTransfer => {}
+                Ctl::SendFiles(_) | Ctl::ReceiveInto(_) | Ctl::DropUpload(_) | Ctl::CancelTransfer => {}
             }
         }
         let _ = child.kill();

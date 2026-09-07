@@ -445,6 +445,24 @@
   background: var(--term-bg);
 }
 
+/* 拖文件到终端画布时的遮罩:盖住 xterm,提示松开即 ZMODEM 上传 */
+.drop-overlay {
+  position: absolute;
+  inset: 8px;
+  z-index: var(--z-raised);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 2px dashed var(--accent);
+  border-radius: var(--radius-lg);
+  background: var(--surface-overlay);
+  color: var(--accent-text);
+  font-size: 13px;
+  pointer-events: none;
+}
+
 /* ---- 标签页顶栏 ---- */
 .tabbar {
   display: flex;

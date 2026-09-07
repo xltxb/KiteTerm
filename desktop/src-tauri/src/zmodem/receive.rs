@@ -204,9 +204,9 @@ pub async fn receive<C: ZChannel, P: ProgressSink>(
                         let path = dedup_path(dir, &name);
                         let file = tokio::fs::File::create(&path).await?;
                         writer = Some(tokio::io::BufWriter::with_capacity(64 * 1024, file));
-                        cur_path = Some(path);
                         cur_written = 0;
-                        sink.start("download", &name, total, received.len(), 0);
+                        sink.start("download", &name, &path, total, received.len(), 0);
+                        cur_path = Some(path);
                         // 请求从偏移 0 开始发送数据
                         chan.write_all(&frame::encode_hex_header(
                             frame::ZRPOS,
@@ -477,19 +477,71 @@ mod tests {
         let path = dir_path.join("foo.txt");
         assert_eq!(std::fs::read(&path).unwrap(), b"hello");
         // (b) 返回该路径
-        assert_eq!(files, vec![path]);
+        assert_eq!(files, vec![path.clone()]);
         // (d) 进度回调
         let starts = sink.starts.lock().unwrap();
         assert_eq!(starts.len(), 1);
         assert_eq!(starts[0].0, "download");
         assert_eq!(starts[0].1, "foo.txt");
         assert_eq!(starts[0].2, 5);
+        // (e) start 报上来的路径就是实际落盘路径
+        assert_eq!(*sink.paths.lock().unwrap(), vec![path]);
         let finishes = sink.finishes.lock().unwrap();
         assert_eq!(finishes.len(), 1);
         assert_eq!(finishes[0], (true, None));
         // advance 反映真实进度:写入 5 字节
         let advances = sink.advances.lock().unwrap();
         assert_eq!(*advances.last().unwrap(), 5);
+    }
+
+    /// 目录里已有同名文件时,start 报上来的必须是去重后的真实路径(终端提示路径要准)。
+    #[tokio::test]
+    async fn start_reports_deduped_path() {
+        let (mut local, mut peer) = MemChannel::pair();
+        let dir = TmpDir::new();
+        let dir_path = dir.path().to_path_buf();
+        std::fs::write(dir_path.join("foo.txt"), b"old").unwrap();
+        let sink = RecordingSink::new();
+
+        let sender = async move {
+            let mut p = Parser::new();
+            wait_for(&mut peer, &mut p, frame::ZRINIT).await;
+            peer.write_all(&frame::encode_bin32_header(frame::ZFILE, [0; 4]))
+                .await
+                .unwrap();
+            peer.write_all(&frame::encode_data_subpacket(
+                &file_info("foo.txt", 5),
+                frame::ZCRCW,
+                true,
+            ))
+            .await
+            .unwrap();
+            wait_for(&mut peer, &mut p, frame::ZRPOS).await;
+            peer.write_all(&frame::encode_bin32_header(frame::ZDATA, frame::pos_to_arg(0)))
+                .await
+                .unwrap();
+            peer.write_all(&frame::encode_data_subpacket(b"hello", frame::ZCRCE, true))
+                .await
+                .unwrap();
+            peer.write_all(&frame::encode_bin32_header(frame::ZEOF, frame::pos_to_arg(5)))
+                .await
+                .unwrap();
+            wait_for(&mut peer, &mut p, frame::ZRINIT).await;
+            peer.write_all(&frame::encode_hex_header(frame::ZFIN, [0; 4]))
+                .await
+                .unwrap();
+            wait_for(&mut peer, &mut p, frame::ZFIN).await;
+            peer.write_all(b"OO").await.unwrap();
+        };
+
+        let (result, ()) = tokio::join!(receive(&mut local, &sink, &dir_path), sender);
+        let files = result.unwrap();
+
+        let expected = dir_path.join("foo (1).txt");
+        assert_eq!(files, vec![expected.clone()]);
+        assert_eq!(std::fs::read(&expected).unwrap(), b"hello");
+        assert_eq!(std::fs::read(dir_path.join("foo.txt")).unwrap(), b"old");
+        assert_eq!(*sink.paths.lock().unwrap(), vec![expected]);
     }
 
     /// 空文件:size 0,无 ZDATA,直接 ZEOF(0)。

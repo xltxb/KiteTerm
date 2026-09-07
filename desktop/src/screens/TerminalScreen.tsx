@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
   AlignLeft,
   Circle,
+  FileUp,
   Lock,
   MessageCircleQuestion,
   PanelRight,
@@ -18,6 +19,7 @@ import { AiFab } from "@/screens/terminal/AiFab";
 import { RightDock } from "@/screens/terminal/RightDock";
 import { SearchBar } from "@/screens/terminal/SearchBar";
 import { TransferHint } from "@/screens/terminal/TransferHint";
+import { useDropUpload } from "@/screens/terminal/useDropUpload";
 import { XtermPane } from "@/screens/terminal/XtermPane";
 import { useAiStore } from "@/stores/ai";
 import { useAiFeature } from "@/stores/features";
@@ -38,6 +40,8 @@ export function TerminalScreen() {
   const [cmdBarOpen, setCmdBarOpen] = useState(false);
   const [, forceTick] = useState(0);
   const active = sessions.find((s) => s.id === activeId) ?? null;
+  const surfaceRef = useRef<HTMLDivElement>(null);
+  const dropHover = useDropUpload(surfaceRef, active);
   const setRightTab = useUiStore((s) => s.setRightTab);
   const paletteOpen = useUiStore((s) => s.paletteOpen);
   const explain = useAiStore((s) => s.explain);
@@ -177,7 +181,14 @@ export function TerminalScreen() {
       </div>
 
       <div className="grow term-body">
-        <div className="grow term-surface">
+        <div className="grow term-surface" ref={surfaceRef}>
+          {dropHover && active && (
+            <div className="drop-overlay">
+              <FileUp size={28} strokeWidth={1.4} />
+              <div>松开即通过 ZMODEM 上传到 {active.hostName} 的当前目录</div>
+              <div className="fs-xs t-faint">远端需已安装 lrzsz</div>
+            </div>
+          )}
           {cmdOn && cmdBarOpen && <AiCommandBar onClose={() => setCmdBarOpen(false)} />}
           {cmdOn && pendingAiInput && (
             <AiCommandBar
