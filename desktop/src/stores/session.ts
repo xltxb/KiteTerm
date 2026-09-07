@@ -100,7 +100,7 @@ function attach(
   const term = new Terminal({
     fontFamily: '"JetBrains Mono", "SF Mono", ui-monospace, Menlo, monospace',
     fontSize: 13,
-    lineHeight: 1.25,
+    lineHeight: 1.8,
     cursorBlink: true,
     scrollback: 10_000,
     theme: terminalTheme(),

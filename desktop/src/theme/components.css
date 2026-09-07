@@ -441,7 +441,7 @@
 .term-canvas {
   position: absolute;
   inset: 0;
-  padding: 10px 4px 4px 14px;
+  padding: 20px 24px;
   background: var(--term-bg);
 }
 
