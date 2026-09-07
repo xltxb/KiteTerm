@@ -1,6 +1,9 @@
 // PBKDF2 口令哈希 + 随机令牌/常量时间比较。
 // 存储格式:`pbkdf2$<iterations>$<salt_b64>$<hash_b64>`。
-const ITER = 600_000;
+// Workers 运行时(workerd)对 PBKDF2 有硬上限:iterations 超过 100000 直接抛
+// NotSupportedError,线上注册曾因 600_000 全部 500。上限值本身已是 OWASP 对
+// PBKDF2-HMAC-SHA256 的推荐下限;verifyPassword 按哈希串里记录的次数校验,改动不影响存量。
+const ITER = 100_000;
 const enc = new TextEncoder();
 
 export const b64 = (u: Uint8Array) => btoa(String.fromCharCode(...u));

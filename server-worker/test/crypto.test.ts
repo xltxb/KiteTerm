@@ -4,7 +4,7 @@ import { hashPassword, timingSafeEqual, verifyPassword } from "../src/crypto";
 describe("crypto", () => {
   it("hashPassword/verifyPassword 往返成功,格式前缀正确", async () => {
     const stored = await hashPassword("Abc12345");
-    expect(stored.startsWith("pbkdf2$600000$")).toBe(true);
+    expect(stored.startsWith("pbkdf2$100000$")).toBe(true);
     expect(await verifyPassword("Abc12345", stored)).toBe(true);
   });
 
