@@ -491,6 +491,10 @@
   background: var(--surface-sunken);
   box-shadow: inset 0 2px 0 var(--accent);
 }
+/* 输入镜像的接收方:顶边换成警示色,一眼看出哪些标签页会同时收到按键 */
+.tab[data-mirror="true"] {
+  box-shadow: inset 0 2px 0 var(--danger);
+}
 .tab-action {
   display: flex;
   padding: 6px 8px;

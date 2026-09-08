@@ -8,6 +8,7 @@ import {
   MessageCircleQuestion,
   PanelRight,
   Plus,
+  Radio,
   Sparkles,
   SquareTerminal,
   X,
@@ -34,7 +35,8 @@ function stateDot(state: string): string {
 }
 
 export function TerminalScreen() {
-  const { sessions, activeId, setActive, close, toggleRecording, openLocal } = useSessionStore();
+  const { sessions, activeId, setActive, close, toggleRecording, openLocal, duplicate, mirror, toggleMirror } =
+    useSessionStore();
   const { rightPanelOpen, toggleRightPanel, go } = useUiStore();
   const [searchOpen, setSearchOpen] = useState(false);
   const [cmdBarOpen, setCmdBarOpen] = useState(false);
@@ -56,6 +58,8 @@ export function TerminalScreen() {
   const errorHint = useSessionStore((s) => s.errorHint);
   const clearErrorHint = useSessionStore((s) => s.clearErrorHint);
   const setDiagnoseEnabled = useSessionStore((s) => s.setDiagnoseEnabled);
+  // 输入镜像的接收方:所有已连接的 SSH 会话(与 lib/broadcast 的口径一致)
+  const mirrorIds = mirror ? sessions.filter((s) => s.kind === "ssh" && s.state === "connected").map((s) => s.id) : [];
 
   // 设置开关同步给终端输入拦截逻辑(白话直连属于「AI 生成命令」子功能)
   useEffect(() => {
@@ -100,6 +104,10 @@ export function TerminalScreen() {
       } else if (mod && (e.key === "t" || e.key === "T") && !paletteOpen) {
         e.preventDefault();
         void openLocal();
+      } else if (mod && e.shiftKey && (e.key === "b" || e.key === "B")) {
+        // ⌘⇧B:开关输入镜像(按键同步到所有 SSH 标签页)
+        e.preventDefault();
+        toggleMirror();
       } else if (cmdOn && mod && e.shiftKey && (e.key === "a" || e.key === "A")) {
         // ⌘⇧A:自然语言生成命令
         e.preventDefault();
@@ -117,7 +125,7 @@ export function TerminalScreen() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, close, openLocal, cmdOn, diagOn, sumOn, paletteOpen]);
+  }, [active, close, openLocal, toggleMirror, cmdOn, diagOn, sumOn, paletteOpen]);
 
   return (
     <>
@@ -127,7 +135,10 @@ export function TerminalScreen() {
             key={s.id}
             className="tab"
             data-active={s.id === activeId ? "true" : "false"}
+            data-mirror={mirrorIds.includes(s.id) ? "true" : "false"}
+            title="双击复制标签页"
             onClick={() => setActive(s.id)}
+            onDoubleClick={() => void duplicate(s.id)}
           >
             <span className={stateDot(s.state)} />
             {s.hostName}
@@ -145,6 +156,14 @@ export function TerminalScreen() {
           <Plus size={15} />
         </div>
         <div className="spacer" />
+        <div
+          className="tab-action"
+          data-tone={mirror ? "danger" : undefined}
+          title={mirror ? "关闭输入镜像(⌘⇧B)" : "输入镜像:按键同步到所有 SSH 标签页(⌘⇧B)"}
+          onClick={toggleMirror}
+        >
+          <Radio size={15} />
+        </div>
         {active && (
           <div
             className="tab-action"
@@ -258,6 +277,12 @@ export function TerminalScreen() {
               </>
             )}
             <span className="spacer" />
+            {mirror && (
+              <span className="grp t-danger" title="输入镜像已开启,当前终端的按键会同步到这些标签页">
+                <Radio size={12} />
+                镜像输入 → {mirrorIds.length} 个标签页
+              </span>
+            )}
             {active.recording && active.recordingSince && (
               <span className="grp t-danger">
                 <span className="dot-lg dot-rec" />
