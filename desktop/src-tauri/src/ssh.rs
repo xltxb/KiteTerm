@@ -421,11 +421,17 @@ async fn run_session(
         let mut detector = Detector::new();
         // 拖入文件后的待发列表,等远端 rz 启动时消费
         let mut pending_drop: Option<PendingDrop> = None;
+        // 拖入文件时随 rz 一起敲的工作目录探针,以及它抓回来的远端当前目录
+        let mut pwd_probe = PwdProbe::default();
+        let mut remote_cwd: Option<String> = None;
         loop {
             tokio::select! {
                 msg = channel.wait() => {
                     match msg {
                         Some(ChannelMsg::Data { ref data }) => {
+                            if let Some(dir) = pwd_probe.push(data) {
+                                remote_cwd = Some(dir);
+                            }
                             match detector.push(data) {
                                 None => {
                                     emit_data(&app, &id, data);
@@ -449,9 +455,14 @@ async fn run_session(
                                         Detected::Send => PendingDrop::take_fresh(&mut pending_drop, Instant::now()),
                                         Detected::Receive => None,
                                     };
+                                    // 探针只跟着我们替用户敲的那条 rz 命令走。手动敲的 rz 没有探针,
+                                    // 而上一次拖拽留下的值可能已被 cd 改过 —— 故取走即清,且只在有
+                                    // preset(即这次确实是拖拽触发)时采用,宁可不报也不报错目录。
+                                    let probed = remote_cwd.take();
+                                    let remote_dir = preset.is_some().then_some(probed).flatten();
                                     let closed = handle_zmodem(
                                         &app, &db, &transfers, &id,
-                                        &mut channel, &mut ctl_rx, mode, seed, preset,
+                                        &mut channel, &mut ctl_rx, mode, seed, preset, remote_dir,
                                     )
                                     .await;
                                     // 传输结束:复位探测器,恢复正常循环
@@ -581,7 +592,65 @@ async fn run_session(
 pub(crate) const DROP_PENDING_TTL: Duration = Duration::from_secs(15);
 
 /// 拖入文件后自动敲的远端命令:`-E` 同名自动改名,既不静默覆盖也不触发 ZSKIP 跳过。
-const DROP_RZ_COMMAND: &[u8] = b"rz -E\r";
+///
+/// 前半段的 `printf` 是工作目录探针 —— ZMODEM 协议不会告诉发送方文件落在哪里
+/// (`rz` 写进远端 shell 的当前目录),要在传输完成时报出目标目录只能主动问一次。
+/// 输出包成 APC 序列(`ESC _ … ESC \`),xterm.js 会整段忽略,故不会在终端上显形;
+/// 用 `\033` 八进制而非裸 ESC 字节,是为了让 shell 回显这行命令时不夹带控制字符。
+const DROP_RZ_COMMAND: &[u8] = b"printf '\\033_KTPWD:%s\\033\\\\' \"$PWD\"; rz -E\r";
+
+/// APC 探针的头尾标记。
+const PWD_MARK_HEAD: &[u8] = b"\x1b_KTPWD:";
+const PWD_MARK_TAIL: &[u8] = b"\x1b\\";
+/// 跨块拼接缓冲的上限:远超任何合理路径长度,涨到这里说明流里根本没有标记,清掉防止无界增长。
+const PWD_PROBE_CAP: usize = 8192;
+
+fn find_sub(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || hay.len() < needle.len() {
+        return None;
+    }
+    hay.windows(needle.len()).position(|w| w == needle)
+}
+
+/// 从远端输出里抓 [`DROP_RZ_COMMAND`] 探针回传的工作目录。
+///
+/// 数据按 `ChannelMsg` 分块到达,标记可能被切成两半,故保留一小段尾巴跨块拼接;
+/// 没有标记时只留下「可能是半个头部」的那几个字节。
+#[derive(Default)]
+pub(crate) struct PwdProbe {
+    buf: Vec<u8>,
+}
+
+impl PwdProbe {
+    /// 喂入一块远端输出;凑齐完整标记时返回其中的路径(并清空缓冲)。
+    pub(crate) fn push(&mut self, data: &[u8]) -> Option<String> {
+        self.buf.extend_from_slice(data);
+        match find_sub(&self.buf, PWD_MARK_HEAD) {
+            Some(head) => {
+                let from = head + PWD_MARK_HEAD.len();
+                if let Some(tail) = find_sub(&self.buf[from..], PWD_MARK_TAIL) {
+                    let path = String::from_utf8_lossy(&self.buf[from..from + tail]).into_owned();
+                    self.buf.clear();
+                    return (!path.is_empty()).then_some(path);
+                }
+                // 头到了尾还没到:丢掉头之前的字节,留住待续部分
+                self.buf.drain(..head);
+            }
+            None => {
+                // 没有标记:只保留可能被切断的头部前缀
+                let keep = PWD_MARK_HEAD.len() - 1;
+                if self.buf.len() > keep {
+                    let cut = self.buf.len() - keep;
+                    self.buf.drain(..cut);
+                }
+            }
+        }
+        if self.buf.len() > PWD_PROBE_CAP {
+            self.buf.clear();
+        }
+        None
+    }
+}
 
 /// 拖文件后暂存的待发列表,等探测到远端 rz 启动时一次性消费。
 #[derive(Debug)]
@@ -680,6 +749,8 @@ struct JobSink {
     app: AppHandle,
     transfers: Arc<TransferManager>,
     session_id: String,
+    /// 上传落盘的远端目录,仅拖拽触发时由 [`PwdProbe`] 探到;手动 rz 为 None
+    remote_dir: Option<String>,
     inner: Mutex<JobSinkState>,
 }
 
@@ -694,11 +765,17 @@ struct JobSinkState {
 }
 
 impl JobSink {
-    fn new(app: AppHandle, transfers: Arc<TransferManager>, session_id: String) -> Self {
+    fn new(
+        app: AppHandle,
+        transfers: Arc<TransferManager>,
+        session_id: String,
+        remote_dir: Option<String>,
+    ) -> Self {
         Self {
             app,
             transfers,
             session_id,
+            remote_dir,
             inner: Mutex::new(JobSinkState {
                 id: None,
                 total: 0,
@@ -783,7 +860,11 @@ impl ProgressSink for JobSink {
         let (id, start, line) = {
             let st = self.inner.lock().unwrap();
             let Some(id) = st.id.clone() else { return };
-            (id, st.start, transfer_done_line(&st.direction, &st.path))
+            (
+                id,
+                st.start,
+                transfer_done_line(&st.direction, &st.path, self.remote_dir.as_deref()),
+            )
         };
         let elapsed = start.map(|s| s.elapsed()).unwrap_or_default();
         crate::sftp::update_job(&self.app, &self.transfers.jobs, &id, |j| {
@@ -804,11 +885,17 @@ impl ProgressSink for JobSink {
     }
 }
 
-/// 单个文件传输完成时打到终端的提示行:下载说明落盘位置,上传说明发的是哪个本地文件
-fn transfer_done_line(direction: &str, path: &std::path::Path) -> String {
+/// 单个文件传输完成时打到终端的提示行。
+///
+/// 下载说明落盘位置。上传两段都给:发的是哪个本地文件,以及落到远端哪个目录 ——
+/// 后者只有拖拽触发时才探得到(见 [`PwdProbe`]),手动敲 `rz` 时退回只报本地路径,
+/// 因为 ZMODEM 协议本身不回传接收端的落盘位置,猜一个不如不报。
+fn transfer_done_line(direction: &str, path: &std::path::Path, remote_dir: Option<&str>) -> String {
     let p = path.display();
     if direction == "download" {
         format!("已保存到 {p}")
+    } else if let Some(dir) = remote_dir {
+        format!("已发送 {p} → {dir}")
     } else {
         format!("已发送 {p}")
     }
@@ -920,9 +1007,10 @@ async fn handle_zmodem(
     mode: Detected,
     seed: Vec<u8>,
     preset: Option<Vec<std::path::PathBuf>>,
+    remote_dir: Option<String>,
 ) -> bool {
     let mut download_dir = resolve_download_dir(db);
-    let sink = JobSink::new(app.clone(), transfers.clone(), id.to_string());
+    let sink = JobSink::new(app.clone(), transfers.clone(), id.to_string(), remote_dir);
     let mut deferred_resize: Option<(u16, u16)> = None;
 
     let files: Option<Vec<std::path::PathBuf>> = match mode {
@@ -1122,7 +1210,7 @@ pub fn spawn_latency_loop(app: AppHandle, db: Arc<Db>) {
 mod tests {
     use super::{
         await_receive_dir, split_droppable, transfer_done_line, Ctl, DirChoice, PendingDrop,
-        DROP_PENDING_TTL,
+        PwdProbe, DROP_PENDING_TTL, DROP_RZ_COMMAND, PWD_PROBE_CAP,
     };
     use std::path::{Path, PathBuf};
     use std::time::{Duration, Instant};
@@ -1201,7 +1289,72 @@ mod tests {
     #[test]
     fn transfer_done_line_distinguishes_direction() {
         let p = Path::new("/Users/me/Downloads/foo (1).txt");
-        assert_eq!(transfer_done_line("download", p), "已保存到 /Users/me/Downloads/foo (1).txt");
-        assert_eq!(transfer_done_line("upload", p), "已发送 /Users/me/Downloads/foo (1).txt");
+        assert_eq!(
+            transfer_done_line("download", p, None),
+            "已保存到 /Users/me/Downloads/foo (1).txt"
+        );
+        assert_eq!(
+            transfer_done_line("upload", p, None),
+            "已发送 /Users/me/Downloads/foo (1).txt"
+        );
+    }
+
+    /// 探到远端目录时,上传两段都报;下载方向不受影响。
+    #[test]
+    fn transfer_done_line_appends_remote_dir_for_upload() {
+        let p = Path::new("D:\\stuff\\foo.txt");
+        assert_eq!(
+            transfer_done_line("upload", p, Some("/home/abiu/work")),
+            "已发送 D:\\stuff\\foo.txt → /home/abiu/work"
+        );
+        // 下载的落盘位置是本地路径,远端目录与它无关
+        assert_eq!(
+            transfer_done_line("download", p, Some("/home/abiu/work")),
+            "已保存到 D:\\stuff\\foo.txt"
+        );
+    }
+
+    /// 注入的命令必须自带探针,否则上传完成时报不出远端目录。
+    #[test]
+    fn drop_rz_command_carries_pwd_probe() {
+        let cmd = String::from_utf8(DROP_RZ_COMMAND.to_vec()).unwrap();
+        assert_eq!(cmd, "printf '\\033_KTPWD:%s\\033\\\\' \"$PWD\"; rz -E\r");
+        // 命令行本身不含裸控制字符 —— 回显时不会打乱终端
+        assert!(!cmd.trim_end_matches('\r').bytes().any(|b| b < 0x20));
+    }
+
+    #[test]
+    fn pwd_probe_reads_path_from_single_chunk() {
+        let mut probe = PwdProbe::default();
+        assert_eq!(
+            probe.push(b"ls output\r\n\x1b_KTPWD:/home/abiu/work\x1b\\rz waiting"),
+            Some("/home/abiu/work".to_string())
+        );
+    }
+
+    /// 标记被 ChannelMsg 切成两半时必须仍能拼回来。
+    #[test]
+    fn pwd_probe_joins_split_marker() {
+        let mut probe = PwdProbe::default();
+        assert_eq!(probe.push(b"noise\x1b_KTP"), None);
+        assert_eq!(probe.push(b"WD:/srv/app"), None);
+        assert_eq!(probe.push(b"\x1b\\more"), Some("/srv/app".to_string()));
+    }
+
+    /// 没有标记的普通输出不该让缓冲无界增长。
+    #[test]
+    fn pwd_probe_does_not_grow_without_marker() {
+        let mut probe = PwdProbe::default();
+        for _ in 0..64 {
+            assert_eq!(probe.push(&vec![b'x'; 4096]), None);
+        }
+        assert!(probe.buf.len() < PWD_PROBE_CAP);
+    }
+
+    /// 只有头没有尾(远端没跑完 printf)时不能误报空目录。
+    #[test]
+    fn pwd_probe_ignores_unterminated_marker() {
+        let mut probe = PwdProbe::default();
+        assert_eq!(probe.push(b"\x1b_KTPWD:/half/way"), None);
     }
 }
