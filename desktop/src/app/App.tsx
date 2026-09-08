@@ -30,7 +30,8 @@ export function App() {
   useEffect(() => {
     void loadSettings();
     void load();
-    void loadSync();
+    // 读完同步状态再自动拉一次:启动即把别的设备上的改动带过来
+    void loadSync().then(() => useSyncStore.getState().autoSync());
     void loadFeatures();
 
     // 启动恢复会话(设置关闭时后端返回空列表)
