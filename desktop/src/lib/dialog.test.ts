@@ -5,8 +5,10 @@
  *  「按钮点了没反应」,极难从代码上一眼看出。所以用测试钉死。 */
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const ROOT = new URL("..", import.meta.url).pathname;
+// 必须经 fileURLToPath:Windows 上 URL.pathname 是 "/D:/..",直接拼会得到 "D:\D:\.."
+const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const BANNED = /(?<![.\w])(?:window\s*\.\s*)?(confirm|alert|prompt)\s*\(/;
 
 function walk(dir: string): string[] {
@@ -19,8 +21,8 @@ function walk(dir: string): string[] {
 
 const offenders: string[] = [];
 for (const file of walk(ROOT)) {
-  // dialog.ts 自己的注释里会提到这些名字,豁免
-  if (file.endsWith("lib/dialog.ts")) continue;
+  // dialog.ts 自己的注释里会提到这些名字,豁免。Windows 上 join 出来的是反斜杠,先归一化
+  if (file.replace(/\\/g, "/").endsWith("lib/dialog.ts")) continue;
   readFileSync(file, "utf8").split("\n").forEach((line, i) => {
     const code = line.replace(/\/\/.*$/, "").replace(/\/\*.*?\*\//g, "");
     if (BANNED.test(code)) offenders.push(`${file.replace(ROOT, "")}:${i + 1}  ${line.trim()}`);
