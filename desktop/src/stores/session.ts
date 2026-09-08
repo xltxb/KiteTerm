@@ -1,6 +1,7 @@
 import { create, type StoreApi } from "zustand";
 import { Terminal } from "@xterm/xterm";
 import { ipc } from "@/ipc";
+import { mirrorTargets } from "@/lib/broadcast";
 import { confirmAction, pickDirectory, pickFiles, showError } from "@/lib/dialog";
 import { looksLikeError } from "@/lib/errorDetect";
 import { looksLikeNaturalLanguage, stripPrompt } from "@/lib/nlDetect";
@@ -12,6 +13,12 @@ import type { SessionInfo } from "@/types";
  * 会话存续期间保留实例,切标签仅重新挂载 DOM,输出缓冲不丢失。
  */
 const terminals = new Map<string, Terminal>();
+
+/**
+ * 密码认证主机在本次运行期间用过的密码,按主机 ID 记住(仅内存,不落盘),
+ * 复制标签页时直接复用,免得再弹一次密码框;退出应用即失效。
+ */
+const passwords = new Map<string, string>();
 
 export function getTerminal(id: string): Terminal | undefined {
   return terminals.get(id);
@@ -84,6 +91,11 @@ interface SessionState {
   open: (hostId: string, password?: string) => Promise<string>;
   /** 打开本地终端 */
   openLocal: () => Promise<string>;
+  /** 复制一个标签页:对同一主机再开一条会话(本地终端则再开一个本地终端) */
+  duplicate: (id: string) => Promise<string>;
+  /** 输入镜像:开启后当前终端的每个按键同步下发到所有已连接的 SSH 会话 */
+  mirror: boolean;
+  toggleMirror: () => void;
   close: (id: string) => Promise<void>;
   setActive: (id: string) => void;
   runCommand: (command: string) => Promise<void>;
@@ -107,6 +119,12 @@ function attach(
     scrollback: 10_000,
     theme: terminalTheme(),
   });
+  // 输入镜像开启时按键要下发到多条会话,统一走这里;关闭时等价于只写本会话
+  const dispatch = (data: string) => {
+    for (const target of mirrorTargets(info.id, get().sessions, get().mirror)) {
+      void ipc.writeSession(target, data);
+    }
+  };
   term.onData((data) => {
     // 用户按下回车即视为「开始一条新命令」,先清掉上一条残留的错误提示
     if (data === "\r") set({ errorHint: null });
@@ -129,11 +147,11 @@ function attach(
         `将粘贴 ${lines} 行内容到终端(可能立即执行):\n\n${preview}\n\n确认粘贴?`,
         "确认粘贴",
       ).then((ok) => {
-        if (ok) void ipc.writeSession(info.id, data);
+        if (ok) dispatch(data);
       });
       return;
     }
-    void ipc.writeSession(info.id, data);
+    dispatch(data);
   });
   term.onResize(({ cols, rows }) => void ipc.resizeSession(info.id, cols, rows));
   terminals.set(info.id, term);
@@ -149,11 +167,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   nlEnabled: true,
   errorHint: null,
   diagnoseEnabled: true,
+  mirror: false,
 
   setNlEnabled: (on) => set({ nlEnabled: on }),
   clearPendingAiInput: () => set({ pendingAiInput: null }),
   setDiagnoseEnabled: (on) => set({ diagnoseEnabled: on }),
   clearErrorHint: () => set({ errorHint: null }),
+  toggleMirror: () => set((s) => ({ mirror: !s.mirror })),
 
   clearInputLine: async (id) => {
     // Ctrl+U 清到行首,Ctrl+K 清到行尾 —— 覆盖光标在中间的情况
@@ -201,6 +221,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   open: async (hostId, password) => {
     get().wire();
     const info = await ipc.openSession(hostId, password);
+    if (password !== undefined) passwords.set(hostId, password);
     return attach(info, set, get);
   },
 
@@ -215,6 +236,20 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return "";
     }
     return attach(info, set, get);
+  },
+
+  duplicate: async (id) => {
+    const src = get().sessions.find((x) => x.id === id);
+    if (!src) return "";
+    if (src.kind === "local") return get().openLocal();
+    try {
+      return await get().open(src.hostId, passwords.get(src.hostId));
+    } catch (e) {
+      // 入口是双击标签(fire-and-forget),失败弹原生提示;
+      // 密码缓存缺失或指纹变更等情况提示用户回主机列表重新连接
+      void showError(String(e), `复制「${src.hostName}」标签页失败`);
+      return "";
+    }
   },
 
   close: async (id) => {
