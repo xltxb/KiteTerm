@@ -33,7 +33,11 @@ export function SyncScreen() {
       {showRestore && (
         <RestoreModal
           onClose={() => setShowRestore(false)}
-          onDone={() => { setShowRestore(false); void load(); }}
+          onDone={() => {
+            setShowRestore(false);
+            // 短语恢复出主密钥 = 同步条件此刻凑齐,顺手拉一次
+            void load().then(() => useSyncStore.getState().autoSync());
+          }}
         />
       )}
     </div>
