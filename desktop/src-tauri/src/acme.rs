@@ -576,8 +576,12 @@ pub fn spawn_renew_loop(
             ticker.tick().await;
             let now_ms = chrono::Utc::now().timestamp_millis();
             let certs = db.list_certs().unwrap_or_default();
+            let this_device = db.device_id();
             for c in certs {
-                if !c.auto_renew || !renew_due(c.not_after, now_ms) {
+                if !c.auto_renew
+                    || !renew_owned_by(&c.owner_device_id, &this_device)
+                    || !renew_due(c.not_after, now_ms)
+                {
                     continue;
                 }
                 let res = renew(
@@ -609,6 +613,13 @@ pub fn spawn_renew_loop(
 pub fn renew_due(not_after_ms: i64, now_ms: i64) -> bool {
     // 距到期 ≤ 30 天(含已过期)即应续期
     not_after_ms - now_ms <= 30 * 24 * 60 * 60 * 1000
+}
+
+/// 自动续期归属判定:只有归属设备才跑续期,避免多设备对同一域名重复签发
+/// (Let's Encrypt 对同一组域名有「每周 5 张重复证书」的限额)。
+/// 归属为空 = 存量证书尚未认领,由本机接手。
+pub fn renew_owned_by(owner_device_id: &str, this_device: &str) -> bool {
+    owner_device_id.is_empty() || owner_device_id == this_device
 }
 
 /// 仅供单测使用(前端自行计算剩余天数);保留窄化 allow 而非放宽整模块
@@ -725,5 +736,12 @@ mod tests {
         let leaf = first_cert_pem(chain);
         assert!(leaf.contains("AAAA"));
         assert!(!leaf.contains("BBBB"));
+    }
+
+    #[test]
+    fn only_owner_device_auto_renews() {
+        assert!(renew_owned_by("dev-a", "dev-a"), "归属本机应续期");
+        assert!(!renew_owned_by("dev-b", "dev-a"), "归属他机不应续期");
+        assert!(renew_owned_by("", "dev-a"), "归属为空视为未认领,本机接手");
     }
 }
