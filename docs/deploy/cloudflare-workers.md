@@ -65,8 +65,8 @@ directory = "./public"
 
 [[d1_databases]]
 binding = "DB"
-database_name = "kite-server"
-database_id = "00000000-0000-0000-0000-000000000000"   # wrangler d1 create kite-server 后替换
+database_name = "kiteterm"
+database_id = "00000000-0000-0000-0000-000000000000"   # wrangler d1 create kiteterm 后替换
 
 [[kv_namespaces]]
 binding = "RATE"
@@ -139,10 +139,10 @@ CREATE TABLE email_codes (user_id TEXT PRIMARY KEY, code TEXT NOT NULL, expires_
 ```bash
 cd server-worker && pnpm install
 npx wrangler login
-npx wrangler d1 create kite-server              # 把 database_id 填进 wrangler.toml
+npx wrangler d1 create kiteterm              # 把 database_id 填进 wrangler.toml
 npx wrangler kv namespace create RATE           # 把 id 填进 wrangler.toml
 npx wrangler r2 bucket create kite-sync
-npx wrangler d1 migrations apply kite-server --remote   # 等价于 pnpm migrate:remote
+npx wrangler d1 migrations apply kiteterm --remote   # 等价于 pnpm migrate:remote
 for s in KITE_ADMIN_KEY S3_ACCESS_KEY S3_SECRET_KEY R2_API_TOKEN RESEND_API_KEY; do
   npx wrangler secret put $s
 done
@@ -158,7 +158,7 @@ R2 的 S3 API 凭据与 `R2_API_TOKEN` 的区别、自定义域配置、本地�
 
 ## 8. 从 VPS 版迁移(可选)
 
-- 数据:`sqlite3 kite-server.db .dump` 去掉 `CREATE TABLE`,只留 `INSERT`,`wrangler d1 execute kite-server --remote --file dump.sql`。
+- 数据:`sqlite3 kite-server.db .dump` 去掉 `CREATE TABLE`,只留 `INSERT`,`wrangler d1 execute kiteterm --remote --file dump.sql`。
 - 口令:Workers 版用 PBKDF2-SHA256,VPS 版用 Argon2id,两种哈希互不兼容,当前实现**没有**识别旧哈希前缀并转发校验的兼容层——迁移后的用户用旧密码登录会直接收到 `bad_credentials`。需要引导用户走邮箱验证码重设密码,或由管理员在控制台手工处理(见 `server-worker/README.md`「从 VPS 版迁移」)。
 - 桶内数据是客户端主密钥加密的密文,换到 R2 只需原样复制对象(`rclone copy`),`prefix` 保持一致。
 

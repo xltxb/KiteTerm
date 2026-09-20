@@ -11,7 +11,7 @@
 cd server-worker && pnpm install
 npx wrangler login
 
-npx wrangler d1 create kite-server
+npx wrangler d1 create kiteterm
 # 把输出里的 database_id 填进 wrangler.toml 的 [[d1_databases]]
 
 npx wrangler kv namespace create RATE
@@ -20,7 +20,7 @@ npx wrangler kv namespace create RATE
 npx wrangler r2 bucket create kite-sync
 # 桶名需与 wrangler.toml [vars] 里的 S3_BUCKET 一致
 
-npx wrangler d1 migrations apply kite-server --remote
+npx wrangler d1 migrations apply kiteterm --remote
 # 等价于 pnpm migrate:remote
 
 for s in KITE_ADMIN_KEY S3_ACCESS_KEY S3_SECRET_KEY R2_API_TOKEN RESEND_API_KEY; do
@@ -96,8 +96,8 @@ S3_SECRET_KEY=devsecretkey
 
 ## 从 VPS 版(`server/`)迁移
 
-- **口令必须重设**:VPS 版用 Argon2id,这里用 PBKDF2-SHA256(600000 轮),两种哈希互不兼容。迁移用户数据后,老用户首次登录会因哈希格式不认得而失败;两版都没有「忘记密码」找回接口,管理控制台也没有删除用户的入口(`/api/register` 用 `INSERT OR IGNORE` 按邮箱去重,只清空 `password_hash` 并不能让原邮箱重新注册),需要管理员直接在 D1 执行 SQL 删除该用户所在行(如 `wrangler d1 execute kite-server --remote --command "DELETE FROM users WHERE email='...'"`),再引导其用同一邮箱重新注册。当前实现也没有自动识别 `argon2$` 前缀并转发校验的兼容层。
-- **数据迁移**(可选):`sqlite3 kite-server.db .dump` 去掉 `CREATE TABLE` 只留 `INSERT`,`wrangler d1 execute kite-server --remote --file dump.sql` 导入 D1。
+- **口令必须重设**:VPS 版用 Argon2id,这里用 PBKDF2-SHA256(600000 轮),两种哈希互不兼容。迁移用户数据后,老用户首次登录会因哈希格式不认得而失败;两版都没有「忘记密码」找回接口,管理控制台也没有删除用户的入口(`/api/register` 用 `INSERT OR IGNORE` 按邮箱去重,只清空 `password_hash` 并不能让原邮箱重新注册),需要管理员直接在 D1 执行 SQL 删除该用户所在行(如 `wrangler d1 execute kiteterm --remote --command "DELETE FROM users WHERE email='...'"`),再引导其用同一邮箱重新注册。当前实现也没有自动识别 `argon2$` 前缀并转发校验的兼容层。
+- **数据迁移**(可选):`sqlite3 kite-server.db .dump` 去掉 `CREATE TABLE` 只留 `INSERT`,`wrangler d1 execute kiteterm --remote --file dump.sql` 导入 D1。
 - **对象数据**:桶内对象是客户端主密钥加密的密文,原样复制到 R2 即可(如 `rclone copy`),`S3_PREFIX` 保持一致。
 
 ## 已知限制

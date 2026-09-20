@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { Env } from "../env";
-import { featureGating, registrationDefault } from "../env";
+import { featureGating, registerLimit, registrationDefault } from "../env";
 import { apiError, bearerToken, clientIp, nowTs } from "../http";
 import { settingGet } from "../settings";
 import * as features from "../features";
@@ -31,7 +31,7 @@ accountRoutes.post("/api/register", async (c) => {
   // 限流放在最前:注册接口会通过 email_taken 泄露邮箱是否已注册,
   // 必须先压制暴力枚举,再做其余校验
   const ip = clientIp(c);
-  const limit = Number(c.env.KITE_REGISTER_LIMIT ?? 5);
+  const limit = registerLimit(c.env);
   if (!(await rateLimitOk(c.env.RATE, "register", ip, limit))) {
     return apiError(c, 429, "rate_limited", "注册过于频繁,请稍后再试");
   }
