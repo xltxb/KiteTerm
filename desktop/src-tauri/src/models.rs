@@ -224,6 +224,10 @@ pub struct SyncScopes {
     /// 会话录制(asciicast)是否参与同步:文件较大,默认关闭,需用户显式开启
     #[serde(default)]
     pub recordings: bool,
+    /// SSL 证书(证书本体、私钥、ACME 账户密钥)是否参与同步。
+    /// 用 default_true 而非 default:后者对 bool 取 false,会让存量配置静默关闭。
+    #[serde(default = "default_true")]
+    pub certs: bool,
 }
 
 /// 同步配置:S3 端点与凭据由管理平台下发,本地只保留分项开关与主密码派生密钥。

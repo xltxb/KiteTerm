@@ -88,6 +88,7 @@ pub fn get_config(db: &Db) -> Result<SyncConfig> {
                 snippets: true,
                 settings: false,
                 recordings: false,
+                certs: true,
             },
             secret_key: None,
             master_password: None,
@@ -135,6 +136,9 @@ pub fn save_config(db: &Db, vault: &Vault, mut cfg: SyncConfig) -> Result<()> {
     if cfg.scopes.keys && !old.scopes.keys {
         backfill_keys(db)?;
     }
+    if cfg.scopes.certs && !old.scopes.certs {
+        backfill_certs(db)?;
+    }
     if cfg.scopes.settings && !old.scopes.settings {
         if let Some(s) = db.kv_get("settings")? {
             db.oplog_append("settings", "app", "put", Some(s))?;
@@ -151,6 +155,16 @@ fn backfill_keys(db: &Db) -> Result<()> {
             let p = db.key_payload(&k.id)?;
             db.oplog_append("key", &k.id, "put", Some(p))?;
         }
+    }
+    Ok(())
+}
+
+/// 遍历本地证书,补发 oplog put 条目 —— 证书范围关→开(save_config)、
+/// 平台 key_sync 关→开(sync_once)都要用同一份逻辑,否则老数据进不了增量流。
+fn backfill_certs(db: &Db) -> Result<()> {
+    for c in db.list_certs()? {
+        let payload = db.cert_payload(&c.id)?;
+        db.oplog_append("cert", &c.id, "put", Some(payload))?;
     }
     Ok(())
 }
@@ -264,6 +278,7 @@ fn scope_allows(cfg: &SyncConfig, flags: &crate::features::Features, entity: &st
     match entity {
         "host" | "forward" | "group" => cfg.scopes.hosts,
         "key" => cfg.scopes.keys && flags.key_sync,
+        "cert" => cfg.scopes.certs && flags.key_sync,
         "snippet" => cfg.scopes.snippets,
         "settings" => cfg.scopes.settings,
         _ => false,
@@ -553,8 +568,13 @@ pub async fn sync_once(db: &Db, vault: &Vault) -> Result<()> {
     // 否则关闭期间 push 循环跳过的那些 oplog 条目,KV_PUSHED 已无条件前移,永远补不回来。
     // 首次(kv 为空)不补发;每次都把这次的生效值写回,供下次比对。
     let prev_key_sync = db.kv_get(KV_FLAG_KEY_SYNC)?;
-    if prev_key_sync.as_deref() == Some("0") && flags.key_sync && cfg.scopes.keys {
-        backfill_keys(db)?;
+    if prev_key_sync.as_deref() == Some("0") && flags.key_sync {
+        if cfg.scopes.keys {
+            backfill_keys(db)?;
+        }
+        if cfg.scopes.certs {
+            backfill_certs(db)?;
+        }
     }
     db.kv_set(KV_FLAG_KEY_SYNC, if flags.key_sync { "1" } else { "0" })?;
 
@@ -774,4 +794,50 @@ async fn sync_recordings(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scopes(certs: bool, keys: bool) -> SyncScopes {
+        SyncScopes { hosts: true, keys, snippets: true, settings: false, recordings: false, certs }
+    }
+
+    fn cfg_with(scopes: SyncScopes) -> SyncConfig {
+        SyncConfig {
+            endpoint: String::new(),
+            bucket: String::new(),
+            region: String::new(),
+            access_key: String::new(),
+            has_secret: false,
+            has_master_key: true,
+            scopes,
+            secret_key: None,
+            master_password: None,
+        }
+    }
+
+    fn flags_with(key_sync: bool) -> crate::features::Features {
+        let mut f = crate::features::Features::unknown();
+        f.key_sync = key_sync;
+        f
+    }
+
+    #[test]
+    fn cert_scope_requires_both_local_toggle_and_platform_key_sync() {
+        assert!(scope_allows(&cfg_with(scopes(true, true)), &flags_with(true), "cert"));
+        assert!(!scope_allows(&cfg_with(scopes(false, true)), &flags_with(true), "cert"),
+            "本地证书范围关闭时不应放行");
+        assert!(!scope_allows(&cfg_with(scopes(true, true)), &flags_with(false), "cert"),
+            "平台 key_sync 关闭时不应放行");
+    }
+
+    #[test]
+    fn cert_scope_defaults_on_for_existing_configs() {
+        // 存量配置的 JSON 里没有 certs 字段,反序列化后必须是 true
+        let json = r#"{"hosts":true,"keys":true,"snippets":true,"settings":false,"recordings":false}"#;
+        let s: SyncScopes = serde_json::from_str(json).unwrap();
+        assert!(s.certs, "存量配置升级后证书范围应默认开,不能静默关闭");
+    }
 }
