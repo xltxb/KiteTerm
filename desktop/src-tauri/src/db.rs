@@ -739,7 +739,7 @@ impl Db {
         Ok(row)
     }
 
-    pub fn upsert_cert(&self, row: &CertRow) -> Result<()> {
+    pub fn upsert_cert_raw(&self, row: &CertRow) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT INTO certs (id, domains, challenge, ca, host_id, deploy_path, reload_cmd,
@@ -770,9 +770,19 @@ impl Db {
         Ok(())
     }
 
+    /// 写入证书并记录同步变更。远端条目落库请用 `upsert_cert_raw`,避免回环。
+    pub fn upsert_cert(&self, row: &CertRow) -> Result<()> {
+        self.upsert_cert_raw(row)?;
+        let payload = self.cert_payload(&row.id)?;
+        self.oplog_append("cert", &row.id, "put", Some(payload))?;
+        Ok(())
+    }
+
     pub fn delete_cert(&self, id: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM certs WHERE id = ?1", [id])?;
+        drop(conn);
+        self.oplog_append("cert", id, "del", None)?;
         Ok(())
     }
 
@@ -983,6 +993,10 @@ impl Db {
                 self.oplog_append("key", &k.id, "put", Some(payload))?;
             }
         }
+        for c in self.list_certs()? {
+            let payload = self.cert_payload(&c.id)?;
+            self.oplog_append("cert", &c.id, "put", Some(payload))?;
+        }
         self.kv_set("oplog_bootstrapped", "1")?;
         Ok(())
     }
@@ -1010,6 +1024,33 @@ impl Db {
         Ok(serde_json::to_string(&serde_json::json!({
             "meta": meta,
             "privateDevEnc": base64::engine::general_purpose::STANDARD.encode(enc),
+        }))?)
+    }
+
+    /// cert 实体的 oplog payload:元数据 + 设备密钥加密的两列(推送时换主密钥加密)
+    pub fn cert_payload(&self, cert_id: &str) -> Result<String> {
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let row = self.get_cert_full(cert_id)?;
+        Ok(serde_json::to_string(&serde_json::json!({
+            "meta": {
+                "id": row.id,
+                "domains": row.domains,
+                "challenge": row.challenge,
+                "ca": row.ca,
+                "hostId": row.host_id,
+                "deployPath": row.deploy_path,
+                "reloadCmd": row.reload_cmd,
+                "notAfter": row.not_after,
+                "autoRenew": row.auto_renew,
+                "state": row.state,
+                "ownerDeviceId": row.owner_device_id,
+                "createdAt": row.created_at,
+            },
+            "certPem": row.cert_pem,
+            "chainPem": row.chain_pem,
+            "accountKeyDevEnc": row.account_key_enc.as_ref().map(|b| b64.encode(b)),
+            "keyPemDevEnc": row.key_pem_enc.as_ref().map(|b| b64.encode(b)),
         }))?)
     }
 
@@ -1096,6 +1137,7 @@ impl Db {
                 conn.execute("DELETE FROM keys WHERE id = ?1", [entity_id])?;
                 conn.execute("UPDATE hosts SET key_id = NULL WHERE key_id = ?1", [entity_id])?;
             }
+            "cert" => { conn.execute("DELETE FROM certs WHERE id = ?1", [entity_id])?; }
             // 分组以名字为 entity_id;仅删空分组,避免把本机仍在用的分组删掉
             "group" => {
                 conn.execute(
@@ -1283,5 +1325,51 @@ mod tests {
         let owner = db.get_cert_full("old").unwrap().owner_device_id;
         assert!(!owner.is_empty(), "重开后存量证书应认领本机归属");
         assert_eq!(owner, db.device_id());
+    }
+
+    fn sample_cert(id: &str, owner: &str) -> CertRow {
+        CertRow {
+            id: id.into(),
+            domains: vec!["a.example.com".into()],
+            challenge: "http-01".into(),
+            ca: "letsencrypt".into(),
+            host_id: "h1".into(),
+            deploy_path: "/etc/ssl".into(),
+            reload_cmd: "nginx -s reload".into(),
+            not_after: 0,
+            auto_renew: true,
+            state: "active".into(),
+            account_key_enc: Some(b"acct-cipher".to_vec()),
+            cert_pem: Some("LEAF".into()),
+            chain_pem: Some("CHAIN".into()),
+            key_pem_enc: Some(b"key-cipher".to_vec()),
+            owner_device_id: owner.into(),
+            created_at: "2026-09-20".into(),
+        }
+    }
+
+    #[test]
+    fn cert_writes_go_through_oplog_but_raw_does_not() {
+        let db = Db::open(scratch("certoplog")).unwrap();
+
+        db.upsert_cert(&sample_cert("c1", "dev-a")).unwrap();
+        let ops = db.oplog_after(0).unwrap();
+        let put = ops.iter().find(|o| o.entity == "cert" && o.entity_id == "c1");
+        assert!(put.is_some(), "upsert_cert 应写出 cert 的 put 条目");
+        assert_eq!(put.unwrap().op, "put");
+
+        let before = db.oplog_after(0).unwrap().len();
+        db.upsert_cert_raw(&sample_cert("c2", "dev-b")).unwrap();
+        assert_eq!(db.oplog_after(0).unwrap().len(), before, "_raw 不得写 oplog");
+
+        db.delete_cert("c1").unwrap();
+        let ops = db.oplog_after(0).unwrap();
+        assert!(
+            ops.iter().any(|o| o.entity == "cert" && o.entity_id == "c1" && o.op == "del"),
+            "delete_cert 应写出墓碑"
+        );
+
+        db.delete_entity_raw("cert", "c2").unwrap();
+        assert!(db.get_cert_full("c2").is_err(), "delete_entity_raw 应真的删掉证书");
     }
 }
