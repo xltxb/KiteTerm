@@ -29,6 +29,8 @@ pub struct CertRow {
     pub chain_pem: Option<String>,
     /// 证书私钥 PEM,经 vault 加密后落库(供重新部署到同主机/其他主机)
     pub key_pem_enc: Option<Vec<u8>>,
+    /// 负责自动续期的设备(本机 device_id);空串表示尚未归属,启动时由本机认领
+    pub owner_device_id: String,
     pub created_at: String,
 }
 
@@ -62,6 +64,20 @@ fn uid() -> String {
 
 fn group_payload(name: &str) -> String {
     serde_json::json!({ "name": name }).to_string()
+}
+
+/// 幂等补列。`open()` 里只有 `CREATE TABLE IF NOT EXISTS`,改建表语句对存量库无效,
+/// 已建好的表要加列只能走这里。table/column/decl 均为代码内字面量,不接受外部输入。
+fn add_column_if_missing(conn: &Connection, table: &str, column: &str, decl: &str) -> Result<()> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let exists = stmt
+        .query_map([], |r| r.get::<_, String>(1))?
+        .any(|c| c.map(|name| name == column).unwrap_or(false));
+    drop(stmt);
+    if !exists {
+        conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"), [])?;
+    }
+    Ok(())
 }
 
 impl Db {
@@ -137,13 +153,16 @@ impl Db {
                 not_after INTEGER NOT NULL DEFAULT 0, auto_renew INTEGER NOT NULL DEFAULT 1,
                 state TEXT NOT NULL DEFAULT 'active',
                 account_key_enc BLOB, cert_pem TEXT, chain_pem TEXT, key_pem_enc BLOB,
+                owner_device_id TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL
             );
             "#,
         )?;
+        add_column_if_missing(&conn, "certs", "owner_device_id", "TEXT NOT NULL DEFAULT ''")?;
         let db = Self { conn: Mutex::new(conn), data_dir };
         db.seed_groups()?;
         db.ensure_device_id()?;
+        db.claim_unowned_certs()?;
         Ok(db)
     }
 
@@ -156,6 +175,17 @@ impl Db {
 
     pub fn device_id(&self) -> String {
         self.kv_get("device_id").ok().flatten().unwrap_or_default()
+    }
+
+    /// 存量证书(补列后归属为空)认领本机。远端同步来的证书带着原归属,不受影响。
+    fn claim_unowned_certs(&self) -> Result<()> {
+        let device = self.device_id();
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE certs SET owner_device_id = ?1 WHERE owner_device_id = ''",
+            [device],
+        )?;
+        Ok(())
     }
 
     fn seed_groups(&self) -> Result<()> {
@@ -652,7 +682,7 @@ impl Db {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, domains, challenge, ca, host_id, deploy_path, reload_cmd,
-                    not_after, auto_renew, state, created_at
+                    not_after, auto_renew, state, owner_device_id, created_at
              FROM certs ORDER BY created_at",
         )?;
         let rows = stmt
@@ -669,7 +699,8 @@ impl Db {
                     not_after: r.get(7)?,
                     auto_renew: r.get::<_, i64>(8)? != 0,
                     state: r.get(9)?,
-                    created_at: r.get(10)?,
+                    owner_device_id: r.get(10)?,
+                    created_at: r.get(11)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -680,7 +711,7 @@ impl Db {
         let conn = self.conn.lock().unwrap();
         let row = conn.query_row(
             "SELECT id, domains, challenge, ca, host_id, deploy_path, reload_cmd,
-                    not_after, auto_renew, state, account_key_enc, cert_pem, chain_pem, key_pem_enc, created_at
+                    not_after, auto_renew, state, account_key_enc, cert_pem, chain_pem, key_pem_enc, owner_device_id, created_at
              FROM certs WHERE id = ?1",
             [id],
             |r| {
@@ -700,7 +731,8 @@ impl Db {
                     cert_pem: r.get(11)?,
                     chain_pem: r.get(12)?,
                     key_pem_enc: r.get(13)?,
-                    created_at: r.get(14)?,
+                    owner_device_id: r.get(14)?,
+                    created_at: r.get(15)?,
                 })
             },
         )?;
@@ -711,11 +743,11 @@ impl Db {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT INTO certs (id, domains, challenge, ca, host_id, deploy_path, reload_cmd,
-                                 not_after, auto_renew, state, account_key_enc, cert_pem, chain_pem, key_pem_enc, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                                 not_after, auto_renew, state, account_key_enc, cert_pem, chain_pem, key_pem_enc, owner_device_id, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
              ON CONFLICT(id) DO UPDATE SET
                 domains=?2, challenge=?3, ca=?4, host_id=?5, deploy_path=?6, reload_cmd=?7,
-                not_after=?8, auto_renew=?9, state=?10, account_key_enc=?11, cert_pem=?12, chain_pem=?13, key_pem_enc=?14",
+                not_after=?8, auto_renew=?9, state=?10, account_key_enc=?11, cert_pem=?12, chain_pem=?13, key_pem_enc=?14, owner_device_id=?15",
             params![
                 row.id,
                 serde_json::to_string(&row.domains).unwrap(),
@@ -731,6 +763,7 @@ impl Db {
                 row.cert_pem,
                 row.chain_pem,
                 row.key_pem_enc,
+                row.owner_device_id,
                 row.created_at,
             ],
         )?;
@@ -1172,5 +1205,83 @@ impl Db {
         let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? != 0)))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join("kite-db-test").join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn add_column_is_idempotent_and_keeps_rows() {
+        let db = Db::open(scratch("addcol")).unwrap();
+        db.upsert_cert(&CertRow {
+            id: "c1".into(),
+            domains: vec!["a.example.com".into()],
+            challenge: "http-01".into(),
+            ca: "letsencrypt".into(),
+            host_id: "h1".into(),
+            deploy_path: "/etc/ssl".into(),
+            reload_cmd: "nginx -s reload".into(),
+            not_after: 0,
+            auto_renew: true,
+            state: "active".into(),
+            account_key_enc: None,
+            cert_pem: None,
+            chain_pem: None,
+            key_pem_enc: None,
+            owner_device_id: "dev-a".into(),
+            created_at: "2026-09-20".into(),
+        })
+        .unwrap();
+
+        // 再跑两次补列:不应报错,不应丢行,不应重置已有值
+        let conn = db.conn.lock().unwrap();
+        add_column_if_missing(&conn, "certs", "owner_device_id", "TEXT NOT NULL DEFAULT ''").unwrap();
+        add_column_if_missing(&conn, "certs", "owner_device_id", "TEXT NOT NULL DEFAULT ''").unwrap();
+        drop(conn);
+
+        let row = db.get_cert_full("c1").unwrap();
+        assert_eq!(row.owner_device_id, "dev-a", "补列不应覆盖已有归属");
+        assert_eq!(db.list_certs().unwrap().len(), 1, "补列不应丢行");
+    }
+
+    #[test]
+    fn existing_certs_claim_this_device_on_open() {
+        let dir = scratch("claim");
+        let db = Db::open(dir.clone()).unwrap();
+        // 直接写一条归属为空的行,模拟补列后的存量证书
+        db.upsert_cert(&CertRow {
+            id: "old".into(),
+            domains: vec!["old.example.com".into()],
+            challenge: "http-01".into(),
+            ca: "letsencrypt".into(),
+            host_id: "h1".into(),
+            deploy_path: "/etc/ssl".into(),
+            reload_cmd: "nginx -s reload".into(),
+            not_after: 0,
+            auto_renew: true,
+            state: "active".into(),
+            account_key_enc: None,
+            cert_pem: None,
+            chain_pem: None,
+            key_pem_enc: None,
+            owner_device_id: "".into(),
+            created_at: "2026-09-20".into(),
+        })
+        .unwrap();
+        drop(db);
+
+        let db = Db::open(dir).unwrap();
+        let owner = db.get_cert_full("old").unwrap().owner_device_id;
+        assert!(!owner.is_empty(), "重开后存量证书应认领本机归属");
+        assert_eq!(owner, db.device_id());
     }
 }

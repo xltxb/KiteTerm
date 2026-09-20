@@ -106,6 +106,7 @@ pub struct CertInfo {
     pub not_after: i64,
     pub auto_renew: bool,
     pub state: String,
+    pub owner_device_id: String,
     pub created_at: String,
 }
 
