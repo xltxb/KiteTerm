@@ -304,7 +304,7 @@ export function CertsScreen() {
                         <Server size={14} /><span className="grow">部署到其他主机…</span>
                       </div>
                       <div className="cert-menu-item" onClick={() => { setMenu(null); void renew(c.id); }}>
-                        <RefreshCw size={14} /><span className="grow">重试验证</span>
+                        <RefreshCw size={14} /><span className="grow">{isTakeover(c) ? "接管并重试验证" : "重试验证"}</span>
                       </div>
                       <div
                         className="cert-menu-item"
