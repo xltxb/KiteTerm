@@ -594,14 +594,15 @@ pub fn spawn_renew_loop(
                 )
                 .await;
                 if let Err(e) = res {
-                    // 续期失败:仍有效标 expiring,已过期标 error;保留既有材料(get_cert_full)
+                    // 续期失败:仍有效标 expiring,已过期标 error;保留既有材料(get_cert_full)。
+                    // 目标状态与现有状态相同时跳过落库,否则续不动的证书会每 12h 写一条 oplog、无上界。
                     if let Ok(mut row) = db.get_cert_full(&c.id) {
-                        row.state = if row.not_after > now_ms {
-                            "expiring".to_string()
-                        } else {
-                            "error".to_string()
-                        };
-                        let _ = db.upsert_cert(&row);
+                        if let Some(next_state) =
+                            renew_failure_next_state(&row.state, row.not_after, now_ms)
+                        {
+                            row.state = next_state.to_string();
+                            let _ = db.upsert_cert(&row);
+                        }
                     }
                     emit_progress(&app, &c.id, Step::Sign, "error", Some(&e.to_string()));
                 }
@@ -620,6 +621,26 @@ pub fn renew_due(not_after_ms: i64, now_ms: i64) -> bool {
 /// 归属为空 = 存量证书尚未认领,由本机接手。
 pub fn renew_owned_by(owner_device_id: &str, this_device: &str) -> bool {
     owner_device_id.is_empty() || owner_device_id == this_device
+}
+
+/// 续期失败时的落库判据:算出目标状态(仍有效→expiring,已过期→error),
+/// 与现有状态相同则返回 None(跳过落库),不同才返回 Some(目标状态)。
+/// 避免一张续不动的证书每 12h 都写一条含证书材料的 oplog、无上界地产生同步噪音。
+fn renew_failure_next_state(
+    current_state: &str,
+    not_after_ms: i64,
+    now_ms: i64,
+) -> Option<&'static str> {
+    let target = if not_after_ms > now_ms {
+        "expiring"
+    } else {
+        "error"
+    };
+    if current_state == target {
+        None
+    } else {
+        Some(target)
+    }
 }
 
 /// 仅供单测使用(前端自行计算剩余天数);保留窄化 allow 而非放宽整模块
@@ -743,5 +764,33 @@ mod tests {
         assert!(renew_owned_by("dev-a", "dev-a"), "归属本机应续期");
         assert!(!renew_owned_by("dev-b", "dev-a"), "归属他机不应续期");
         assert!(renew_owned_by("", "dev-a"), "归属为空视为未认领,本机接手");
+    }
+
+    #[test]
+    fn renew_failure_next_state_dedupes_repeat_failures() {
+        let now = 1_000_000_000_000;
+        let not_after_expired = now - 86_400_000; // 已过期
+        let not_after_expiring = now + 10 * 86_400_000; // 仍有效,进入续期窗口
+
+        // 第一次失败:active -> error,应写
+        assert_eq!(
+            renew_failure_next_state("active", not_after_expired, now),
+            Some("error")
+        );
+        // 同一状态重复续期失败:已是 error,再次失败不应重复写
+        assert_eq!(
+            renew_failure_next_state("error", not_after_expired, now),
+            None
+        );
+
+        // 未过期分支同理:active -> expiring 应写,expiring -> expiring 应跳过
+        assert_eq!(
+            renew_failure_next_state("active", not_after_expiring, now),
+            Some("expiring")
+        );
+        assert_eq!(
+            renew_failure_next_state("expiring", not_after_expiring, now),
+            None
+        );
     }
 }
