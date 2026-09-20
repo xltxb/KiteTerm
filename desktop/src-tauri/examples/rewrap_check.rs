@@ -9,7 +9,7 @@
 
 use chacha20poly1305::aead::{KeyInit, OsRng as AeadOsRng};
 use chacha20poly1305::XChaCha20Poly1305;
-use kite_term_lib::db::Db;
+use kite_term_lib::db::{CertRow, Db};
 use kite_term_lib::vault::Vault;
 
 fn scratch(name: &str) -> std::path::PathBuf {
@@ -45,6 +45,31 @@ fn main() {
         &base64_encode(&old_vault.encrypt(api_key.as_bytes()).unwrap()),
     )
     .unwrap();
+
+    // 同步主密钥(kv)与 ACME 的两列(certs 表)—— 都不在 keys/ai_key_* 里,曾被漏扫
+    let mk = b"master-key-32-bytes-placeholder!";
+    db.kv_set("sync_mk_enc", &base64_encode(&old_vault.encrypt(mk).unwrap())).unwrap();
+
+    let acct_json = br#"{"kid":"legacy-acct"}"#;
+    let cert_pem = "-----BEGIN PRIVATE KEY-----\nCERTSECRET\n-----END-----\n";
+    db.upsert_cert(&CertRow {
+        id: "cert-1".into(),
+        domains: vec!["example.com".into()],
+        challenge: "http-01".into(),
+        ca: "letsencrypt".into(),
+        host_id: "h1".into(),
+        deploy_path: "/etc/ssl".into(),
+        reload_cmd: "nginx -s reload".into(),
+        not_after: 0,
+        auto_renew: true,
+        state: "ready".into(),
+        account_key_enc: Some(old_vault.encrypt(acct_json).unwrap()),
+        cert_pem: None,
+        chain_pem: None,
+        key_pem_enc: Some(old_vault.encrypt(cert_pem.as_bytes()).unwrap()),
+        created_at: "2026-09-07".into(),
+    })
+    .unwrap();
     println!("step1 用历史密钥写入存量数据 OK");
 
     // 2) 换一把「钥匙串密钥」,device.key 仍在 —— 正是出问题的那个状态
@@ -63,7 +88,7 @@ fn main() {
 
     // 3) 迁移
     let n = kite_term_lib::rewrap::run(&db, &vault).unwrap();
-    assert_eq!(n, 2, "两条密文都该被重新加密,实际 {n}");
+    assert_eq!(n, 5, "五条密文都该被重新加密(私钥/AI 密钥/同步主密钥/证书两列),实际 {n}");
 
     let blob = db.get_key_private_enc(&key_id).unwrap();
     assert_eq!(
@@ -76,6 +101,28 @@ fn main() {
         vault.decrypt_current(&base64_decode(&enc)).unwrap(),
         api_key.as_bytes(),
         "迁移后应能只用当前密钥解开 AI 密钥"
+    );
+    let enc = db.kv_get("sync_mk_enc").unwrap().unwrap();
+    assert_eq!(
+        vault.decrypt_current(&base64_decode(&enc)).unwrap(),
+        mk,
+        "迁移后应能只用当前密钥解开同步主密钥"
+    );
+    let sec = db
+        .list_cert_secrets()
+        .unwrap()
+        .into_iter()
+        .find(|s| s.id == "cert-1")
+        .unwrap();
+    assert_eq!(
+        vault.decrypt_current(sec.account_key_enc.as_deref().unwrap()).unwrap(),
+        acct_json,
+        "迁移后应能只用当前密钥解开 ACME 账户密钥"
+    );
+    assert_eq!(
+        vault.decrypt_current(sec.key_pem_enc.as_deref().unwrap()).unwrap(),
+        cert_pem.as_bytes(),
+        "迁移后应能只用当前密钥解开证书私钥"
     );
     println!("step3 迁移后改用当前密钥 OK");
 
