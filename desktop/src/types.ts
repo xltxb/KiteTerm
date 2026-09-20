@@ -249,6 +249,8 @@ export interface SyncStatus {
   configured: boolean;
   syncing: boolean;
   lastSyncAt: string | null;
+  /** 本机 device_id(后端直给)。devices 来自桶内 manifest,首次同步成功前不含本机 */
+  deviceId: string;
   devices: SyncDevice[];
 }
 
