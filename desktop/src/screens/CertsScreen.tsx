@@ -22,6 +22,7 @@ import { confirmAction, showError } from "@/lib/dialog";
 import { useCertsStore } from "@/stores/certs";
 import { useDataStore } from "@/stores/data";
 import { useSessionStore } from "@/stores/session";
+import { useSyncStore } from "@/stores/sync";
 import { useUiStore } from "@/stores/ui";
 import type { CertInfo } from "@/types";
 
@@ -59,6 +60,16 @@ export function CertsScreen() {
   const hosts = useDataStore((s) => s.hosts);
   const sessions = useSessionStore((s) => s.sessions);
   const go = useUiStore((s) => s.go);
+  const devices = useSyncStore((s) => s.status?.devices ?? []);
+  const certsSynced = useSyncStore((s) => s.config?.scopes.certs ?? false);
+  const myId = devices.find((d) => d.current)?.id ?? "";
+  const ownerLabel = (c: CertInfo) => {
+    // devices 来自桶内 manifest;未配置同步时为空,此时本机就是唯一设备
+    if (myId === "" || !c.ownerDeviceId || c.ownerDeviceId === myId) return "本机自动续期";
+    const d = devices.find((x) => x.id === c.ownerDeviceId);
+    return `由 ${d?.name ?? c.ownerDeviceId.slice(0, 8)} 自动续期`;
+  };
+  const isTakeover = (c: CertInfo) => myId !== "" && !!c.ownerDeviceId && c.ownerDeviceId !== myId;
 
   const [domains, setDomains] = useState("");
   const [challenge, setChallenge] = useState<ChallengeKind>("http");
@@ -257,7 +268,7 @@ export function CertsScreen() {
                     <span className="mono w-semi fs-md t-strong ellipsis">{c.domains.join(", ")}</span>
                     <Badge color={badge.color} dot>{badge.text}</Badge>
                   </div>
-                  <div className="fs-xs t-faint">{caLabel(c.ca)} · {challengeLabel(c.challenge)}</div>
+                  <div className="fs-xs t-faint">{caLabel(c.ca)} · {challengeLabel(c.challenge)} · {ownerLabel(c)}</div>
                 </div>
                 <div style={{ width: 150, flex: "none" }}>
                   <div className="row between fs-2xs t-faint mb-4">
@@ -268,7 +279,9 @@ export function CertsScreen() {
                 <span className="row gap-6 fs-xs t-muted" style={{ width: 130 }}>
                   <Server size={12} />{hostName(c.hostId)}
                 </span>
-                <Button variant="ghost" size="sm" onClick={() => void renew(c.id)}>立即续期</Button>
+                <Button variant="ghost" size="sm" onClick={() => void renew(c.id)}>
+                  {isTakeover(c) ? "接管并续期" : "立即续期"}
+                </Button>
                 <div style={{ position: "relative" }} onClick={(e) => e.stopPropagation()}>
                   <div
                     className="icon-btn sm plain"
@@ -331,7 +344,8 @@ export function CertsScreen() {
 
         <div className="row gap-8 fs-sm t-faint mt-12">
           <RefreshCw size={13} />
-          到期前 30 天自动续期并重载服务;证书与私钥仅保存在本机。
+          到期前 30 天自动续期并重载服务;
+          {certsSynced ? "账户密钥与证书随主机配置端到端加密同步。" : "证书与私钥仅保存在本机。"}
         </div>
       </div>
 
