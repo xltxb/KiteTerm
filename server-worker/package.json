@@ -9,7 +9,7 @@
     "deploy": "pnpm sync-admin && wrangler deploy",
     "test": "pnpm sync-admin && vitest run",
     "typecheck": "tsc --noEmit",
-    "migrate:remote": "wrangler d1 migrations apply kite-server --remote"
+    "migrate:remote": "wrangler d1 migrations apply kiteterm --remote"
   },
   "dependencies": {
     "aws4fetch": "^1.0.20",
