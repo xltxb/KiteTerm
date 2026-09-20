@@ -67,9 +67,17 @@ pub fn confirm_dns(manager: &CertManager, cert_id: &str) {
 /// 失败时落库为 error 状态(尽力而为,忽略落库自身的错误)。
 /// 若该 cert_id 已存在(续期失败场景),保留原有到期时间与证书材料,仅改 state,
 /// 避免一次失败的续期把仍然有效的证书数据清空。
+///
+/// 已是 error 状态时跳过落库:该函数只改 state 一个字段,状态未变即整行内容未变,
+/// 而 upsert_cert 会写含完整 cert_pem/chain_pem + 两段密文的 oplog —— 域名校验失败、
+/// CA 限流、SFTP/reload 出错等每一步失败都会走到这里,若不判重,续不动的证书每次
+/// 尝试(含续期守护每 12h 一轮)都会无上界地产生一条 oplog。
 fn upsert_error(db: &Db, cert_id: &str, req: &IssueRequest, created_at: &str) {
     let row = match db.get_cert_full(cert_id) {
         Ok(mut existing) => {
+            if existing.state == "error" {
+                return;
+            }
             existing.state = "error".to_string();
             existing
         }
@@ -792,5 +800,40 @@ mod tests {
             renew_failure_next_state("expiring", not_after_expiring, now),
             None
         );
+    }
+
+    fn scratch_db(name: &str) -> Db {
+        let dir = std::env::temp_dir().join("kite-acme-test").join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        Db::open(dir).unwrap()
+    }
+
+    fn sample_req() -> IssueRequest {
+        IssueRequest {
+            domains: vec!["a.example.com".into()],
+            challenge: "http-01".into(),
+            ca: "letsencrypt".into(),
+            host_id: "h1".into(),
+            deploy_path: "/etc/ssl".into(),
+            reload_cmd: "nginx -s reload".into(),
+        }
+    }
+
+    #[test]
+    fn upsert_error_skips_oplog_when_already_error() {
+        let db = scratch_db("upsert_error_dedup");
+        let req = sample_req();
+
+        // 首次失败(cert_id 尚不存在):应新建一行并产生一条 oplog
+        upsert_error(&db, "c1", &req, "2026-09-20");
+        let ops = db.oplog_after(0).unwrap();
+        assert_eq!(ops.len(), 1, "首次失败应写一条 oplog");
+        assert_eq!(db.get_cert_full("c1").unwrap().state, "error");
+
+        // 同一证书再次失败(已经是 error):不应产生新的 oplog 条目
+        upsert_error(&db, "c1", &req, "2026-09-20");
+        let ops = db.oplog_after(0).unwrap();
+        assert_eq!(ops.len(), 1, "同一状态重复失败不应重复写 oplog");
     }
 }
