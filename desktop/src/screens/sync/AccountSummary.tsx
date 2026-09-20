@@ -58,7 +58,7 @@ export function AccountSummary({ account }: { account: AccountInfo }) {
                     await saveConfig({
                       endpoint: "", bucket: "", region: "", accessKey: "",
                       hasSecret: false, hasMasterKey: cur?.hasMasterKey ?? false,
-                      scopes: cur?.scopes ?? { hosts: true, keys: true, snippets: true, settings: false, recordings: false },
+                      scopes: cur?.scopes ?? { hosts: true, keys: true, snippets: true, settings: false, recordings: false, certs: true },
                       masterPassword: masterPw.trim(),
                     });
                     setMasterPw("");

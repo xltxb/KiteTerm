@@ -22,6 +22,7 @@ import { confirmAction, showError } from "@/lib/dialog";
 import { useCertsStore } from "@/stores/certs";
 import { useDataStore } from "@/stores/data";
 import { useSessionStore } from "@/stores/session";
+import { useSyncStore } from "@/stores/sync";
 import { useUiStore } from "@/stores/ui";
 import type { CertInfo } from "@/types";
 
@@ -59,6 +60,21 @@ export function CertsScreen() {
   const hosts = useDataStore((s) => s.hosts);
   const sessions = useSessionStore((s) => s.sessions);
   const go = useUiStore((s) => s.go);
+  const devices = useSyncStore((s) => s.status?.devices ?? []);
+  // 同步未配置(未登录/未设主密码)时,后端默认配置里的 certs 仍是 true,
+  // 光看 scopes 会对什么都没同步的用户说「已端到端同步」。
+  const certsSynced = useSyncStore(
+    (s) => (s.status?.configured ?? false) && (s.config?.scopes.certs ?? false),
+  );
+  // 本机 id 取后端直给的字段:从 manifest 反推的话,首次同步成功前一直是空串,
+  // 会把他机归属的证书也标成「本机自动续期」,而续期循环其实根本不会碰它们。
+  const myId = useSyncStore((s) => s.status?.deviceId ?? "");
+  const ownerLabel = (c: CertInfo) => {
+    if (myId === "" || !c.ownerDeviceId || c.ownerDeviceId === myId) return "本机自动续期";
+    const d = devices.find((x) => x.id === c.ownerDeviceId);
+    return `由 ${d?.name ?? c.ownerDeviceId.slice(0, 8)} 自动续期`;
+  };
+  const isTakeover = (c: CertInfo) => myId !== "" && !!c.ownerDeviceId && c.ownerDeviceId !== myId;
 
   const [domains, setDomains] = useState("");
   const [challenge, setChallenge] = useState<ChallengeKind>("http");
@@ -257,7 +273,7 @@ export function CertsScreen() {
                     <span className="mono w-semi fs-md t-strong ellipsis">{c.domains.join(", ")}</span>
                     <Badge color={badge.color} dot>{badge.text}</Badge>
                   </div>
-                  <div className="fs-xs t-faint">{caLabel(c.ca)} · {challengeLabel(c.challenge)}</div>
+                  <div className="fs-xs t-faint">{caLabel(c.ca)} · {challengeLabel(c.challenge)} · {ownerLabel(c)}</div>
                 </div>
                 <div style={{ width: 150, flex: "none" }}>
                   <div className="row between fs-2xs t-faint mb-4">
@@ -268,7 +284,9 @@ export function CertsScreen() {
                 <span className="row gap-6 fs-xs t-muted" style={{ width: 130 }}>
                   <Server size={12} />{hostName(c.hostId)}
                 </span>
-                <Button variant="ghost" size="sm" onClick={() => void renew(c.id)}>立即续期</Button>
+                <Button variant="ghost" size="sm" onClick={() => void renew(c.id)}>
+                  {isTakeover(c) ? "接管并续期" : "立即续期"}
+                </Button>
                 <div style={{ position: "relative" }} onClick={(e) => e.stopPropagation()}>
                   <div
                     className="icon-btn sm plain"
@@ -291,7 +309,7 @@ export function CertsScreen() {
                         <Server size={14} /><span className="grow">部署到其他主机…</span>
                       </div>
                       <div className="cert-menu-item" onClick={() => { setMenu(null); void renew(c.id); }}>
-                        <RefreshCw size={14} /><span className="grow">重试验证</span>
+                        <RefreshCw size={14} /><span className="grow">{isTakeover(c) ? "接管并重试验证" : "重试验证"}</span>
                       </div>
                       <div
                         className="cert-menu-item"
@@ -331,7 +349,8 @@ export function CertsScreen() {
 
         <div className="row gap-8 fs-sm t-faint mt-12">
           <RefreshCw size={13} />
-          到期前 30 天自动续期并重载服务;证书与私钥仅保存在本机。
+          到期前 30 天自动续期并重载服务;
+          {certsSynced ? "账户密钥与证书随主机配置端到端加密同步。" : "证书与私钥仅保存在本机。"}
         </div>
       </div>
 
