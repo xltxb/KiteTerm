@@ -321,13 +321,17 @@ fn cert_payload_plaintext(vault: &Vault, p: &mut serde_json::Value) -> Result<()
     Ok(())
 }
 
-/// 本地 oplog 条目 → 桶内明文结构(key 实体把设备密钥层换成明文,随后整体主密钥加密)
+/// 本地 oplog 条目 → 桶内明文结构(key/cert 实体把设备密钥层换成明文,随后整体主密钥加密)
 fn to_wire(vault: &Vault, me: &str, row: &OplogRow) -> Result<WireOp> {
     let mut payload: Option<serde_json::Value> =
         row.payload.as_deref().map(serde_json::from_str).transpose()?;
-    if row.entity == "key" && row.op == "put" {
+    if row.op == "put" {
         if let Some(p) = payload.as_mut() {
-            key_payload_plaintext(vault, p)?;
+            match row.entity.as_str() {
+                "key" => key_payload_plaintext(vault, p)?,
+                "cert" => cert_payload_plaintext(vault, p)?,
+                _ => {}
+            }
         }
     }
     Ok(WireOp {
@@ -958,5 +962,67 @@ mod tests {
             "B 应能用自己的设备密钥解开私钥");
         assert_eq!(v_b.decrypt_current(&got.account_key_enc.unwrap()).unwrap(), acct,
             "B 应能用自己的设备密钥解开账户密钥");
+    }
+
+    /// 覆盖真实增量 push 路径:必须经过 to_wire,而不是手工构造 WireOp ——
+    /// 这正是 cert_survives_device_key_round_trip 漏掉、导致 to_wire 缺口没暴露的那一环。
+    #[test]
+    fn cert_push_path_unwraps_device_key_layer() {
+        use crate::db::CertRow;
+
+        let dir_a = std::env::temp_dir().join("kite-sync-test/cert-push-a");
+        let dir_b = std::env::temp_dir().join("kite-sync-test/cert-push-b");
+        for d in [&dir_a, &dir_b] {
+            let _ = std::fs::remove_dir_all(d);
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let db_a = Db::open(dir_a).unwrap();
+        let db_b = Db::open(dir_b).unwrap();
+        let v_a = Vault::with_device_key(&[11u8; 32], &db_a.data_dir);
+        let v_b = Vault::with_device_key(&[13u8; 32], &db_b.data_dir);
+
+        let acct = b"{\"kid\":\"acct-2\"}";
+        let key_pem = "-----BEGIN PRIVATE KEY-----\nSECRET2\n-----END-----\n";
+        // upsert_cert(非 _raw):真实业务写入路径,会顺带写一条 oplog put 条目
+        db_a.upsert_cert(&CertRow {
+            id: "c2".into(),
+            domains: vec!["b.example.com".into()],
+            challenge: "http-01".into(),
+            ca: "letsencrypt".into(),
+            host_id: "h1".into(),
+            deploy_path: "/etc/ssl".into(),
+            reload_cmd: "nginx -s reload".into(),
+            not_after: 456,
+            auto_renew: true,
+            state: "active".into(),
+            account_key_enc: Some(v_a.encrypt(acct).unwrap()),
+            cert_pem: Some("LEAF2".into()),
+            chain_pem: Some("CHAIN2".into()),
+            key_pem_enc: Some(v_a.encrypt(key_pem.as_bytes()).unwrap()),
+            owner_device_id: "dev-a".into(),
+            created_at: "2026-09-20".into(),
+        })
+        .unwrap();
+
+        let rows = db_a.oplog_after(0).unwrap();
+        let row = rows.iter().find(|r| r.entity == "cert" && r.entity_id == "c2").unwrap();
+
+        // 出网:真正走 to_wire,而不是手工构造 WireOp
+        let wire = to_wire(&v_a, "dev-a", row).unwrap();
+        let payload = wire.payload.as_ref().unwrap();
+        assert!(payload.get("accountKeyDevEnc").is_none(), "push 出去的 payload 不应残留设备密钥层字段");
+        assert!(payload.get("keyPemDevEnc").is_none(), "push 出去的 payload 不应残留设备密钥层字段");
+        assert_eq!(payload["accountKey"].as_str().unwrap(), std::str::from_utf8(acct).unwrap());
+        assert_eq!(payload["keyPem"].as_str().unwrap(), key_pem);
+
+        // 入网:B 用自己的设备密钥重新加密落库
+        apply_wire(&db_b, &v_b, &wire).unwrap();
+
+        let got = db_b.get_cert_full("c2").unwrap();
+        assert_eq!(got.owner_device_id, "dev-a", "归属应跨设备保持");
+        assert_eq!(v_b.decrypt_current(&got.key_pem_enc.unwrap()).unwrap(), key_pem.as_bytes(),
+            "B 应能用自己的设备密钥解开经 to_wire 推送的私钥");
+        assert_eq!(v_b.decrypt_current(&got.account_key_enc.unwrap()).unwrap(), acct,
+            "B 应能用自己的设备密钥解开经 to_wire 推送的账户密钥");
     }
 }
