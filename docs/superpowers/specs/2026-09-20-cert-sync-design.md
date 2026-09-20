@@ -51,6 +51,7 @@
 | 位置 | 改动 |
 |---|---|
 | `sync.rs` `scope_allows` | `"cert" => cfg.scopes.certs && flags.key_sync` |
+| `sync.rs` `to_wire` | 增量 push 的出网解层入口,新增 `"cert"` 分支调用解设备密钥层;漏登记会让 payload 带着设备密钥密文原样出网,对端 `apply_wire` 取不到明文字段,私钥与 ACME 账户密钥被静默丢弃 |
 | `sync.rs` `apply_wire` | 新增 `"cert"`,重新加密两列后 `upsert_cert_raw`(`_raw` = 不写 oplog,避免把远端条目当本地变更再推回去,与 `upsert_host_raw` 同义) |
 | `sync.rs` `build_snapshot` | 新增 `"cert"`,走 `cert_payload` + 解设备密钥层 |
 | `db.rs` `delete_entity_raw` | 新增 `"cert"` → `DELETE FROM certs` |
