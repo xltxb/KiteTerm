@@ -302,6 +302,25 @@ fn key_payload_plaintext(vault: &Vault, p: &mut serde_json::Value) -> Result<()>
     Ok(())
 }
 
+/// cert 实体 payload:设备密钥层 → 明文(随后整条经主密钥加密出网)。
+/// 两列都可能为空(签发未完成的证书),空则原样跳过。
+fn cert_payload_plaintext(vault: &Vault, p: &mut serde_json::Value) -> Result<()> {
+    for (enc_field, plain_field) in
+        [("accountKeyDevEnc", "accountKey"), ("keyPemDevEnc", "keyPem")]
+    {
+        let Some(enc) = p[enc_field].as_str().map(str::to_string) else {
+            p.as_object_mut().unwrap().remove(enc_field);
+            continue;
+        };
+        let raw = vault.decrypt(&b64().decode(&enc).map_err(|e| AppError(e.to_string()))?)?;
+        p[plain_field] = serde_json::Value::String(
+            String::from_utf8(raw).map_err(|_| AppError("证书密文解码失败".into()))?,
+        );
+        p.as_object_mut().unwrap().remove(enc_field);
+    }
+    Ok(())
+}
+
 /// 本地 oplog 条目 → 桶内明文结构(key 实体把设备密钥层换成明文,随后整体主密钥加密)
 fn to_wire(vault: &Vault, me: &str, row: &OplogRow) -> Result<WireOp> {
     let mut payload: Option<serde_json::Value> =
@@ -354,6 +373,33 @@ fn apply_wire(db: &Db, vault: &Vault, wire: &WireOp) -> Result<()> {
             let dev_enc = vault.encrypt(pem.as_bytes())?;
             db.upsert_key_raw(&meta, &dev_enc)?;
         }
+        "cert" => {
+            let meta = &payload["meta"];
+            let enc = |field: &str| -> Result<Option<Vec<u8>>> {
+                match payload[field].as_str() {
+                    Some(s) => Ok(Some(vault.encrypt(s.as_bytes())?)),
+                    None => Ok(None),
+                }
+            };
+            db.upsert_cert_raw(&crate::db::CertRow {
+                id: meta["id"].as_str().unwrap_or_default().to_string(),
+                domains: serde_json::from_value(meta["domains"].clone()).unwrap_or_default(),
+                challenge: meta["challenge"].as_str().unwrap_or_default().to_string(),
+                ca: meta["ca"].as_str().unwrap_or_default().to_string(),
+                host_id: meta["hostId"].as_str().unwrap_or_default().to_string(),
+                deploy_path: meta["deployPath"].as_str().unwrap_or_default().to_string(),
+                reload_cmd: meta["reloadCmd"].as_str().unwrap_or_default().to_string(),
+                not_after: meta["notAfter"].as_i64().unwrap_or(0),
+                auto_renew: meta["autoRenew"].as_bool().unwrap_or(true),
+                state: meta["state"].as_str().unwrap_or("active").to_string(),
+                account_key_enc: enc("accountKey")?,
+                cert_pem: payload["certPem"].as_str().map(str::to_string),
+                chain_pem: payload["chainPem"].as_str().map(str::to_string),
+                key_pem_enc: enc("keyPem")?,
+                owner_device_id: meta["ownerDeviceId"].as_str().unwrap_or_default().to_string(),
+                created_at: meta["createdAt"].as_str().unwrap_or_default().to_string(),
+            })?;
+        }
         "group" => {
             let name = payload["name"].as_str().unwrap_or_default();
             if !name.is_empty() {
@@ -405,6 +451,14 @@ fn build_snapshot(
                     Ok(s) => {
                         let mut v: serde_json::Value = serde_json::from_str(&s)?;
                         key_payload_plaintext(vault, &mut v)?;
+                        Some(v)
+                    }
+                    Err(_) => None,
+                },
+                "cert" => match db.cert_payload(&entity_id) {
+                    Ok(s) => {
+                        let mut v: serde_json::Value = serde_json::from_str(&s)?;
+                        cert_payload_plaintext(vault, &mut v)?;
                         Some(v)
                     }
                     Err(_) => None,
@@ -839,5 +893,70 @@ mod tests {
         let json = r#"{"hosts":true,"keys":true,"snippets":true,"settings":false,"recordings":false}"#;
         let s: SyncScopes = serde_json::from_str(json).unwrap();
         assert!(s.certs, "存量配置升级后证书范围应默认开,不能静默关闭");
+    }
+
+    #[test]
+    fn cert_survives_device_key_round_trip() {
+        use crate::db::CertRow;
+
+        let dir_a = std::env::temp_dir().join("kite-sync-test/cert-a");
+        let dir_b = std::env::temp_dir().join("kite-sync-test/cert-b");
+        for d in [&dir_a, &dir_b] {
+            let _ = std::fs::remove_dir_all(d);
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let db_a = Db::open(dir_a).unwrap();
+        let db_b = Db::open(dir_b).unwrap();
+        let v_a = Vault::with_device_key(&[7u8; 32], &db_a.data_dir);
+        let v_b = Vault::with_device_key(&[9u8; 32], &db_b.data_dir);
+
+        let acct = b"{\"kid\":\"acct-1\"}";
+        let key_pem = "-----BEGIN PRIVATE KEY-----\nSECRET\n-----END-----\n";
+        db_a.upsert_cert_raw(&CertRow {
+            id: "c1".into(),
+            domains: vec!["a.example.com".into()],
+            challenge: "http-01".into(),
+            ca: "letsencrypt".into(),
+            host_id: "h1".into(),
+            deploy_path: "/etc/ssl".into(),
+            reload_cmd: "nginx -s reload".into(),
+            not_after: 123,
+            auto_renew: true,
+            state: "active".into(),
+            account_key_enc: Some(v_a.encrypt(acct).unwrap()),
+            cert_pem: Some("LEAF".into()),
+            chain_pem: Some("CHAIN".into()),
+            key_pem_enc: Some(v_a.encrypt(key_pem.as_bytes()).unwrap()),
+            owner_device_id: "dev-a".into(),
+            created_at: "2026-09-20".into(),
+        })
+        .unwrap();
+
+        // 出网:解 A 的设备密钥层
+        let mut payload: serde_json::Value =
+            serde_json::from_str(&db_a.cert_payload("c1").unwrap()).unwrap();
+        cert_payload_plaintext(&v_a, &mut payload).unwrap();
+        assert!(payload.get("keyPemDevEnc").is_none(), "出网后不应残留设备密钥层字段");
+        assert_eq!(payload["keyPem"].as_str().unwrap(), key_pem);
+
+        // 入网:B 用自己的设备密钥重新加密落库
+        let wire = WireOp {
+            entity: "cert".into(),
+            entity_id: "c1".into(),
+            op: "put".into(),
+            payload: Some(payload),
+            lamport: 1,
+            device_id: "dev-a".into(),
+            created_at: "2026-09-20".into(),
+        };
+        apply_wire(&db_b, &v_b, &wire).unwrap();
+
+        let got = db_b.get_cert_full("c1").unwrap();
+        assert_eq!(got.owner_device_id, "dev-a", "归属应跨设备保持");
+        assert_eq!(got.cert_pem.as_deref(), Some("LEAF"));
+        assert_eq!(v_b.decrypt_current(&got.key_pem_enc.unwrap()).unwrap(), key_pem.as_bytes(),
+            "B 应能用自己的设备密钥解开私钥");
+        assert_eq!(v_b.decrypt_current(&got.account_key_enc.unwrap()).unwrap(), acct,
+            "B 应能用自己的设备密钥解开账户密钥");
     }
 }
