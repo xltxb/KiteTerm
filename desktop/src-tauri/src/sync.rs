@@ -345,6 +345,64 @@ fn to_wire(vault: &Vault, me: &str, row: &OplogRow) -> Result<WireOp> {
     })
 }
 
+/// 桶内 cert 条目的 meta 结构。字段全部必填:缺一个就让 serde 报错,
+/// 而不是静默回落到默认值(notAfter=0 会让续期判定恒真、ownerDeviceId 空串
+/// 会被本机 claim_unowned_certs 认领走,都是看不见的坏账)。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CertWireMeta {
+    domains: Vec<String>,
+    challenge: String,
+    ca: String,
+    host_id: String,
+    deploy_path: String,
+    reload_cmd: String,
+    not_after: i64,
+    auto_renew: bool,
+    state: String,
+    owner_device_id: String,
+    created_at: String,
+}
+
+/// 桶内 cert 条目的完整 payload。密钥两列是明文(出网前已由 cert_payload_plaintext 解层),
+/// 签发未完成的证书可能为空,故用 Option。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CertWire {
+    meta: CertWireMeta,
+    cert_pem: Option<String>,
+    chain_pem: Option<String>,
+    account_key: Option<String>,
+    key_pem: Option<String>,
+}
+
+/// cert payload 的形状校验 + 反序列化。
+/// payload 仍带 *DevEnc,说明出网时解层没跑成:那是**源设备**的设备密钥密文,本机解不开,
+/// 照着落库等于静默丢私钥,必须判为坏条目。
+fn parse_cert_wire(payload: &serde_json::Value) -> Result<CertWire> {
+    for field in ["accountKeyDevEnc", "keyPemDevEnc"] {
+        if !payload.get(field).map(serde_json::Value::is_null).unwrap_or(true) {
+            return Err(AppError(format!("cert payload 残留设备密钥层字段 {field}")));
+        }
+    }
+    Ok(serde_json::from_value(payload.clone())?)
+}
+
+/// 远端条目落地前的形状校验(目前只有 cert 需要)。
+/// 必须在 version_accept_remote **之前**调用:那个函数有副作用,一旦记了版本行,
+/// 后面 apply_wire 再 Err 掉整轮同步,下一轮同一条目就会被 LWW 判定跳过、游标照推 ——
+/// 从「静默丢私钥」变成「响一次然后照样丢」。校验不过就 continue:不记版本、不推游标,下轮重试。
+fn precheck_wire(wire: &WireOp) -> Result<()> {
+    if wire.entity != "cert" || wire.op != "put" {
+        return Ok(());
+    }
+    let payload = wire
+        .payload
+        .as_ref()
+        .ok_or_else(|| AppError("cert put 条目缺少 payload".into()))?;
+    parse_cert_wire(payload).map(|_| ())
+}
+
 /// 应用一条远端条目(LWW 判定已通过)
 fn apply_wire(db: &Db, vault: &Vault, wire: &WireOp) -> Result<()> {
     if wire.op == "del" {
@@ -378,30 +436,33 @@ fn apply_wire(db: &Db, vault: &Vault, wire: &WireOp) -> Result<()> {
             db.upsert_key_raw(&meta, &dev_enc)?;
         }
         "cert" => {
-            let meta = &payload["meta"];
-            let enc = |field: &str| -> Result<Option<Vec<u8>>> {
-                match payload[field].as_str() {
-                    Some(s) => Ok(Some(vault.encrypt(s.as_bytes())?)),
-                    None => Ok(None),
-                }
+            let c = parse_cert_wire(payload)?;
+            let enc = |s: Option<String>| -> Result<Option<Vec<u8>>> {
+                s.map(|s| vault.encrypt(s.as_bytes())).transpose()
             };
+            // 走 _raw:本函数是「应用远端条目」,再写 oplog 会把远端的改动当成本机的改动
+            // 推回桶里,形成回环。
             db.upsert_cert_raw(&crate::db::CertRow {
-                id: meta["id"].as_str().unwrap_or_default().to_string(),
-                domains: serde_json::from_value(meta["domains"].clone()).unwrap_or_default(),
-                challenge: meta["challenge"].as_str().unwrap_or_default().to_string(),
-                ca: meta["ca"].as_str().unwrap_or_default().to_string(),
-                host_id: meta["hostId"].as_str().unwrap_or_default().to_string(),
-                deploy_path: meta["deployPath"].as_str().unwrap_or_default().to_string(),
-                reload_cmd: meta["reloadCmd"].as_str().unwrap_or_default().to_string(),
-                not_after: meta["notAfter"].as_i64().unwrap_or(0),
-                auto_renew: meta["autoRenew"].as_bool().unwrap_or(true),
-                state: meta["state"].as_str().unwrap_or("active").to_string(),
-                account_key_enc: enc("accountKey")?,
-                cert_pem: payload["certPem"].as_str().map(str::to_string),
-                chain_pem: payload["chainPem"].as_str().map(str::to_string),
-                key_pem_enc: enc("keyPem")?,
-                owner_device_id: meta["ownerDeviceId"].as_str().unwrap_or_default().to_string(),
-                created_at: meta["createdAt"].as_str().unwrap_or_default().to_string(),
+                // 权威键取 wire.entity_id:LWW 判定与墓碑删除都认它,
+                // 用 payload 里的 meta.id 一旦两者不一致就会留下删不掉的孤儿行。
+                id: wire.entity_id.clone(),
+                domains: c.meta.domains,
+                challenge: c.meta.challenge,
+                ca: c.meta.ca,
+                host_id: c.meta.host_id,
+                deploy_path: c.meta.deploy_path,
+                reload_cmd: c.meta.reload_cmd,
+                not_after: c.meta.not_after,
+                auto_renew: c.meta.auto_renew,
+                state: c.meta.state,
+                account_key_enc: enc(c.account_key)?,
+                cert_pem: c.cert_pem,
+                chain_pem: c.chain_pem,
+                key_pem_enc: enc(c.key_pem)?,
+                // 归属照抄远端而不是填本机:自动续期只由归属设备负责,
+                // 落地时改写成本机会让两台设备同时续期,烧掉 CA 的签发配额。
+                owner_device_id: c.meta.owner_device_id,
+                created_at: c.meta.created_at,
             })?;
         }
         "group" => {
@@ -533,9 +594,21 @@ async fn pull_snapshot(
     let mut snap: Snapshot = serde_json::from_slice(&plain)?;
     snap.entries.sort_by_key(|e| e.lamport); // 兼容旧版未排序的快照
     for wire in &snap.entries {
-        if scope_allows(cfg, flags, &wire.entity)
-            && db.version_accept_remote(&wire.entity, &wire.entity_id, wire.lamport, &wire.device_id, &wire.op)?
-        {
+        if !scope_allows(cfg, flags, &wire.entity) {
+            continue;
+        }
+        if let Err(e) = precheck_wire(wire) {
+            // 不记版本:这条下次(下个快照/重推的 oplog)还能重试
+            eprintln!("[sync] 跳过快照里的损坏条目 {}/{}: {e}", wire.entity, wire.entity_id);
+            continue;
+        }
+        if db.version_accept_remote(
+            &wire.entity,
+            &wire.entity_id,
+            wire.lamport,
+            &wire.device_id,
+            &wire.op,
+        )? {
             apply_wire(db, vault, wire)?;
         }
     }
@@ -765,6 +838,12 @@ pub async fn sync_once(db: &Db, vault: &Vault) -> Result<()> {
             .and_then(|plain| serde_json::from_slice::<WireOp>(&plain).map_err(Into::into))
         {
             Ok(wire) => {
+                // 形状校验放在 version_accept_remote 之前:不过就 continue,
+                // 既不记版本也不推游标,这条下轮还会被重新拉下来处理。
+                if let Err(e) = precheck_wire(&wire) {
+                    eprintln!("[sync] 跳过损坏条目 {key}: {e}");
+                    continue;
+                }
                 if scope_allows(&cfg, &flags, &wire.entity)
                     && db.version_accept_remote(
                         &wire.entity,
@@ -1024,5 +1103,112 @@ mod tests {
             "B 应能用自己的设备密钥解开经 to_wire 推送的私钥");
         assert_eq!(v_b.decrypt_current(&got.account_key_enc.unwrap()).unwrap(), acct,
             "B 应能用自己的设备密钥解开经 to_wire 推送的账户密钥");
+    }
+
+    fn cert_wire_payload() -> serde_json::Value {
+        serde_json::json!({
+            "meta": {
+                "id": "c9",
+                "domains": ["c.example.com"],
+                "challenge": "http-01",
+                "ca": "letsencrypt",
+                "hostId": "h1",
+                "deployPath": "/etc/ssl",
+                "reloadCmd": "nginx -s reload",
+                "notAfter": 789,
+                "autoRenew": false,
+                "state": "pending",
+                "ownerDeviceId": "dev-remote",
+                "createdAt": "2026-09-20",
+            },
+            "certPem": "LEAF9",
+            "chainPem": "CHAIN9",
+            "accountKey": "ACCT9",
+            "keyPem": "KEY9",
+        })
+    }
+
+    fn cert_wire(payload: serde_json::Value) -> WireOp {
+        WireOp {
+            entity: "cert".into(),
+            entity_id: "c9".into(),
+            op: "put".into(),
+            payload: Some(payload),
+            lamport: 5,
+            device_id: "dev-remote".into(),
+            created_at: "2026-09-20".into(),
+        }
+    }
+
+    /// payload 仍带 *DevEnc(源设备解层失败)时:跳过、**不写 sync_versions**,
+    /// 这样下一轮同一条目还能被重新处理 —— 而不是记了版本后永久落不了地。
+    #[test]
+    fn cert_wire_with_residual_dev_enc_is_skipped_without_recording_version() {
+        let dir = std::env::temp_dir().join("kite-sync-test/cert-guard");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = Db::open(dir).unwrap();
+
+        let mut payload = cert_wire_payload();
+        payload.as_object_mut().unwrap().remove("accountKey");
+        payload["accountKeyDevEnc"] = serde_json::Value::String("YWJj".into());
+        let wire = cert_wire(payload);
+
+        // 两处 pull 都是这个形状:precheck 不过 → continue,version_accept_remote 根本不调
+        let err = precheck_wire(&wire).unwrap_err();
+        assert!(err.to_string().contains("accountKeyDevEnc"), "错误应点名残留字段: {err}");
+        if precheck_wire(&wire).is_ok() {
+            db.version_accept_remote("cert", "c9", 5, "dev-remote", "put").unwrap();
+        }
+
+        assert!(
+            !db.list_sync_versions().unwrap().iter().any(|(e, id, ..)| e == "cert" && id == "c9"),
+            "被跳过的条目不得写入 sync_versions"
+        );
+        assert!(
+            db.version_accept_remote("cert", "c9", 5, "dev-remote", "put").unwrap(),
+            "没记版本 → 下一轮同一条目仍会被接受处理"
+        );
+    }
+
+    /// meta 字段缺失不能静默回落默认值(notAfter=0 会让续期判定恒真、
+    /// ownerDeviceId 空串会被本机认领走),必须由 serde 报错并让守卫拦下。
+    #[test]
+    fn cert_wire_with_missing_meta_field_is_rejected() {
+        for field in ["notAfter", "ownerDeviceId", "state", "autoRenew", "domains"] {
+            let mut payload = cert_wire_payload();
+            payload["meta"].as_object_mut().unwrap().remove(field);
+            assert!(
+                precheck_wire(&cert_wire(payload)).is_err(),
+                "meta 缺 {field} 时必须判为坏条目"
+            );
+        }
+    }
+
+    /// 权威键是 wire.entity_id:payload 里的 meta.id 与之不一致时以 entity_id 为准,
+    /// 否则落下的行对后续针对 entity_id 的墓碑免疫,成为删不掉的孤儿。
+    #[test]
+    fn cert_row_id_comes_from_entity_id_not_payload_meta() {
+        let dir = std::env::temp_dir().join("kite-sync-test/cert-id");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = Db::open(dir).unwrap();
+        let vault = Vault::with_device_key(&[17u8; 32], &db.data_dir);
+
+        let mut payload = cert_wire_payload();
+        payload["meta"]["id"] = serde_json::Value::String("骗人的-id".into());
+        apply_wire(&db, &vault, &cert_wire(payload)).unwrap();
+
+        let got = db.get_cert_full("c9").unwrap();
+        assert_eq!(got.id, "c9", "落库主键应取 wire.entity_id");
+        assert_eq!(got.owner_device_id, "dev-remote", "归属应照抄远端");
+        assert_eq!(got.not_after, 789);
+        assert!(!got.auto_renew);
+        assert_eq!(got.state, "pending");
+        assert!(db.get_cert_full("骗人的-id").is_err(), "不应按 payload 里的 id 另起一行");
+
+        // 墓碑按 entity_id 删得掉
+        db.delete_entity_raw("cert", "c9").unwrap();
+        assert!(db.get_cert_full("c9").is_err());
     }
 }
