@@ -271,6 +271,9 @@ pub struct SyncStatus {
     pub configured: bool,
     pub syncing: bool,
     pub last_sync_at: Option<String>,
+    /// 本机 device_id。devices 来自桶内 manifest,本机跑完一次同步前不在其中,
+    /// 从 manifest 反推本机身份会在首次同步成功前一直反推出空串。
+    pub device_id: String,
     pub devices: Vec<SyncDevice>,
 }
 

@@ -192,6 +192,7 @@ pub fn get_status(db: &Db) -> Result<SyncStatus> {
         configured,
         syncing: false,
         last_sync_at: db.kv_get(KV_LAST)?,
+        device_id: me,
         devices,
     })
 }
@@ -674,6 +675,7 @@ pub async fn sync_now(app: AppHandle, db: Arc<Db>, vault: Arc<Vault>) -> Result<
             configured: true,
             syncing,
             last_sync_at: None,
+            device_id: db.device_id(),
             devices: vec![],
         });
         status.syncing = syncing;
