@@ -342,5 +342,58 @@ async fn main() {
     assert!(db_a.delete_group(&all[0].id).is_err(), "最后一个分组不可删除");
     println!("step10 分组增删改 + 跨设备同步 OK");
 
+    // ---- step11: 证书跨设备同步与归属接管 ----
+    let acct = b"{\"kid\":\"acct-sync\"}";
+    let key_pem = "-----BEGIN PRIVATE KEY-----\nCERTKEY\n-----END-----\n";
+    let dev_a = db_a.device_id();
+    db_a.upsert_cert(&kite_term_lib::db::CertRow {
+        id: "cert-sync-1".into(),
+        domains: vec!["sync.example.com".into()],
+        challenge: "http-01".into(),
+        ca: "letsencrypt".into(),
+        host_id: "h-sync".into(),
+        deploy_path: "/etc/ssl/sync".into(),
+        reload_cmd: "nginx -s reload".into(),
+        not_after: 1_900_000_000_000,
+        auto_renew: true,
+        state: "active".into(),
+        account_key_enc: Some(v_a.encrypt(acct).unwrap()),
+        cert_pem: Some("LEAF-SYNC".into()),
+        chain_pem: Some("CHAIN-SYNC".into()),
+        key_pem_enc: Some(v_a.encrypt(key_pem.as_bytes()).unwrap()),
+        owner_device_id: dev_a.clone(),
+        created_at: "2026-09-20".into(),
+    })
+    .unwrap();
+    sync::sync_once(&db_a, &v_a).await.unwrap();
+    sync::sync_once(&db_b, &v_b).await.unwrap();
+
+    let b_cert = db_b.get_cert_full("cert-sync-1").expect("B 应收到证书");
+    assert_eq!(b_cert.cert_pem.as_deref(), Some("LEAF-SYNC"), "证书本体应一致");
+    assert_eq!(b_cert.owner_device_id, dev_a, "归属应仍是 A");
+    assert_eq!(
+        v_b.decrypt_current(b_cert.key_pem_enc.as_deref().unwrap()).unwrap(),
+        key_pem.as_bytes(),
+        "B 应能用自己的设备密钥解开证书私钥"
+    );
+    assert_eq!(
+        v_b.decrypt_current(b_cert.account_key_enc.as_deref().unwrap()).unwrap(),
+        acct,
+        "B 应能用自己的设备密钥解开 ACME 账户密钥"
+    );
+
+    // B 接管:改写归属并回同步,A 应让出
+    let mut taken = b_cert.clone();
+    taken.owner_device_id = db_b.device_id();
+    db_b.upsert_cert(&taken).unwrap();
+    sync::sync_once(&db_b, &v_b).await.unwrap();
+    sync::sync_once(&db_a, &v_a).await.unwrap();
+    assert_eq!(
+        db_a.get_cert_full("cert-sync-1").unwrap().owner_device_id,
+        db_b.device_id(),
+        "A 应看到归属已转给 B"
+    );
+    println!("step11 证书跨设备同步 + 归属接管 OK");
+
     println!("SYNC_CHECK_PASS");
 }
