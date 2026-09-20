@@ -73,7 +73,7 @@ pub struct Features {
 impl Features {
     /// 从未拉到过时的兜底:按未启用门禁处理 —— 不限制任何功能。
     /// 注册按 open 渲染即可,真正的准入以服务端为准。
-    fn unknown() -> Self {
+    pub(crate) fn unknown() -> Self {
         Self {
             registration: "open".into(),
             enforced: false,

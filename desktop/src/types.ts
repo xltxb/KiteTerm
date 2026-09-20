@@ -78,6 +78,7 @@ export interface CertInfo {
   notAfter: number;
   autoRenew: boolean;
   state: "active" | "expiring" | "error";
+  ownerDeviceId: string;
   createdAt: string;
 }
 
@@ -178,7 +179,7 @@ export interface SyncConfig {
   hasSecret: boolean;
   /** 是否已设置主密码(派生密钥已缓存) */
   hasMasterKey: boolean;
-  scopes: { hosts: boolean; keys: boolean; snippets: boolean; settings: boolean; recordings: boolean };
+  scopes: { hosts: boolean; keys: boolean; snippets: boolean; settings: boolean; recordings: boolean; certs: boolean };
 }
 
 /** AI 模型配置(密钥不回传前端) */
@@ -248,6 +249,8 @@ export interface SyncStatus {
   configured: boolean;
   syncing: boolean;
   lastSyncAt: string | null;
+  /** 本机 device_id(后端直给)。devices 来自桶内 manifest,首次同步成功前不含本机 */
+  deviceId: string;
   devices: SyncDevice[];
 }
 

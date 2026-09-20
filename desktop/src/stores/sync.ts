@@ -27,7 +27,7 @@ interface SyncState {
 }
 
 export const useSyncStore = create<SyncState>((set, get) => ({
-  status: { configured: false, syncing: false, lastSyncAt: null, devices: [] },
+  status: { configured: false, syncing: false, lastSyncAt: null, deviceId: "", devices: [] },
   config: null,
   account: null,
   wired: false,
