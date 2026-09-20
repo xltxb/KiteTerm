@@ -40,6 +40,7 @@ fn configure(db: &Db, v: &Vault) {
                 snippets: true,
                 settings: false,
                 recordings: false,
+                certs: true,
             },
             secret_key: None,
             master_password: Some("test-master-密码".into()),
