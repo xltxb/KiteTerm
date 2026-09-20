@@ -88,6 +88,7 @@ fn upsert_error(db: &Db, cert_id: &str, req: &IssueRequest, created_at: &str) {
             cert_pem: None,
             chain_pem: None,
             key_pem_enc: None,
+            owner_device_id: db.device_id(),
             created_at: created_at.to_string(),
         },
     };
@@ -402,6 +403,7 @@ async fn run_issue(
         cert_pem: Some(leaf_pem),
         chain_pem: Some(chain_pem),
         key_pem_enc: Some(key_pem_enc),
+        owner_device_id: db.device_id(),
         created_at: created_at.clone(),
     };
     db.upsert_cert(&row)?;
@@ -417,6 +419,7 @@ async fn run_issue(
         not_after: not_after_ms,
         auto_renew: true,
         state: "active".to_string(),
+        owner_device_id: db.device_id(),
         created_at,
     })
 }
@@ -704,6 +707,7 @@ mod tests {
             cert_pem: None,
             chain_pem: None,
             key_pem_enc: None,
+            owner_device_id: "dev-test".into(),
             created_at: "2026-01-01 00:00".into(),
         };
         let req = req_from_row(&row);
