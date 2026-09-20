@@ -32,6 +32,14 @@ pub struct CertRow {
     pub created_at: String,
 }
 
+/// 证书里经设备密钥加密的那几列(设备密钥迁移用,不含其余业务字段)
+#[derive(Debug, Clone)]
+pub struct CertSecrets {
+    pub id: String,
+    pub account_key_enc: Option<Vec<u8>>,
+    pub key_pem_enc: Option<Vec<u8>>,
+}
+
 /// 本地变更日志条目(增量同步用)
 #[derive(Debug, Clone)]
 pub struct OplogRow {
@@ -732,6 +740,32 @@ impl Db {
     pub fn delete_cert(&self, id: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM certs WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    /// 取出各证书经设备密钥加密的列 —— 设备密钥迁移时重新加密用
+    pub fn list_cert_secrets(&self) -> Result<Vec<CertSecrets>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT id, account_key_enc, key_pem_enc FROM certs")?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(CertSecrets {
+                    id: r.get(0)?,
+                    account_key_enc: r.get(1)?,
+                    key_pem_enc: r.get(2)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// 只换这两列密文,不动其它列 —— 设备密钥迁移时重新加密用
+    pub fn set_cert_secrets(&self, s: &CertSecrets) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE certs SET account_key_enc = ?2, key_pem_enc = ?3 WHERE id = ?1",
+            params![s.id, s.account_key_enc, s.key_pem_enc],
+        )?;
         Ok(())
     }
 

@@ -15,7 +15,10 @@ use crate::error::Result;
 use crate::vault::Vault;
 
 /// kv 里以 base64 存放的 vault 密文(非 `ai_key_*` 的那些固定键)
-const KV_ENCRYPTED: &[&str] = &["account_token_enc"];
+///
+/// **新增任何一处 `vault.encrypt` 落库都必须在这里登记**(表里的列则加进下面的扫描)。
+/// 漏登记不会报错,只会让那条密文在 device.key 被删掉之后永远解不开。
+const KV_ENCRYPTED: &[&str] = &["account_token_enc", "sync_mk_enc"];
 const KV_AI_KEY_PREFIX: &str = "ai_key_";
 
 fn b64() -> base64::engine::general_purpose::GeneralPurpose {
@@ -69,6 +72,33 @@ pub fn run(db: &Db, vault: &Vault) -> Result<usize> {
                 eprintln!("[rewrap] {key} 两把设备密钥都解不开,保留原样");
                 all_ok = false;
             }
+        }
+    }
+
+    // ---- ACME 证书(账户密钥、证书私钥;在 certs 表里,不走 kv)----
+    for mut sec in db.list_cert_secrets()? {
+        let id = sec.id.clone();
+        let mut changed = false;
+        for (blob, what) in [
+            (&mut sec.account_key_enc, "账户密钥"),
+            (&mut sec.key_pem_enc, "证书私钥"),
+        ] {
+            let Some(current) = blob.as_deref() else { continue };
+            match rewrap(vault, current) {
+                Rewrap::AlreadyCurrent => {}
+                Rewrap::Migrated(new_blob) => {
+                    *blob = Some(new_blob);
+                    changed = true;
+                    rewrapped += 1;
+                }
+                Rewrap::Failed => {
+                    eprintln!("[rewrap] 证书 {id} 的{what}两把设备密钥都解不开,保留原样");
+                    all_ok = false;
+                }
+            }
+        }
+        if changed {
+            db.set_cert_secrets(&sec)?;
         }
     }
 
