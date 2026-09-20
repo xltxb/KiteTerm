@@ -974,30 +974,34 @@ impl Db {
 
     /// 首次同步:为存量实体合成 put 条目,保证老数据也能进入 oplog 流
     pub fn bootstrap_oplog(&self) -> Result<()> {
-        if self.kv_get("oplog_bootstrapped")?.is_some() {
-            return Ok(());
-        }
-        for h in self.list_hosts()? {
-            let payload = self.host_payload(&h)?;
-            self.oplog_append("host", &h.id.clone(), "put", Some(payload))?;
-        }
-        for s in self.list_snippets()? {
-            self.oplog_append("snippet", &s.id.clone(), "put", Some(serde_json::to_string(&s)?))?;
-        }
-        for f in self.list_forwards()? {
-            self.oplog_append("forward", &f.id.clone(), "put", Some(serde_json::to_string(&f)?))?;
-        }
-        for k in self.list_keys()? {
-            if k.sync_enabled {
-                let payload = self.key_payload(&k.id)?;
-                self.oplog_append("key", &k.id, "put", Some(payload))?;
+        if self.kv_get("oplog_bootstrapped")?.is_none() {
+            for h in self.list_hosts()? {
+                let payload = self.host_payload(&h)?;
+                self.oplog_append("host", &h.id.clone(), "put", Some(payload))?;
             }
+            for s in self.list_snippets()? {
+                self.oplog_append("snippet", &s.id.clone(), "put", Some(serde_json::to_string(&s)?))?;
+            }
+            for f in self.list_forwards()? {
+                self.oplog_append("forward", &f.id.clone(), "put", Some(serde_json::to_string(&f)?))?;
+            }
+            for k in self.list_keys()? {
+                if k.sync_enabled {
+                    let payload = self.key_payload(&k.id)?;
+                    self.oplog_append("key", &k.id, "put", Some(payload))?;
+                }
+            }
+            self.kv_set("oplog_bootstrapped", "1")?;
         }
-        for c in self.list_certs()? {
-            let payload = self.cert_payload(&c.id)?;
-            self.oplog_append("cert", &c.id, "put", Some(payload))?;
+        // cert 是后加的实体:存量库的 oplog_bootstrapped 早已是 "1",上面那段永不再跑,
+        // 存量证书就一条 oplog 都产不出。所以单给 cert 一把钥匙补一次(新装库仍只跑一次)。
+        if self.kv_get("oplog_bootstrapped_cert")?.is_none() {
+            for c in self.list_certs()? {
+                let payload = self.cert_payload(&c.id)?;
+                self.oplog_append("cert", &c.id, "put", Some(payload))?;
+            }
+            self.kv_set("oplog_bootstrapped_cert", "1")?;
         }
-        self.kv_set("oplog_bootstrapped", "1")?;
         Ok(())
     }
 
@@ -1371,5 +1375,28 @@ mod tests {
 
         db.delete_entity_raw("cert", "c2").unwrap();
         assert!(db.get_cert_full("c2").is_err(), "delete_entity_raw 应真的删掉证书");
+    }
+
+    /// 存量库(此前同步过,oplog_bootstrapped 已是 "1")升级后,证书必须仍被补发一次。
+    /// sync_check 的四台设备都是全新 temp dir,测不出这条,这里是唯一防线。
+    #[test]
+    fn bootstrap_backfills_certs_on_already_bootstrapped_db() {
+        let db = Db::open(scratch("certbootstrap")).unwrap();
+        // 模拟存量库:早已 bootstrap 过,且已有一条证书(_raw 写入,不产 oplog)
+        db.kv_set("oplog_bootstrapped", "1").unwrap();
+        db.upsert_cert_raw(&sample_cert("old", "dev-a")).unwrap();
+        assert!(db.oplog_after(0).unwrap().is_empty(), "前置条件:此时不应有任何 oplog 条目");
+
+        db.bootstrap_oplog().unwrap();
+        let ops = db.oplog_after(0).unwrap();
+        assert!(
+            ops.iter().any(|o| o.entity == "cert" && o.entity_id == "old" && o.op == "put"),
+            "存量库升级后 bootstrap_oplog 应为存量证书补发 put 条目"
+        );
+
+        // 第二次调用不得重复补发
+        let n = ops.len();
+        db.bootstrap_oplog().unwrap();
+        assert_eq!(db.oplog_after(0).unwrap().len(), n, "cert bootstrap 只能跑一次");
     }
 }
