@@ -61,10 +61,15 @@ export function CertsScreen() {
   const sessions = useSessionStore((s) => s.sessions);
   const go = useUiStore((s) => s.go);
   const devices = useSyncStore((s) => s.status?.devices ?? []);
-  const certsSynced = useSyncStore((s) => s.config?.scopes.certs ?? false);
-  const myId = devices.find((d) => d.current)?.id ?? "";
+  // 同步未配置(未登录/未设主密码)时,后端默认配置里的 certs 仍是 true,
+  // 光看 scopes 会对什么都没同步的用户说「已端到端同步」。
+  const certsSynced = useSyncStore(
+    (s) => (s.status?.configured ?? false) && (s.config?.scopes.certs ?? false),
+  );
+  // 本机 id 取后端直给的字段:从 manifest 反推的话,首次同步成功前一直是空串,
+  // 会把他机归属的证书也标成「本机自动续期」,而续期循环其实根本不会碰它们。
+  const myId = useSyncStore((s) => s.status?.deviceId ?? "");
   const ownerLabel = (c: CertInfo) => {
-    // devices 来自桶内 manifest;未配置同步时为空,此时本机就是唯一设备
     if (myId === "" || !c.ownerDeviceId || c.ownerDeviceId === myId) return "本机自动续期";
     const d = devices.find((x) => x.id === c.ownerDeviceId);
     return `由 ${d?.name ?? c.ownerDeviceId.slice(0, 8)} 自动续期`;
