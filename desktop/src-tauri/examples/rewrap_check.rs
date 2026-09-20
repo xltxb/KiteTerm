@@ -67,6 +67,7 @@ fn main() {
         cert_pem: None,
         chain_pem: None,
         key_pem_enc: Some(old_vault.encrypt(cert_pem.as_bytes()).unwrap()),
+        owner_device_id: "dev-test".into(),
         created_at: "2026-09-07".into(),
     })
     .unwrap();

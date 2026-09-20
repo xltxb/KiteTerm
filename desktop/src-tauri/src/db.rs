@@ -29,6 +29,8 @@ pub struct CertRow {
     pub chain_pem: Option<String>,
     /// 证书私钥 PEM,经 vault 加密后落库(供重新部署到同主机/其他主机)
     pub key_pem_enc: Option<Vec<u8>>,
+    /// 负责自动续期的设备(本机 device_id);空串表示尚未归属,启动时由本机认领
+    pub owner_device_id: String,
     pub created_at: String,
 }
 
@@ -62,6 +64,20 @@ fn uid() -> String {
 
 fn group_payload(name: &str) -> String {
     serde_json::json!({ "name": name }).to_string()
+}
+
+/// 幂等补列。`open()` 里只有 `CREATE TABLE IF NOT EXISTS`,改建表语句对存量库无效,
+/// 已建好的表要加列只能走这里。table/column/decl 均为代码内字面量,不接受外部输入。
+fn add_column_if_missing(conn: &Connection, table: &str, column: &str, decl: &str) -> Result<()> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let exists = stmt
+        .query_map([], |r| r.get::<_, String>(1))?
+        .any(|c| c.map(|name| name == column).unwrap_or(false));
+    drop(stmt);
+    if !exists {
+        conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"), [])?;
+    }
+    Ok(())
 }
 
 impl Db {
@@ -137,13 +153,16 @@ impl Db {
                 not_after INTEGER NOT NULL DEFAULT 0, auto_renew INTEGER NOT NULL DEFAULT 1,
                 state TEXT NOT NULL DEFAULT 'active',
                 account_key_enc BLOB, cert_pem TEXT, chain_pem TEXT, key_pem_enc BLOB,
+                owner_device_id TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL
             );
             "#,
         )?;
+        add_column_if_missing(&conn, "certs", "owner_device_id", "TEXT NOT NULL DEFAULT ''")?;
         let db = Self { conn: Mutex::new(conn), data_dir };
         db.seed_groups()?;
         db.ensure_device_id()?;
+        db.claim_unowned_certs()?;
         Ok(db)
     }
 
@@ -156,6 +175,17 @@ impl Db {
 
     pub fn device_id(&self) -> String {
         self.kv_get("device_id").ok().flatten().unwrap_or_default()
+    }
+
+    /// 存量证书(补列后归属为空)认领本机。远端同步来的证书带着原归属,不受影响。
+    fn claim_unowned_certs(&self) -> Result<()> {
+        let device = self.device_id();
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE certs SET owner_device_id = ?1 WHERE owner_device_id = ''",
+            [device],
+        )?;
+        Ok(())
     }
 
     fn seed_groups(&self) -> Result<()> {
@@ -652,7 +682,7 @@ impl Db {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, domains, challenge, ca, host_id, deploy_path, reload_cmd,
-                    not_after, auto_renew, state, created_at
+                    not_after, auto_renew, state, owner_device_id, created_at
              FROM certs ORDER BY created_at",
         )?;
         let rows = stmt
@@ -669,7 +699,8 @@ impl Db {
                     not_after: r.get(7)?,
                     auto_renew: r.get::<_, i64>(8)? != 0,
                     state: r.get(9)?,
-                    created_at: r.get(10)?,
+                    owner_device_id: r.get(10)?,
+                    created_at: r.get(11)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -680,7 +711,7 @@ impl Db {
         let conn = self.conn.lock().unwrap();
         let row = conn.query_row(
             "SELECT id, domains, challenge, ca, host_id, deploy_path, reload_cmd,
-                    not_after, auto_renew, state, account_key_enc, cert_pem, chain_pem, key_pem_enc, created_at
+                    not_after, auto_renew, state, account_key_enc, cert_pem, chain_pem, key_pem_enc, owner_device_id, created_at
              FROM certs WHERE id = ?1",
             [id],
             |r| {
@@ -700,22 +731,23 @@ impl Db {
                     cert_pem: r.get(11)?,
                     chain_pem: r.get(12)?,
                     key_pem_enc: r.get(13)?,
-                    created_at: r.get(14)?,
+                    owner_device_id: r.get(14)?,
+                    created_at: r.get(15)?,
                 })
             },
         )?;
         Ok(row)
     }
 
-    pub fn upsert_cert(&self, row: &CertRow) -> Result<()> {
+    pub fn upsert_cert_raw(&self, row: &CertRow) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT INTO certs (id, domains, challenge, ca, host_id, deploy_path, reload_cmd,
-                                 not_after, auto_renew, state, account_key_enc, cert_pem, chain_pem, key_pem_enc, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                                 not_after, auto_renew, state, account_key_enc, cert_pem, chain_pem, key_pem_enc, owner_device_id, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
              ON CONFLICT(id) DO UPDATE SET
                 domains=?2, challenge=?3, ca=?4, host_id=?5, deploy_path=?6, reload_cmd=?7,
-                not_after=?8, auto_renew=?9, state=?10, account_key_enc=?11, cert_pem=?12, chain_pem=?13, key_pem_enc=?14",
+                not_after=?8, auto_renew=?9, state=?10, account_key_enc=?11, cert_pem=?12, chain_pem=?13, key_pem_enc=?14, owner_device_id=?15",
             params![
                 row.id,
                 serde_json::to_string(&row.domains).unwrap(),
@@ -731,15 +763,26 @@ impl Db {
                 row.cert_pem,
                 row.chain_pem,
                 row.key_pem_enc,
+                row.owner_device_id,
                 row.created_at,
             ],
         )?;
         Ok(())
     }
 
+    /// 写入证书并记录同步变更。远端条目落库请用 `upsert_cert_raw`,避免回环。
+    pub fn upsert_cert(&self, row: &CertRow) -> Result<()> {
+        self.upsert_cert_raw(row)?;
+        let payload = self.cert_payload(&row.id)?;
+        self.oplog_append("cert", &row.id, "put", Some(payload))?;
+        Ok(())
+    }
+
     pub fn delete_cert(&self, id: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM certs WHERE id = ?1", [id])?;
+        drop(conn);
+        self.oplog_append("cert", id, "del", None)?;
         Ok(())
     }
 
@@ -931,26 +974,34 @@ impl Db {
 
     /// 首次同步:为存量实体合成 put 条目,保证老数据也能进入 oplog 流
     pub fn bootstrap_oplog(&self) -> Result<()> {
-        if self.kv_get("oplog_bootstrapped")?.is_some() {
-            return Ok(());
-        }
-        for h in self.list_hosts()? {
-            let payload = self.host_payload(&h)?;
-            self.oplog_append("host", &h.id.clone(), "put", Some(payload))?;
-        }
-        for s in self.list_snippets()? {
-            self.oplog_append("snippet", &s.id.clone(), "put", Some(serde_json::to_string(&s)?))?;
-        }
-        for f in self.list_forwards()? {
-            self.oplog_append("forward", &f.id.clone(), "put", Some(serde_json::to_string(&f)?))?;
-        }
-        for k in self.list_keys()? {
-            if k.sync_enabled {
-                let payload = self.key_payload(&k.id)?;
-                self.oplog_append("key", &k.id, "put", Some(payload))?;
+        if self.kv_get("oplog_bootstrapped")?.is_none() {
+            for h in self.list_hosts()? {
+                let payload = self.host_payload(&h)?;
+                self.oplog_append("host", &h.id.clone(), "put", Some(payload))?;
             }
+            for s in self.list_snippets()? {
+                self.oplog_append("snippet", &s.id.clone(), "put", Some(serde_json::to_string(&s)?))?;
+            }
+            for f in self.list_forwards()? {
+                self.oplog_append("forward", &f.id.clone(), "put", Some(serde_json::to_string(&f)?))?;
+            }
+            for k in self.list_keys()? {
+                if k.sync_enabled {
+                    let payload = self.key_payload(&k.id)?;
+                    self.oplog_append("key", &k.id, "put", Some(payload))?;
+                }
+            }
+            self.kv_set("oplog_bootstrapped", "1")?;
         }
-        self.kv_set("oplog_bootstrapped", "1")?;
+        // cert 是后加的实体:存量库的 oplog_bootstrapped 早已是 "1",上面那段永不再跑,
+        // 存量证书就一条 oplog 都产不出。所以单给 cert 一把钥匙补一次(新装库仍只跑一次)。
+        if self.kv_get("oplog_bootstrapped_cert")?.is_none() {
+            for c in self.list_certs()? {
+                let payload = self.cert_payload(&c.id)?;
+                self.oplog_append("cert", &c.id, "put", Some(payload))?;
+            }
+            self.kv_set("oplog_bootstrapped_cert", "1")?;
+        }
         Ok(())
     }
 
@@ -977,6 +1028,33 @@ impl Db {
         Ok(serde_json::to_string(&serde_json::json!({
             "meta": meta,
             "privateDevEnc": base64::engine::general_purpose::STANDARD.encode(enc),
+        }))?)
+    }
+
+    /// cert 实体的 oplog payload:元数据 + 设备密钥加密的两列(推送时换主密钥加密)
+    pub fn cert_payload(&self, cert_id: &str) -> Result<String> {
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let row = self.get_cert_full(cert_id)?;
+        Ok(serde_json::to_string(&serde_json::json!({
+            "meta": {
+                "id": row.id,
+                "domains": row.domains,
+                "challenge": row.challenge,
+                "ca": row.ca,
+                "hostId": row.host_id,
+                "deployPath": row.deploy_path,
+                "reloadCmd": row.reload_cmd,
+                "notAfter": row.not_after,
+                "autoRenew": row.auto_renew,
+                "state": row.state,
+                "ownerDeviceId": row.owner_device_id,
+                "createdAt": row.created_at,
+            },
+            "certPem": row.cert_pem,
+            "chainPem": row.chain_pem,
+            "accountKeyDevEnc": row.account_key_enc.as_ref().map(|b| b64.encode(b)),
+            "keyPemDevEnc": row.key_pem_enc.as_ref().map(|b| b64.encode(b)),
         }))?)
     }
 
@@ -1063,6 +1141,7 @@ impl Db {
                 conn.execute("DELETE FROM keys WHERE id = ?1", [entity_id])?;
                 conn.execute("UPDATE hosts SET key_id = NULL WHERE key_id = ?1", [entity_id])?;
             }
+            "cert" => { conn.execute("DELETE FROM certs WHERE id = ?1", [entity_id])?; }
             // 分组以名字为 entity_id;仅删空分组,避免把本机仍在用的分组删掉
             "group" => {
                 conn.execute(
@@ -1172,5 +1251,152 @@ impl Db {
         let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? != 0)))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join("kite-db-test").join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn add_column_is_idempotent_and_keeps_rows() {
+        let db = Db::open(scratch("addcol")).unwrap();
+        db.upsert_cert(&CertRow {
+            id: "c1".into(),
+            domains: vec!["a.example.com".into()],
+            challenge: "http-01".into(),
+            ca: "letsencrypt".into(),
+            host_id: "h1".into(),
+            deploy_path: "/etc/ssl".into(),
+            reload_cmd: "nginx -s reload".into(),
+            not_after: 0,
+            auto_renew: true,
+            state: "active".into(),
+            account_key_enc: None,
+            cert_pem: None,
+            chain_pem: None,
+            key_pem_enc: None,
+            owner_device_id: "dev-a".into(),
+            created_at: "2026-09-20".into(),
+        })
+        .unwrap();
+
+        // 再跑两次补列:不应报错,不应丢行,不应重置已有值
+        let conn = db.conn.lock().unwrap();
+        add_column_if_missing(&conn, "certs", "owner_device_id", "TEXT NOT NULL DEFAULT ''").unwrap();
+        add_column_if_missing(&conn, "certs", "owner_device_id", "TEXT NOT NULL DEFAULT ''").unwrap();
+        drop(conn);
+
+        let row = db.get_cert_full("c1").unwrap();
+        assert_eq!(row.owner_device_id, "dev-a", "补列不应覆盖已有归属");
+        assert_eq!(db.list_certs().unwrap().len(), 1, "补列不应丢行");
+    }
+
+    #[test]
+    fn existing_certs_claim_this_device_on_open() {
+        let dir = scratch("claim");
+        let db = Db::open(dir.clone()).unwrap();
+        // 直接写一条归属为空的行,模拟补列后的存量证书
+        db.upsert_cert(&CertRow {
+            id: "old".into(),
+            domains: vec!["old.example.com".into()],
+            challenge: "http-01".into(),
+            ca: "letsencrypt".into(),
+            host_id: "h1".into(),
+            deploy_path: "/etc/ssl".into(),
+            reload_cmd: "nginx -s reload".into(),
+            not_after: 0,
+            auto_renew: true,
+            state: "active".into(),
+            account_key_enc: None,
+            cert_pem: None,
+            chain_pem: None,
+            key_pem_enc: None,
+            owner_device_id: "".into(),
+            created_at: "2026-09-20".into(),
+        })
+        .unwrap();
+        drop(db);
+
+        let db = Db::open(dir).unwrap();
+        let owner = db.get_cert_full("old").unwrap().owner_device_id;
+        assert!(!owner.is_empty(), "重开后存量证书应认领本机归属");
+        assert_eq!(owner, db.device_id());
+    }
+
+    fn sample_cert(id: &str, owner: &str) -> CertRow {
+        CertRow {
+            id: id.into(),
+            domains: vec!["a.example.com".into()],
+            challenge: "http-01".into(),
+            ca: "letsencrypt".into(),
+            host_id: "h1".into(),
+            deploy_path: "/etc/ssl".into(),
+            reload_cmd: "nginx -s reload".into(),
+            not_after: 0,
+            auto_renew: true,
+            state: "active".into(),
+            account_key_enc: Some(b"acct-cipher".to_vec()),
+            cert_pem: Some("LEAF".into()),
+            chain_pem: Some("CHAIN".into()),
+            key_pem_enc: Some(b"key-cipher".to_vec()),
+            owner_device_id: owner.into(),
+            created_at: "2026-09-20".into(),
+        }
+    }
+
+    #[test]
+    fn cert_writes_go_through_oplog_but_raw_does_not() {
+        let db = Db::open(scratch("certoplog")).unwrap();
+
+        db.upsert_cert(&sample_cert("c1", "dev-a")).unwrap();
+        let ops = db.oplog_after(0).unwrap();
+        let put = ops.iter().find(|o| o.entity == "cert" && o.entity_id == "c1");
+        assert!(put.is_some(), "upsert_cert 应写出 cert 的 put 条目");
+        assert_eq!(put.unwrap().op, "put");
+
+        let before = db.oplog_after(0).unwrap().len();
+        db.upsert_cert_raw(&sample_cert("c2", "dev-b")).unwrap();
+        assert_eq!(db.oplog_after(0).unwrap().len(), before, "_raw 不得写 oplog");
+
+        db.delete_cert("c1").unwrap();
+        let ops = db.oplog_after(0).unwrap();
+        assert!(
+            ops.iter().any(|o| o.entity == "cert" && o.entity_id == "c1" && o.op == "del"),
+            "delete_cert 应写出墓碑"
+        );
+
+        db.delete_entity_raw("cert", "c2").unwrap();
+        assert!(db.get_cert_full("c2").is_err(), "delete_entity_raw 应真的删掉证书");
+    }
+
+    /// 存量库(此前同步过,oplog_bootstrapped 已是 "1")升级后,证书必须仍被补发一次。
+    /// sync_check 的四台设备都是全新 temp dir,测不出这条,这里是唯一防线。
+    #[test]
+    fn bootstrap_backfills_certs_on_already_bootstrapped_db() {
+        let db = Db::open(scratch("certbootstrap")).unwrap();
+        // 模拟存量库:早已 bootstrap 过,且已有一条证书(_raw 写入,不产 oplog)
+        db.kv_set("oplog_bootstrapped", "1").unwrap();
+        db.upsert_cert_raw(&sample_cert("old", "dev-a")).unwrap();
+        assert!(db.oplog_after(0).unwrap().is_empty(), "前置条件:此时不应有任何 oplog 条目");
+
+        db.bootstrap_oplog().unwrap();
+        let ops = db.oplog_after(0).unwrap();
+        assert!(
+            ops.iter().any(|o| o.entity == "cert" && o.entity_id == "old" && o.op == "put"),
+            "存量库升级后 bootstrap_oplog 应为存量证书补发 put 条目"
+        );
+
+        // 第二次调用不得重复补发
+        let n = ops.len();
+        db.bootstrap_oplog().unwrap();
+        assert_eq!(db.oplog_after(0).unwrap().len(), n, "cert bootstrap 只能跑一次");
     }
 }

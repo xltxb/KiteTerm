@@ -106,6 +106,7 @@ pub struct CertInfo {
     pub not_after: i64,
     pub auto_renew: bool,
     pub state: String,
+    pub owner_device_id: String,
     pub created_at: String,
 }
 
@@ -223,6 +224,10 @@ pub struct SyncScopes {
     /// 会话录制(asciicast)是否参与同步:文件较大,默认关闭,需用户显式开启
     #[serde(default)]
     pub recordings: bool,
+    /// SSL 证书(证书本体、私钥、ACME 账户密钥)是否参与同步。
+    /// 用 default_true 而非 default:后者对 bool 取 false,会让存量配置静默关闭。
+    #[serde(default = "default_true")]
+    pub certs: bool,
 }
 
 /// 同步配置:S3 端点与凭据由管理平台下发,本地只保留分项开关与主密码派生密钥。
@@ -266,6 +271,9 @@ pub struct SyncStatus {
     pub configured: bool,
     pub syncing: bool,
     pub last_sync_at: Option<String>,
+    /// 本机 device_id。devices 来自桶内 manifest,本机跑完一次同步前不在其中,
+    /// 从 manifest 反推本机身份会在首次同步成功前一直反推出空串。
+    pub device_id: String,
     pub devices: Vec<SyncDevice>,
 }
 

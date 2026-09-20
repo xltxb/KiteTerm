@@ -67,9 +67,17 @@ pub fn confirm_dns(manager: &CertManager, cert_id: &str) {
 /// 失败时落库为 error 状态(尽力而为,忽略落库自身的错误)。
 /// 若该 cert_id 已存在(续期失败场景),保留原有到期时间与证书材料,仅改 state,
 /// 避免一次失败的续期把仍然有效的证书数据清空。
+///
+/// 已是 error 状态时跳过落库:该函数只改 state 一个字段,状态未变即整行内容未变,
+/// 而 upsert_cert 会写含完整 cert_pem/chain_pem + 两段密文的 oplog —— 域名校验失败、
+/// CA 限流、SFTP/reload 出错等每一步失败都会走到这里,若不判重,续不动的证书每次
+/// 尝试(含续期守护每 12h 一轮)都会无上界地产生一条 oplog。
 fn upsert_error(db: &Db, cert_id: &str, req: &IssueRequest, created_at: &str) {
     let row = match db.get_cert_full(cert_id) {
         Ok(mut existing) => {
+            if existing.state == "error" {
+                return;
+            }
             existing.state = "error".to_string();
             existing
         }
@@ -88,6 +96,7 @@ fn upsert_error(db: &Db, cert_id: &str, req: &IssueRequest, created_at: &str) {
             cert_pem: None,
             chain_pem: None,
             key_pem_enc: None,
+            owner_device_id: db.device_id(),
             created_at: created_at.to_string(),
         },
     };
@@ -402,6 +411,7 @@ async fn run_issue(
         cert_pem: Some(leaf_pem),
         chain_pem: Some(chain_pem),
         key_pem_enc: Some(key_pem_enc),
+        owner_device_id: db.device_id(),
         created_at: created_at.clone(),
     };
     db.upsert_cert(&row)?;
@@ -417,6 +427,7 @@ async fn run_issue(
         not_after: not_after_ms,
         auto_renew: true,
         state: "active".to_string(),
+        owner_device_id: db.device_id(),
         created_at,
     })
 }
@@ -573,8 +584,12 @@ pub fn spawn_renew_loop(
             ticker.tick().await;
             let now_ms = chrono::Utc::now().timestamp_millis();
             let certs = db.list_certs().unwrap_or_default();
+            let this_device = db.device_id();
             for c in certs {
-                if !c.auto_renew || !renew_due(c.not_after, now_ms) {
+                if !c.auto_renew
+                    || !renew_owned_by(&c.owner_device_id, &this_device)
+                    || !renew_due(c.not_after, now_ms)
+                {
                     continue;
                 }
                 let res = renew(
@@ -587,14 +602,15 @@ pub fn spawn_renew_loop(
                 )
                 .await;
                 if let Err(e) = res {
-                    // 续期失败:仍有效标 expiring,已过期标 error;保留既有材料(get_cert_full)
+                    // 续期失败:仍有效标 expiring,已过期标 error;保留既有材料(get_cert_full)。
+                    // 目标状态与现有状态相同时跳过落库,否则续不动的证书会每 12h 写一条 oplog、无上界。
                     if let Ok(mut row) = db.get_cert_full(&c.id) {
-                        row.state = if row.not_after > now_ms {
-                            "expiring".to_string()
-                        } else {
-                            "error".to_string()
-                        };
-                        let _ = db.upsert_cert(&row);
+                        if let Some(next_state) =
+                            renew_failure_next_state(&row.state, row.not_after, now_ms)
+                        {
+                            row.state = next_state.to_string();
+                            let _ = db.upsert_cert(&row);
+                        }
                     }
                     emit_progress(&app, &c.id, Step::Sign, "error", Some(&e.to_string()));
                 }
@@ -606,6 +622,33 @@ pub fn spawn_renew_loop(
 pub fn renew_due(not_after_ms: i64, now_ms: i64) -> bool {
     // 距到期 ≤ 30 天(含已过期)即应续期
     not_after_ms - now_ms <= 30 * 24 * 60 * 60 * 1000
+}
+
+/// 自动续期归属判定:只有归属设备才跑续期,避免多设备对同一域名重复签发
+/// (Let's Encrypt 对同一组域名有「每周 5 张重复证书」的限额)。
+/// 归属为空 = 存量证书尚未认领,由本机接手。
+pub fn renew_owned_by(owner_device_id: &str, this_device: &str) -> bool {
+    owner_device_id.is_empty() || owner_device_id == this_device
+}
+
+/// 续期失败时的落库判据:算出目标状态(仍有效→expiring,已过期→error),
+/// 与现有状态相同则返回 None(跳过落库),不同才返回 Some(目标状态)。
+/// 避免一张续不动的证书每 12h 都写一条含证书材料的 oplog、无上界地产生同步噪音。
+fn renew_failure_next_state(
+    current_state: &str,
+    not_after_ms: i64,
+    now_ms: i64,
+) -> Option<&'static str> {
+    let target = if not_after_ms > now_ms {
+        "expiring"
+    } else {
+        "error"
+    };
+    if current_state == target {
+        None
+    } else {
+        Some(target)
+    }
 }
 
 /// 仅供单测使用(前端自行计算剩余天数);保留窄化 allow 而非放宽整模块
@@ -704,6 +747,7 @@ mod tests {
             cert_pem: None,
             chain_pem: None,
             key_pem_enc: None,
+            owner_device_id: "dev-test".into(),
             created_at: "2026-01-01 00:00".into(),
         };
         let req = req_from_row(&row);
@@ -721,5 +765,75 @@ mod tests {
         let leaf = first_cert_pem(chain);
         assert!(leaf.contains("AAAA"));
         assert!(!leaf.contains("BBBB"));
+    }
+
+    #[test]
+    fn only_owner_device_auto_renews() {
+        assert!(renew_owned_by("dev-a", "dev-a"), "归属本机应续期");
+        assert!(!renew_owned_by("dev-b", "dev-a"), "归属他机不应续期");
+        assert!(renew_owned_by("", "dev-a"), "归属为空视为未认领,本机接手");
+    }
+
+    #[test]
+    fn renew_failure_next_state_dedupes_repeat_failures() {
+        let now = 1_000_000_000_000;
+        let not_after_expired = now - 86_400_000; // 已过期
+        let not_after_expiring = now + 10 * 86_400_000; // 仍有效,进入续期窗口
+
+        // 第一次失败:active -> error,应写
+        assert_eq!(
+            renew_failure_next_state("active", not_after_expired, now),
+            Some("error")
+        );
+        // 同一状态重复续期失败:已是 error,再次失败不应重复写
+        assert_eq!(
+            renew_failure_next_state("error", not_after_expired, now),
+            None
+        );
+
+        // 未过期分支同理:active -> expiring 应写,expiring -> expiring 应跳过
+        assert_eq!(
+            renew_failure_next_state("active", not_after_expiring, now),
+            Some("expiring")
+        );
+        assert_eq!(
+            renew_failure_next_state("expiring", not_after_expiring, now),
+            None
+        );
+    }
+
+    fn scratch_db(name: &str) -> Db {
+        let dir = std::env::temp_dir().join("kite-acme-test").join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        Db::open(dir).unwrap()
+    }
+
+    fn sample_req() -> IssueRequest {
+        IssueRequest {
+            domains: vec!["a.example.com".into()],
+            challenge: "http-01".into(),
+            ca: "letsencrypt".into(),
+            host_id: "h1".into(),
+            deploy_path: "/etc/ssl".into(),
+            reload_cmd: "nginx -s reload".into(),
+        }
+    }
+
+    #[test]
+    fn upsert_error_skips_oplog_when_already_error() {
+        let db = scratch_db("upsert_error_dedup");
+        let req = sample_req();
+
+        // 首次失败(cert_id 尚不存在):应新建一行并产生一条 oplog
+        upsert_error(&db, "c1", &req, "2026-09-20");
+        let ops = db.oplog_after(0).unwrap();
+        assert_eq!(ops.len(), 1, "首次失败应写一条 oplog");
+        assert_eq!(db.get_cert_full("c1").unwrap().state, "error");
+
+        // 同一证书再次失败(已经是 error):不应产生新的 oplog 条目
+        upsert_error(&db, "c1", &req, "2026-09-20");
+        let ops = db.oplog_after(0).unwrap();
+        assert_eq!(ops.len(), 1, "同一状态重复失败不应重复写 oplog");
     }
 }
