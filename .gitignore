@@ -20,3 +20,8 @@ server/dist/
 
 # CodeGraph 代码索引缓存
 .codegraph/
+
+# 本地 agent 工作目录
+.claude/
+.scratch/
+.superpowers/
