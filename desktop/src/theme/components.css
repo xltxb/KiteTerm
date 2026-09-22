@@ -57,7 +57,7 @@
   width: 16px;
   height: 2px;
   border-radius: var(--radius-full);
-  background: linear-gradient(90deg, var(--azure-500), var(--cyan-400));
+  background: var(--accent);
   flex: none;
 }
 
@@ -69,7 +69,7 @@
   letter-spacing: 0.08em;
   color: var(--text-strong);
 }
-.screen-title .count { font-size: 18px; font-weight: 600; background: linear-gradient(90deg, var(--azure-500), var(--cyan-400)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.screen-title .count { font-size: 18px; font-weight: 600; color: var(--accent-text); }
 .screen-header { display: flex; align-items: flex-end; gap: 16px; margin-bottom: 22px; border-bottom: 1px solid var(--border-subtle); padding-bottom: 12px; }
 .screen-ord {
   margin-left: 10px;
@@ -301,7 +301,7 @@
 .progress > div {
   height: 100%;
   border-radius: var(--radius-full);
-  background: linear-gradient(90deg, var(--azure-500), var(--cyan-400));
+  background: var(--accent);
   transition: width 340ms var(--ease-out);
 }
 /* 回放进度每 50ms 走一格,补间反而会拖成卡顿 */
@@ -459,8 +459,8 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, var(--azure-500), var(--cyan-400));
-  color: var(--slate-0);
+  background: var(--accent);
+  color: var(--text-on-accent);
   box-shadow: var(--glow-sm);
 }
 .brand-name {
