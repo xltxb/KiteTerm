@@ -1071,7 +1071,11 @@
   font-family: var(--font-mono);
   font-size: var(--ui-sm);
   line-height: 1.6;
-  color: var(--term-code-fg);
+  /* 文字用 --text-body 而不是 --term-code-fg:后者是配终端底色设计的,
+     放到卡片底色上浅色档只剩 4.55:1,刚过 AA 门槛。而「这是命令」已经由
+     等宽字体、边框、下沉底色三重表达了,颜色不必再兼这个职责 —— 这段文字
+     是用户批准前唯一必须看清的东西,对比度要留足余量。 */
+  color: var(--text-body);
   background: var(--surface-sunken);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
