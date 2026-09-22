@@ -95,9 +95,12 @@ impl EndProbe {
         Some(StepOutput { output, exit_code, truncated })
     }
 
-    /// 超时放弃这一步时,把已经攒下的输出交出去
-    pub fn into_buffered(self) -> String {
-        String::from_utf8_lossy(&self.buf).into_owned()
+    /// 超时放弃这一步时,把已经攒下的输出连同截断状态一起交出去。
+    ///
+    /// 必须带上 truncated —— 缓冲可能早就溢出截断过了,
+    /// 谎报完整会让 AI 拿半截输出当全部去推理。
+    pub fn into_buffered(self) -> (String, bool) {
+        (String::from_utf8_lossy(&self.buf).into_owned(), self.truncated)
     }
 }
 
@@ -305,6 +308,33 @@ mod tests {
         assert!(got.truncated, "溢出后必须标记 truncated");
         assert!(!got.output.contains('\u{FFFD}'), "不能把中文切成替换字符");
         assert!(got.output.ends_with("中文日志"), "尾部应是完整的中文: {:?}", &got.output[got.output.len().saturating_sub(24)..]);
+    }
+
+    /// 超时交出缓冲时必须带上截断状态。
+    ///
+    /// 场景:命令先吐了一大堆日志、然后挂住。缓冲早就溢出截断过了,
+    /// 超时放弃这一步时若谎报「输出完整」,AI 就会拿着砍掉一半的日志去推理。
+    #[test]
+    fn into_buffered_carries_truncated_flag() {
+        let mut p = EndProbe::new("n1");
+        let chunk = "日志一行".repeat(1024); // 12KB,3 字节一字
+        for _ in 0..30 {
+            assert_eq!(p.push(chunk.as_bytes()), None, "没有哨兵就不该返回");
+        }
+        let (out, truncated) = p.into_buffered();
+        assert!(truncated, "缓冲溢出过,必须带出 truncated");
+        assert!(!out.is_empty(), "已收到的输出要交出来,不能丢");
+        assert!(!out.contains('\u{FFFD}'), "截断点要对齐字符边界");
+    }
+
+    /// 没溢出就不能瞎报截断
+    #[test]
+    fn into_buffered_reports_no_truncation_when_small() {
+        let mut p = EndProbe::new("n1");
+        p.push(b"short output\n");
+        let (out, truncated) = p.into_buffered();
+        assert!(!truncated, "没溢出不该报截断");
+        assert_eq!(out, "short output\n");
     }
 
     /// wrap_command 的拼接顺序 —— 只查子串会漏掉位置错误
