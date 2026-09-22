@@ -82,6 +82,23 @@ export function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [setPalette, go]);
 
+  // 窗口宽度跨档时自动折叠侧栏 / 收起右栏(档内不动,尊重手动操作)。
+  // rAF 合并同一帧内的多次 resize —— 拖动窗口时 resize 触发很密。
+  const applyWidth = useUiStore((s) => s.applyWidth);
+  useEffect(() => {
+    let raf = 0;
+    const onResize = () => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => applyWidth(window.innerWidth));
+    };
+    onResize(); // 启动时按当前尺寸定一次
+    window.addEventListener("resize", onResize);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("resize", onResize);
+    };
+  }, [applyWidth]);
+
   return (
     <div className="app-shell">
       <Sidebar />
