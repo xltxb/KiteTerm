@@ -1358,3 +1358,162 @@ mod tests {
         assert_eq!(probe.push(b"\x1b_KTPWD:/half/way"), None);
     }
 }
+
+#[cfg(test)]
+mod session_manager_tests {
+    use super::{ClientHandler, Handle, SessionEntry, SessionManager};
+    use crate::models::SessionInfo;
+    use crate::test_support::spawn_ssh_server;
+    use std::sync::{Arc, Mutex};
+    use tokio::sync::mpsc;
+
+    fn info(id: &str, kind: &str) -> SessionInfo {
+        SessionInfo {
+            id: id.into(),
+            host_id: "h1".into(),
+            host_name: "主机".into(),
+            user: "tester".into(),
+            addr: "127.0.0.1".into(),
+            port: 22,
+            state: "connected".into(),
+            latency_ms: None,
+            cipher: String::new(),
+            cols: 80,
+            rows: 24,
+            recording: false,
+            recording_since: None,
+            kind: kind.into(),
+        }
+    }
+
+    /// 往管理器里放一条会话;handle 为 None 即本地终端
+    fn park(
+        mgr: &SessionManager,
+        id: &str,
+        kind: &str,
+        handle: Option<Arc<russh::client::Handle<ClientHandler>>>,
+    ) {
+        // 这些用例不走控制通道,接收端随即丢弃无妨
+        let (ctl, _rx) = mpsc::unbounded_channel();
+        let entry = SessionEntry {
+            info: info(id, kind),
+            ctl,
+            handle: handle.map(|h| Arc::new(Mutex::new(h))),
+            recorder: Arc::new(Mutex::new(None)),
+        };
+        mgr.sessions.lock().unwrap().insert(id.to_string(), entry);
+    }
+
+    /// 真地连一次测试 SSH 服务端,拿一个货真价实的 Handle。
+    /// 在 ssh 模块内部,可以直接拼 ClientHandler,不必绕 connect_host_full 那套主机配置
+    async fn real_handle(db: &Arc<crate::db::Db>, ssh_port: u16) -> Arc<Handle<ClientHandler>> {
+        let handler = ClientHandler {
+            db: db.clone(),
+            host_id: "h1".into(),
+            presented_mismatch: Arc::new(Mutex::new(None)),
+            r_targets: Arc::new(Mutex::new(std::collections::HashMap::new())),
+        };
+        let mut handle = russh::client::connect(
+            Arc::new(russh::client::Config::default()),
+            ("127.0.0.1", ssh_port),
+            handler,
+        )
+        .await
+        .expect("应能连上测试 SSH 服务端");
+        assert!(
+            handle.authenticate_password("tester", "pw").await.unwrap().success(),
+            "测试服务端应放行任何密码"
+        );
+        Arc::new(handle)
+    }
+
+    fn scratch_db(name: &str) -> Arc<crate::db::Db> {
+        let dir = std::env::temp_dir().join("kite-ssh-test").join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        Arc::new(crate::db::Db::open(dir).unwrap())
+    }
+
+    #[test]
+    fn get_handle_reports_missing_session_with_its_id() {
+        let mgr = SessionManager::default();
+        let err = mgr.get_handle("nope").err().expect("应返回错误");
+        assert!(err.0.contains("会话不存在"), "实际: {}", err.0);
+        assert!(err.0.contains("nope"), "错误信息应带上会话 id,实际: {}", err.0);
+    }
+
+    #[test]
+    fn get_handle_rejects_local_terminal() {
+        let mgr = SessionManager::default();
+        park(&mgr, "s-local", "local", None);
+        let err = mgr.get_handle("s-local").err().expect("应返回错误");
+        assert!(err.0.contains("本地终端不支持此操作"), "实际: {}", err.0);
+    }
+
+    #[tokio::test]
+    async fn get_handle_returns_the_current_handle_after_reconnect() {
+        let ssh_port = spawn_ssh_server().await;
+        let db = scratch_db("reconnect");
+        let first = real_handle(&db, ssh_port).await;
+        let second = real_handle(&db, ssh_port).await;
+        assert!(!Arc::ptr_eq(&first, &second), "两次连接应是不同的句柄");
+
+        let mgr = SessionManager::default();
+        park(&mgr, "s-ssh", "ssh", Some(first.clone()));
+        assert!(Arc::ptr_eq(&mgr.get_handle("s-ssh").unwrap(), &first));
+
+        // 重连:替换内层 Arc。取用时若是在插入那刻就克隆保存,这里就会拿到旧句柄
+        {
+            let sessions = mgr.sessions.lock().unwrap();
+            let slot = sessions.get("s-ssh").unwrap().handle.as_ref().unwrap();
+            *slot.lock().unwrap() = second.clone();
+        }
+        assert!(
+            Arc::ptr_eq(&mgr.get_handle("s-ssh").unwrap(), &second),
+            "重连后应拿到新句柄"
+        );
+    }
+
+    #[test]
+    fn list_returns_every_session() {
+        let mgr = SessionManager::default();
+        assert!(mgr.list().is_empty());
+
+        park(&mgr, "a", "ssh", None);
+        park(&mgr, "b", "local", None);
+        let mut ids: Vec<String> = mgr.list().into_iter().map(|i| i.id).collect();
+        ids.sort(); // HashMap 无序
+        assert_eq!(ids, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn update_info_mutates_and_returns_the_new_state() {
+        let mgr = SessionManager::default();
+        park(&mgr, "s1", "ssh", None);
+
+        let got = mgr.update_info("s1", |i| {
+            i.state = "disconnected".into();
+            i.latency_ms = Some(42);
+        });
+        let got = got.expect("会话存在时应返回新状态");
+        assert_eq!(got.state, "disconnected");
+        assert_eq!(got.latency_ms, Some(42));
+
+        // 返回的是快照,内部状态也得真改了
+        let stored = mgr.list().into_iter().find(|i| i.id == "s1").unwrap();
+        assert_eq!(stored.state, "disconnected");
+        assert_eq!(stored.latency_ms, Some(42));
+    }
+
+    #[test]
+    fn update_info_on_unknown_session_is_none_and_touches_nothing() {
+        let mgr = SessionManager::default();
+        park(&mgr, "s1", "ssh", None);
+
+        let mut called = false;
+        let got = mgr.update_info("nope", |_| called = true);
+        assert!(got.is_none());
+        assert!(!called, "会话不存在时不应调用改写闭包");
+        assert_eq!(mgr.list().len(), 1);
+    }
+}
