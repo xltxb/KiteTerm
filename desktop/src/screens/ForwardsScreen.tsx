@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { ArrowRightLeft, Trash2 } from "lucide-react";
-import { Button, ScreenHeader, Segmented, Switch, TextInput } from "@/components/ui";
+import { Button, Readout, ScreenHeader, Segmented, Switch, TextInput } from "@/components/ui";
 import { fmtBytes } from "@/lib/format";
 import { useDataStore } from "@/stores/data";
 import type { ForwardRule, ForwardType } from "@/types";
@@ -26,7 +26,7 @@ export function ForwardsScreen() {
   return (
     <div className="screen vscroll">
       <div className="screen-inner medium">
-        <ScreenHeader eyebrow="PORT FORWARDING" title="端口转发" count={`${activeCount} 活跃`} />
+        <ScreenHeader eyebrow="PORT FORWARDING" title="端口转发" count={`${activeCount} 活跃`} screen="forwards" />
 
         <div className="card pad-card mb-16">
           <div className="fs-sm w-bold t-muted mb-12">新建规则</div>
@@ -76,8 +76,10 @@ export function ForwardsScreen() {
               </span>
               <div className="grow lh-normal">
                 <div className="mono fs-sm t-strong">{ruleText(f)}</div>
-                <div className="fs-xs t-faint">
-                  经 {hostName(f.viaHostId)} · ↑ {fmtBytes(f.bytesUp)} · ↓ {fmtBytes(f.bytesDown)}
+                <div className="row gap-14 fs-xs t-faint">
+                  <span>经 {hostName(f.viaHostId)}</span>
+                  <Readout label="↑" value={fmtBytes(f.bytesUp)} />
+                  <Readout label="↓" value={fmtBytes(f.bytesDown)} />
                 </div>
               </div>
               <span className={f.enabled ? "row gap-6 fs-xs t-success" : "row gap-6 fs-xs t-faint"}>

@@ -13,7 +13,7 @@ import {
   SquareTerminal,
   X,
 } from "lucide-react";
-import { Button } from "@/components/ui";
+import { Button, Readout } from "@/components/ui";
 import { AiCommandBar } from "@/components/AiCommandBar";
 import { fmtDuration } from "@/lib/format";
 import { AiFab } from "@/screens/terminal/AiFab";
@@ -271,7 +271,12 @@ export function TerminalScreen() {
                 </span>
                 <span className="grp">
                   <span className={active.state === "connected" ? "dot-sm dot-ok" : "dot-sm dot-warn"} />
-                  {active.latencyMs != null ? `${active.latencyMs}ms` : "—"}
+                  <Readout
+                    label="延迟"
+                    value={active.latencyMs != null ? active.latencyMs : "—"}
+                    unit={active.latencyMs != null ? "ms" : undefined}
+                    tone={active.state === "connected" ? "ok" : "warn"}
+                  />
                 </span>
                 <span>{active.cipher}</span>
               </>
@@ -286,7 +291,7 @@ export function TerminalScreen() {
             {active.recording && active.recordingSince && (
               <span className="grp t-danger">
                 <span className="dot-lg dot-rec" />
-                REC {fmtDuration(Date.now() - active.recordingSince)}
+                <Readout label="REC" value={fmtDuration(Date.now() - active.recordingSince)} tone="bad" />
               </span>
             )}
             <span>UTF-8</span>
