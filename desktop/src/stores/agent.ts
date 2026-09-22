@@ -16,6 +16,8 @@ export interface AgentStep {
   reason?: string;
   output?: string;
   exitCode?: number;
+  /** 输出超了上限、前半截被丢掉了 —— 卡片要标出来,别让人(和 AI)以为这就是全部 */
+  truncated?: boolean;
   /** AI 对这步输出的解读 */
   analysis?: string;
   /** 第几次尝试(自我修正时 > 1) */
@@ -29,6 +31,9 @@ export interface AgentTask {
   running: boolean;
   stopped: boolean;
   consecutiveFailures: number;
+  /** 任务的生命周期状态。不要用 running/summary 去推导 ——
+   *  停止发生在等待批准时、或 AI 只回 done 不给 summary 时,推导都会得出错误答案。 */
+  status: "running" | "waiting" | "ended";
   /** 任务终态的总结 */
   summary?: string;
   /** 停止原因 */
@@ -66,6 +71,9 @@ function asDataBlock(step: AgentStep, nonce: string): string {
     `命令: ${step.command}`,
     `退出码: ${step.exitCode}`,
     `--- BEGIN TERMINAL OUTPUT ${nonce} ---`,
+    // 只在真截断时才加这一行 —— 缓冲溢出后前半截已被丢弃,AI 必须知道
+    // 自己看到的不是完整输出,否则会据此做出错误判断。
+    ...(step.truncated ? ["输出已被截断,以下不是完整内容。"] : []),
     clip(step.output ?? ""),
     `--- END TERMINAL OUTPUT ${nonce} ---`,
   ].join("\n");
@@ -126,7 +134,7 @@ export const useAgentStore = create<AgentState>((set, get) => {
   }
 
   function finish(sessionId: string, endReason?: string, summary?: string) {
-    patch(sessionId, { running: false, endReason, summary });
+    patch(sessionId, { running: false, status: "ended", endReason, summary });
   }
 
   /** 走 stores/ai 的既有通道请求 AI。system prompt 由 Rust 侧按 "agent" mode 决定,
@@ -143,6 +151,7 @@ export const useAgentStore = create<AgentState>((set, get) => {
       state: ok ? "ok" : "failed",
       output: r.output,
       exitCode: r.exitCode,
+      truncated: r.truncated,
     });
     bumpFailures(sessionId, ok); // ok 清零,否则 +1
     const step = stepOf(sessionId, stepId);
@@ -201,8 +210,10 @@ export const useAgentStore = create<AgentState>((set, get) => {
 
       if (r.verdict === "needs_approval" && !r.autoRan) {
         // 停下等用户点批准。approve() 会续上循环。
+        // 这里 return 之后再没有代码会跑 —— status 必须显式置成 waiting,
+        // 不能指望之后哪一步再来补终态,不然「停止」会在这里把任务锁死。
         patchStep(sessionId, step.id, { state: "pending", reason: r.reason });
-        setRunning(sessionId, false);
+        patch(sessionId, { running: false, status: "waiting" });
         return;
       }
 
@@ -240,6 +251,9 @@ export const useAgentStore = create<AgentState>((set, get) => {
               running: hasProvider,
               stopped: false,
               consecutiveFailures: 0,
+              // 没配置模型这条路直接落终态,不会再进 run() 去调用 finish() ——
+              // 必须在这里就把 status 置对,否则永远卡在「进行中」。
+              status: hasProvider ? "running" : "ended",
               endReason: hasProvider ? undefined : "尚未配置可用的 AI 模型 —— 在右栏「AI 助手」里添加。",
             },
           },
@@ -294,9 +308,12 @@ export const useAgentStore = create<AgentState>((set, get) => {
     },
 
     stop: (sessionId) => {
-      // 只置标志位:循环下一轮开头的 shouldStop 会接住它。
+      // 在 pending(等批准)步骤上点停止时,run() 早就在 needs_approval 分支
+      // return 了,循环这轮不会再醒过来靠 shouldStop 补终态 —— 必须在这里
+      // 就直接把 status 置成 ended,否则任务永远卡在「进行中」,approve/skip
+      // 又被下面的 stopped 判断挡住,会话再也开不了新任务。
       // 已经发出去的命令仍在远端跑,这里管不着 —— 界面上如实说明。
-      patch(sessionId, { stopped: true, running: false });
+      patch(sessionId, { stopped: true, running: false, status: "ended", endReason: "已按你的要求停止" });
     },
   };
 });
