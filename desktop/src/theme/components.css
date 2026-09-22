@@ -278,7 +278,6 @@
 .badge-warning { background: var(--warning-subtle); color: var(--warning-text); }
 .badge-danger { background: var(--danger-subtle); color: var(--danger-text); }
 .badge-neutral { background: var(--surface-sunken); color: var(--text-muted); border: 1px solid var(--border-subtle); }
-.badge-frame { border-radius: var(--radius-xs); }
 
 /* ---- 分段选择 ---- */
 .seg { display: flex; gap: 2px; background: var(--surface-sunken); border-radius: var(--radius-md); padding: 3px; }
