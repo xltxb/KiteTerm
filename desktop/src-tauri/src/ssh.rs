@@ -151,7 +151,7 @@ pub enum Ctl {
     /// 拖文件到终端:自动向远端敲 rz,并把这些文件作为随后 rz 的发送列表(仿 Xshell)
     DropUpload(Vec<std::path::PathBuf>),
     /// AI 分步执行:注入一条带哨兵的命令,并把这一步的输出与退出码回传
-    AgentStep(String, String, tokio::sync::oneshot::Sender<crate::agent::StepOutput>),
+    AgentStep(String, String, tokio::sync::oneshot::Sender<std::result::Result<crate::agent::StepOutput, &'static str>>),
     /// 用户在浮条点取消
     CancelTransfer,
 }
@@ -427,6 +427,16 @@ fn should_reconnect(end: SessionEnd, auto_reconnect: bool) -> bool {
 /// 一步等哨兵的上限。超了就放弃这一步,把已收到的输出交出去。
 const AGENT_STEP_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// 一步 agent 命令的等待状态
+struct AgentWait {
+    probe: crate::agent::EndProbe,
+    reply: tokio::sync::oneshot::Sender<std::result::Result<crate::agent::StepOutput, &'static str>>,
+    /// 注入那一刻,超时以此为锚点
+    started: Instant,
+    /// 超时放弃时要用它另建探针去收迟到的哨兵
+    nonce: String,
+}
+
 /// 会话主循环:通道输出 → 前端事件;控制消息 → 通道;异常断开时按设置自动重连
 #[allow(clippy::too_many_arguments)]
 async fn run_session(
@@ -453,18 +463,15 @@ async fn run_session(
         // 拖入文件时随 rz 一起敲的工作目录探针,以及它抓回来的远端当前目录
         let mut pwd_probe = PwdProbe::default();
         let mut remote_cwd: Option<String> = None;
-        // AI 分步执行:等待哨兵中的那一步(探针 / 回传端 / 起始时刻)
-        let mut agent_wait: Option<(
-            crate::agent::EndProbe,
-            tokio::sync::oneshot::Sender<crate::agent::StepOutput>,
-            Instant,
-        )> = None;
+        // AI 分步执行:当前在等哨兵的那一步
+        let mut agent_wait: Option<AgentWait> = None;
+        // 上一步超时放弃后,它的命令还在远端跑。它最终吐出的哨兵还会飘过来 ——
+        // 在那之前到达的都是上一步的残留,既不能算进下一步,也不能在这期间注入新命令。
+        let mut agent_stale: Option<crate::agent::EndProbe> = None;
         loop {
             // 等哨兵时才有 deadline;算在 select 之前,async 块按值捕获,
             // 免得借用了 agent_wait、分支体里又要 take 它
-            let agent_deadline = agent_wait
-                .as_ref()
-                .map(|(_, _, started)| *started + AGENT_STEP_TIMEOUT);
+            let agent_deadline = agent_wait.as_ref().map(|w| w.started + AGENT_STEP_TIMEOUT);
 
             tokio::select! {
                 msg = channel.wait() => {
@@ -514,14 +521,17 @@ async fn run_session(
                                     }
                                 }
                             }
+                            // 先收上一步迟到的哨兵 —— 收到了才算把上一步清干净
+                            if let Some(stale) = agent_stale.as_mut() {
+                                if stale.push(data).is_some() {
+                                    agent_stale = None;
+                                }
+                            }
                             if agent_wait.is_some() {
-                                let done = {
-                                    let (probe, _, _) = agent_wait.as_mut().unwrap();
-                                    probe.push(data)
-                                };
+                                let done = agent_wait.as_mut().unwrap().probe.push(data);
                                 if let Some(step) = done {
-                                    let (_, reply, _) = agent_wait.take().unwrap();
-                                    let _ = reply.send(step);
+                                    let w = agent_wait.take().unwrap();
+                                    let _ = w.reply.send(Ok(step));
                                 }
                             }
                         }
@@ -554,19 +564,23 @@ async fn run_session(
                             break;
                         }
                         Some(Ctl::AgentStep(cmd, nonce, reply)) => {
-                            // 上一步还在等哨兵时拒绝新的,而不是覆盖 —— 覆盖会让上一步
-                            // 的命令已在远端跑着却无人接收结果,两条命令的输出还会混进
-                            // 同一个探针。reply 在这里 drop,调用方收到 AGENT_STEP_ABORTED。
+                            // 上一步还在等哨兵、或者上一步超时后的残留还没收干净,
+                            // 这时注入新命令会让两条命令的输出混在一起
                             if agent_wait.is_some() {
-                                drop(reply);
+                                let _ = reply.send(Err("AGENT_BUSY: 上一步还在执行"));
+                            } else if agent_stale.is_some() {
+                                let _ = reply.send(Err(
+                                    "AGENT_BUSY_STALE: 上一步已超时但命令仍在远端运行,请在终端里按 Ctrl-C 或等它结束",
+                                ));
                             } else if channel.data(cmd.as_bytes()).await.is_err() {
                                 break;
                             } else {
-                                agent_wait = Some((
-                                    crate::agent::EndProbe::new(&nonce),
+                                agent_wait = Some(AgentWait {
+                                    probe: crate::agent::EndProbe::new(&nonce),
                                     reply,
-                                    Instant::now(),
-                                ));
+                                    started: Instant::now(),
+                                    nonce,
+                                });
                             }
                         }
                         Some(Ctl::DropUpload(paths)) => {
@@ -598,13 +612,16 @@ async fn run_session(
                         None => std::future::pending::<()>().await,
                     }
                 } => {
-                    if let Some((probe, reply, _)) = agent_wait.take() {
-                        let (output, truncated) = probe.into_buffered();
-                        let _ = reply.send(crate::agent::StepOutput {
+                    if let Some(w) = agent_wait.take() {
+                        // 这条命令还在远端跑,它的哨兵迟早会来 —— 留个探针专门收它,
+                        // 收到之前这个会话不接新步骤
+                        agent_stale = Some(crate::agent::EndProbe::new(&w.nonce));
+                        let (output, truncated) = w.probe.into_buffered();
+                        let _ = w.reply.send(Ok(crate::agent::StepOutput {
                             output,
                             exit_code: -1,
                             truncated,
-                        });
+                        }));
                     }
                 }
             }
