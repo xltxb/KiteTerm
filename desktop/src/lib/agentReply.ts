@@ -10,6 +10,19 @@
 /** 一条命令的长度上限 */
 const MAX_COMMAND_LEN = 4096;
 
+/** 会让命令显示得与实际不符的字符。
+ *
+ *  换行类(含 U+2028/U+2029 —— JS 的 \n\r 不匹配它们,但浏览器照样渲染成换行)
+ *  能让用户只看到第一行就批准,实际执行的却是多条;零宽与双向控制字符能直接伪装
+ *  命令原文;NUL 可能让渲染在中途截断。
+ *
+ *  保留 \t(U+0009)—— 制表符在命令里是合法的空白。
+ *
+ *  这与 Rust 侧 cmdguard.rs 的 is_deceptive 是同一套字符集:那边守自动执行路径,
+ *  这边守批准路径(批准的命令不过 cmdguard)。 */
+const DECEPTIVE =
+  /[\u0000-\u0008\u000A-\u001F\u007F  ​-‏‪-‮⁦-⁩﻿]/;
+
 export interface AgentNext {
   intent: string;
   command: string;
@@ -62,12 +75,10 @@ export function parseAgentReply(raw: string): AgentReply | { error: string } {
   const command = typeof nn.command === "string" ? nn.command.trim() : "";
   if (!command) return { error: "AI 给出的下一步没有命令" };
   if (command.length > MAX_COMMAND_LEN) {
-    return { error: "AI 给出的命令过长" };
+    return { error: `AI 给出的命令过长(${command.length} 字符,上限 ${MAX_COMMAND_LEN})` };
   }
-  // 一步就是一条命令。内嵌换行意味着多条 —— 用户批准时看到的很可能只是第一行,
-  // 而批准路径不过 cmdguard 的 shell 结构检查。
-  if (/[\n\r]/.test(command)) {
-    return { error: "AI 给出的命令含换行,一步只能是一条命令" };
+  if (DECEPTIVE.test(command)) {
+    return { error: "AI 给出的命令含换行或不可见字符,一步只能是一条命令" };
   }
 
   return {
