@@ -7,7 +7,7 @@ function Bar({ label, val }: { label: string; val: number }) {
   const color =
     val >= 90 ? "var(--danger)" :
     val >= 75 ? "var(--warning)" :
-    "linear-gradient(90deg,var(--azure-500),var(--cyan-400))";
+    "var(--accent)";
   return (
     <div className="row gap-10">
       <div style={{ width: 64 }}>
