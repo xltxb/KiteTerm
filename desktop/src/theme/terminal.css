@@ -13,57 +13,57 @@
 
 :root {
   /* ---- 浅色:纸感底色 + 深色文本。ANSI 取各色的深档,保证白底可读 ---- */
-  --term-bg:        #fbfcfe;
-  --term-fg:        var(--slate-800);
-  --term-cursor:    var(--azure-600);
-  --term-selection: rgba(59, 110, 246, 0.20);
+  --term-bg:        #f4f9fb;
+  --term-fg:        #06323d;
+  --term-cursor:    #0891b2;
+  --term-selection: rgba(8, 145, 178, 0.20);
 
-  --term-black:   var(--slate-900);
-  --term-red:     #c62f26;
-  --term-green:   #0c7344;
-  --term-yellow:  #96600a;
-  --term-blue:    var(--azure-600);
-  --term-magenta: var(--violet-600);
-  --term-cyan:    var(--cyan-700);
-  --term-white:   var(--slate-400);
+  --term-black:   #06323d;
+  --term-red:     #be123c;
+  --term-green:   #4d7c0f;
+  --term-yellow:  #b45309;
+  --term-blue:    #0369a1;
+  --term-magenta: #7e22ce;
+  --term-cyan:    #0e7490;
+  --term-white:   #9fb8c0;
 
-  --term-bright-black:   var(--slate-600);
-  --term-bright-red:     #e04036;
-  --term-bright-green:   #0f9355;
-  --term-bright-yellow:  #b8781a;
-  --term-bright-blue:    var(--azure-500);
-  --term-bright-magenta: var(--violet-500);
-  --term-bright-cyan:    var(--cyan-600);
-  --term-bright-white:   var(--slate-200);
+  --term-bright-black:   #4a7d8b;
+  --term-bright-red:     #e11d48;
+  --term-bright-green:   #5c920c;
+  --term-bright-yellow:  #c76a05;
+  --term-bright-blue:    #0284c7;
+  --term-bright-magenta: #9333ea;
+  --term-bright-cyan:    #0891b2;
+  --term-bright-white:   #dceaef;
 
   /* 界面里引用终端语汇的地方(AI 回复里的命令块、录制回放器) */
-  --term-code-fg: var(--cyan-800);
+  --term-code-fg: #0e7490;
 }
 
 [data-theme="dark"] {
   /* ---- 深色:比 --surface-sunken 再深一档的近黑,让输出文本浮起来 ---- */
-  --term-bg:        #0a0a0b;
-  --term-fg:        var(--slate-300);
-  --term-cursor:    var(--cyan-400);
-  --term-selection: rgba(59, 110, 246, 0.32);
+  --term-bg:        #01171e;
+  --term-fg:        #ccf5ff;
+  --term-cursor:    #22d3ee;
+  --term-selection: rgba(34, 211, 238, 0.30);
 
-  --term-black:   var(--slate-900);
-  --term-red:     #ff6259;
-  --term-green:   #2ad07e;
-  --term-yellow:  #ffb648;
-  --term-blue:    var(--azure-400);
-  --term-magenta: var(--violet-400);
-  --term-cyan:    var(--cyan-300);
-  --term-white:   var(--slate-300);
+  --term-black:   #0a2730;
+  --term-red:     #ff6b81;
+  --term-green:   #a3e635;
+  --term-yellow:  #fcd34d;
+  --term-blue:    #38bdf8;
+  --term-magenta: #c084fc;
+  --term-cyan:    #22d3ee;
+  --term-white:   #a8cdd8;
 
-  --term-bright-black:   var(--slate-500);
-  --term-bright-red:     #ff9d97;
-  --term-bright-green:   #7be8b3;
-  --term-bright-yellow:  #ffd391;
-  --term-bright-blue:    var(--azure-300);
-  --term-bright-magenta: var(--violet-300);
-  --term-bright-cyan:    var(--cyan-200);
-  --term-bright-white:   #f4f7fc;
+  --term-bright-black:   #5a8896;
+  --term-bright-red:     #ff9db0;
+  --term-bright-green:   #c5f26a;
+  --term-bright-yellow:  #fde68a;
+  --term-bright-blue:    #7dd3fc;
+  --term-bright-magenta: #d8b4fe;
+  --term-bright-cyan:    #67e8f9;
+  --term-bright-white:   #e8f7fb;
 
-  --term-code-fg: var(--cyan-200);
+  --term-code-fg: #67e8f9;
 }
