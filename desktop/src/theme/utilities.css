@@ -15,7 +15,7 @@
   --ui-xl:  22px;   /* KPI 数字 */
 
   /* 圆角刻度里缺的一档:圆角容器内部的小控件(标签页动作、片段序号) */
-  --radius-inner: 8px;
+  --radius-inner: var(--radius-sm);
 }
 
 /* ---- 排布 ---- */
