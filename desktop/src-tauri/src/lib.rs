@@ -109,6 +109,7 @@ pub fn run() {
             commands::session_write,
             commands::session_resize,
             commands::session_close,
+            commands::agent_exec,
             commands::sftp_list,
             commands::local_list,
             commands::local_home,
