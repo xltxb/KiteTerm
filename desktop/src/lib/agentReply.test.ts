@@ -91,5 +91,30 @@ check("error" in parseAgentReply(
     "超长命令应报错");
 }
 
+// U+2028/U+2029:JS 的 \n\r 正则不匹配,但浏览器渲染成换行 —— 同样能骗过眼睛
+check("error" in parseAgentReply(
+  '{"analysis":"a","done":false,"next":{"intent":"i","command":"ls\\u2028rm -rf /tmp/x","readonly":true}}'),
+  "命令含 U+2028 行分隔符应报错");
+check("error" in parseAgentReply(
+  '{"analysis":"a","done":false,"next":{"intent":"i","command":"ls\\u2029rm -rf /tmp/x","readonly":true}}'),
+  "命令含 U+2029 段分隔符应报错");
+
+// NUL:渲染或跨 IPC 边界可能在此截断,后面的内容用户看不到却会执行
+check("error" in parseAgentReply(
+  '{"analysis":"a","done":false,"next":{"intent":"i","command":"ls\\u0000rm -rf /tmp/x","readonly":true}}'),
+  "命令含 NUL 应报错");
+
+// 零宽与双向控制字符能直接伪装命令原文(与 Rust 侧 cmdguard 的 is_deceptive 对齐)
+check("error" in parseAgentReply(
+  '{"analysis":"a","done":false,"next":{"intent":"i","command":"ls\\u202Etxt.elif","readonly":true}}'),
+  "命令含 RTL override 应报错");
+
+// 制表符是合法空白,不能误伤
+{
+  const r = parseAgentReply(
+    '{"analysis":"a","done":false,"next":{"intent":"i","command":"grep\\tfoo\\tfile","readonly":true}}');
+  check(!("error" in r), "制表符不该被拦");
+}
+
 if (failed > 0) { console.error(`agentReply 自检未通过:${failed} 项`); process.exit(1); }
 console.log("AGENT_REPLY_PASS");
