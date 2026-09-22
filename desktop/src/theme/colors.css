@@ -89,14 +89,14 @@
 
   --text-strong:     #06323d;
   --text-body:       #0d4a5a;
-  --text-muted:      #4a7d8b;
-  --text-faint:      #7fa3ad;
+  --text-muted:      #35606b;
+  --text-faint:      #496c78;
   --text-on-accent:  #ffffff;
   --text-inverse:    #eef4f7;
 
-  --accent:          #0891b2;
-  --accent-hover:    #0e7490;
-  --accent-pressed:  #155e75;
+  --accent:          #0e7490;
+  --accent-hover:    #155e75;
+  --accent-pressed:  #164e63;
   --accent-subtle:   #e0f2f7;
   --accent-subtle-border: rgba(8, 145, 178, 0.30);
   --accent-text:     #0e7490;
