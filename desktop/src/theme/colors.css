@@ -73,48 +73,48 @@
   /* ============================================================
      SEMANTIC — Light (default)
      ============================================================ */
-  --surface-page:    var(--slate-50);
-  --surface-card:    var(--slate-0);
-  --surface-sunken:  var(--slate-100);
-  --surface-raised:  var(--slate-0);
-  --surface-inverse: var(--slate-900);
-  --surface-overlay: rgba(12, 14, 23, 0.45);
+  --surface-page:    #eef4f7;
+  --surface-card:    #ffffff;
+  --surface-sunken:  #e4eef2;
+  --surface-raised:  #ffffff;
+  --surface-inverse: #06323d;
+  --surface-overlay: rgba(6, 50, 61, 0.45);
   /* 悬停垫色:叠加在所在面之上,深浅主题各自朝"更近前景"的方向走。
      不要拿 --surface-sunken 当悬停色 —— 深色主题里它比卡片更暗,悬停会往下陷。 */
-  --surface-hover:   rgba(16, 24, 48, 0.05);
+  --surface-hover:   rgba(6, 90, 110, 0.06);
 
-  --border-subtle:   var(--slate-200);
-  --border-default:  var(--slate-300);
-  --border-strong:   var(--slate-400);
+  --border-subtle:   rgba(6, 90, 110, 0.16);
+  --border-default:  rgba(6, 90, 110, 0.28);
+  --border-strong:   rgba(6, 90, 110, 0.48);
 
-  --text-strong:     var(--slate-900);
-  --text-body:       var(--slate-700);
-  --text-muted:      var(--slate-500);
-  --text-faint:      var(--slate-400);
+  --text-strong:     #06323d;
+  --text-body:       #0d4a5a;
+  --text-muted:      #4a7d8b;
+  --text-faint:      #7fa3ad;
   --text-on-accent:  #ffffff;
-  --text-inverse:    var(--slate-50);
+  --text-inverse:    #eef4f7;
 
-  --accent:          var(--azure-500);
-  --accent-hover:    var(--azure-600);
-  --accent-pressed:  var(--azure-700);
-  --accent-subtle:   var(--azure-50);
-  --accent-subtle-border: var(--azure-200);
-  --accent-text:     var(--azure-600);
+  --accent:          #0891b2;
+  --accent-hover:    #0e7490;
+  --accent-pressed:  #155e75;
+  --accent-subtle:   #e0f2f7;
+  --accent-subtle-border: rgba(8, 145, 178, 0.30);
+  --accent-text:     #0e7490;
 
-  --glow-accent:     var(--cyan-400);
+  --glow-accent:     #0891b2;
 
-  --success:         var(--success-500);
-  --success-text:    var(--success-700);
-  --success-subtle:  var(--success-50);
-  --warning:         var(--warning-500);
-  --warning-text:    var(--warning-700);
-  --warning-subtle:  var(--warning-50);
-  --danger:          var(--danger-500);
-  --danger-text:     var(--danger-700);
-  --danger-subtle:   var(--danger-50);
+  --success:         #4d7c0f;
+  --success-text:    #3f6212;
+  --success-subtle:  #eef7e0;
+  --warning:         #b45309;
+  --warning-text:    #92400e;
+  --warning-subtle:  #fdf0e0;
+  --danger:          #be123c;
+  --danger-text:     #9f1239;
+  --danger-subtle:   #fdeaee;
 
-  --focus-ring:      color-mix(in oklch, var(--azure-500) 45%, transparent);
-  --selection-bg:    var(--azure-100);
+  --focus-ring:      rgba(8, 145, 178, 0.45);
+  --selection-bg:    #cdeaf2;
 }
 
 /* ============================================================
@@ -122,44 +122,44 @@
    Apply via <html data-theme="dark"> or [data-theme="dark"] scope.
    ============================================================ */
 [data-theme="dark"] {
-  --surface-page:    #0a0c14;
-  --surface-card:    #141826;
-  --surface-sunken:  #0c0e17;
-  --surface-raised:  #1b2030;
-  --surface-inverse: var(--slate-50);
-  --surface-overlay: rgba(4, 6, 12, 0.66);
-  --surface-hover:   rgba(255, 255, 255, 0.04);
+  --surface-page:    #02141a;
+  --surface-card:    #04202a;
+  --surface-sunken:  #010e13;
+  --surface-raised:  #062a37;
+  --surface-inverse: #eef4f7;
+  --surface-overlay: rgba(1, 10, 14, 0.70);
+  --surface-hover:   rgba(34, 211, 238, 0.07);
 
-  --border-subtle:   rgba(255, 255, 255, 0.07);
-  --border-default:  rgba(255, 255, 255, 0.13);
-  --border-strong:   rgba(255, 255, 255, 0.22);
+  --border-subtle:   rgba(34, 211, 238, 0.14);
+  --border-default:  rgba(34, 211, 238, 0.26);
+  --border-strong:   rgba(34, 211, 238, 0.50);
 
-  --text-strong:     #f4f7fc;
-  --text-body:       #c4ccda;
-  --text-muted:      #8893a8;
-  --text-faint:      #5b6478;
-  --text-on-accent:  #ffffff;
-  --text-inverse:    var(--slate-900);
+  --text-strong:     #ccf5ff;
+  --text-body:       #9fd8e6;
+  --text-muted:      #7fb9c8;
+  --text-faint:      #548a99;
+  --text-on-accent:  #02141a;
+  --text-inverse:    #06323d;
 
-  --accent:          var(--azure-400);
-  --accent-hover:    var(--azure-300);
-  --accent-pressed:  var(--azure-500);
-  --accent-subtle:   rgba(59, 110, 246, 0.16);
-  --accent-subtle-border: rgba(94, 131, 251, 0.36);
-  --accent-text:     var(--azure-300);
+  --accent:          #22d3ee;
+  --accent-hover:    #67e8f9;
+  --accent-pressed:  #0e7490;
+  --accent-subtle:   rgba(34, 211, 238, 0.10);
+  --accent-subtle-border: rgba(34, 211, 238, 0.32);
+  --accent-text:     #67e8f9;
 
-  --glow-accent:     var(--cyan-400);
+  --glow-accent:     #22d3ee;
 
-  --success:         #2ad07e;
-  --success-text:    #7be8b3;
-  --success-subtle:  rgba(24, 179, 104, 0.16);
-  --warning:         #ffb648;
-  --warning-text:    #ffd391;
-  --warning-subtle:  rgba(245, 165, 36, 0.16);
-  --danger:          #ff6259;
-  --danger-text:     #ff9d97;
-  --danger-subtle:   rgba(240, 71, 62, 0.18);
+  --success:         #a3e635;
+  --success-text:    #bef264;
+  --success-subtle:  rgba(163, 230, 53, 0.12);
+  --warning:         #fcd34d;
+  --warning-text:    #fde68a;
+  --warning-subtle:  rgba(252, 211, 77, 0.12);
+  --danger:          #fb7185;
+  --danger-text:     #fda4af;
+  --danger-subtle:   rgba(251, 113, 133, 0.12);
 
-  --focus-ring:      color-mix(in oklch, var(--azure-400) 60%, transparent);
-  --selection-bg:    rgba(59, 110, 246, 0.34);
+  --focus-ring:      rgba(34, 211, 238, 0.55);
+  --selection-bg:    rgba(34, 211, 238, 0.28);
 }
