@@ -188,14 +188,17 @@ describe("issueCredentials —— 通用 STS AssumeRole(非 R2 endpoint)", () =>
     vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
       const req = input instanceof Request ? input : new Request(input);
       expect(req.method).toBe("POST");
-      const body = await req.text();
-      expect(body).toContain("Action=AssumeRole");
-      expect(body).toContain("DurationSeconds=3600");
-      expect(body).toContain("RoleSessionName=kite-user-9");
+      // 表单体用 formData() 读:对 x-www-form-urlencoded 的体调 .text(),
+      // workerd 会警告 "body which does not appear to be text"
+      const form = await req.formData();
+      expect(form.get("Action")).toBe("AssumeRole");
+      expect(form.get("DurationSeconds")).toBe("3600");
+      expect(form.get("RoleSessionName")).toBe("kite-user-9");
 
-      const policyRaw = new URLSearchParams(body).get("Policy");
+      const policyRaw = form.get("Policy");
       expect(policyRaw).toBeTruthy();
-      const policy = JSON.parse(decodeURIComponent(policyRaw ?? ""));
+      // formData() 已做一次 URL 解码,拿到的就是原始 JSON
+      const policy = JSON.parse(String(policyRaw));
       expect(policy.Statement[0].Resource[0]).toBe(`arn:aws:s3:::${cfg.bucket}/${cfg.prefix}users/user-9/*`);
       expect(policy.Statement[1].Condition.StringLike["s3:prefix"][0]).toBe(`${cfg.prefix}users/user-9/*`);
 
