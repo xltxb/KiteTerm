@@ -67,7 +67,7 @@ export function HostsScreen() {
   return (
     <div className="screen vscroll">
       <div className="screen-inner wide">
-        <ScreenHeader eyebrow="HOSTS" title="主机" count={String(hosts.length)}>
+        <ScreenHeader eyebrow="HOSTS" title="主机" count={String(hosts.length)} screen="hosts">
           <TextInput className="search" placeholder="搜索主机、标签…" value={query} onChange={(e) => setQuery(e.target.value)} />
           <Button variant="outline" onClick={() => setShowGroups(true)}>
             <Folders size={14} />管理分组

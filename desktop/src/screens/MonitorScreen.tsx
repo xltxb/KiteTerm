@@ -1,20 +1,22 @@
 import { useEffect } from "react";
-import { ScreenHeader } from "@/components/ui";
+import { Readout, ScreenHeader } from "@/components/ui";
 import { useMonitorStore } from "@/stores/monitor";
 
 function Bar({ label, val }: { label: string; val: number }) {
+  const tone: "ok" | "warn" | "bad" = val >= 90 ? "bad" : val >= 75 ? "warn" : "ok";
   const color =
     val >= 90 ? "var(--danger)" :
     val >= 75 ? "var(--warning)" :
     "linear-gradient(90deg,var(--azure-500),var(--cyan-400))";
   return (
     <div className="row gap-10">
-      <span className="mono fs-2xs t-muted" style={{ letterSpacing: "0.06em", width: 34 }}>{label}</span>
+      <div style={{ width: 64 }}>
+        <Readout label={label} value={val} unit="%" tone={tone} />
+      </div>
       {/* 填充宽度与配色随读数变化,只有这两项保留内联 */}
       <div className="progress grow">
         <div style={{ width: `${val}%`, background: color }} />
       </div>
-      <span className="mono fs-xs t-strong text-right" style={{ width: 36 }}>{val}%</span>
     </div>
   );
 }
@@ -27,7 +29,7 @@ export function MonitorScreen() {
   return (
     <div className="screen vscroll">
       <div className="screen-inner wide">
-        <ScreenHeader eyebrow="MONITORING" title="服务器监控">
+        <ScreenHeader eyebrow="MONITORING" title="服务器监控" screen="monitor">
           <span className="fs-sm t-faint">每 5s 刷新 · 经 SSH 采集,无需装 agent</span>
         </ScreenHeader>
 
