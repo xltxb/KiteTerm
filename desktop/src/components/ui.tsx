@@ -1,5 +1,6 @@
 import type { ButtonHTMLAttributes, CSSProperties, InputHTMLAttributes, ReactNode } from "react";
 import { Loader2 } from "lucide-react";
+import type { Screen } from "@/types";
 
 type BtnVariant = "primary" | "secondary" | "outline" | "ghost" | "danger";
 
@@ -135,7 +136,7 @@ export function Progress({
   );
 }
 
-const SCREEN_ORDER = [
+const SCREEN_ORDER: readonly Screen[] = [
   "terminal", "hosts", "transfer", "forwards", "certs",
   "monitor", "keys", "snippets", "sync", "settings",
 ] as const;
@@ -151,7 +152,7 @@ export function ScreenHeader({
   title: string;
   count?: string;
   /** 传了才显示序号;序号取自 types.ts 的 Screen 枚举顺序,表示真实位置 */
-  screen?: (typeof SCREEN_ORDER)[number];
+  screen?: Screen;
   children?: ReactNode;
 }) {
   const idx = screen ? SCREEN_ORDER.indexOf(screen) + 1 : 0;
