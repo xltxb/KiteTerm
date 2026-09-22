@@ -108,6 +108,7 @@ export function AiAgentPane() {
           <AgentStepCard
             key={step.id}
             step={step}
+            stopped={!!task?.stopped}
             onApprove={() => session && void approve(session.id, step.id)}
             onSkip={() => session && skip(session.id, step.id)}
           />

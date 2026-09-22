@@ -1032,13 +1032,14 @@
    (命令原文 / 输出,.agent-cmd / .agent-out)必须在视觉上分开——前者是正文
    字体,后者是等宽字体且带边框。AI 读的是终端输出,攻击者能操纵输出内容,
    analysis 因此可能被诱导性文字污染;用户点「批准执行」前,眼睛必须落在
-   命令原文的等宽边框里,而不是 AI 对它的转述上。 */
+   命令原文的等宽边框里,而不是 AI 对它的转述上。
+
+   命令原文排在 AI 的描述之前、字号不小于它、底色与卡片拉开 ——
+   AI 读的是终端输出,而输出是攻击者可控的,intent 本身可能是被操纵的产物。
+   用户批准时眼睛必须落在命令上,排版要主动把注意力导过去,不能靠用户自觉。 */
 
 /* 面板头允许竖排:主机名一行、输入/开始一行、说明再一行,而不是全部挤在一行 */
 .agent-head { flex-direction: column; align-items: stretch; gap: 8px; }
-
-/* 卡片骨架间距。.gap-sm 沿用既有 8px 档位,只是给 agent 卡片的按钮行起个更贴切的名字 */
-.gap-sm { gap: 8px; }
 
 .agent-step,
 .agent-summary {
@@ -1048,31 +1049,50 @@
   gap: 8px;
 }
 
-/* AI 说的:正文字体,✦ 前缀已在文案里带出,这里只管排版 */
+/* AI 说的:正文字体,✦ 前缀已在文案里带出;颜色降到 --text-muted 而不是缩小
+   字号来表达「这是辅助信息」—— 字号一旦比命令小,视觉权重就会输给上面那句
+   AI 的转述,批准时注意力会被导错地方。 */
 .agent-said {
   margin: 0;
   font-family: var(--font-sans);
   font-size: var(--ui-sm);
   line-height: 1.6;
-  color: var(--text-body);
+  color: var(--text-muted);
 }
 
-/* 机器记的:等宽字体 + 边框,命令原文用更重的边框,与「只是参考」的输出区分开 */
-.agent-cmd,
-.agent-out {
+/* 机器记的:等宽字体 + 边框。命令原文与「只是参考」的输出分开处理:
+   命令字号不低于 .agent-said(不能让它显得比 AI 的话还次要),底色用
+   --surface-sunken 而不是 --term-bg —— 两套主题下 --term-bg 都与卡片
+   底色 --surface-card 太接近(浅色 term-bg 与 card 几乎同色),辨识度
+   全靠一条 1px 半透明边框;--surface-sunken 与 card 拉得开(浅色
+   #e4eef2 vs #ffffff,深色 #010e13 vs #04202a)。 */
+.agent-cmd {
   margin: 0;
   font-family: var(--font-mono);
-  font-size: var(--ui-xs);
+  font-size: var(--ui-sm);
   line-height: 1.6;
   color: var(--term-code-fg);
-  background: var(--term-bg);
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
   padding: 8px 10px;
   white-space: pre-wrap;
   word-break: break-all;
 }
-.agent-cmd { border: 1px solid var(--border-strong); }
-.agent-out { border: 1px solid var(--border-subtle); color: var(--text-body); }
+/* 输出仅供参考,不是批准依据,字号可以比命令小一档 */
+.agent-out {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--ui-xs);
+  line-height: 1.6;
+  color: var(--text-body);
+  background: var(--term-bg);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 8px 10px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
 
 /* 五种卡片态的边框着色,方便在长列表里一眼扫出状态,不依赖只看徽章文字 */
 .agent-step.is-pending { border-color: var(--warning); }

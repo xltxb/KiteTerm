@@ -13,10 +13,13 @@ const MAX_LINES = 8;
 
 export function AgentStepCard({
   step,
+  stopped,
   onApprove,
   onSkip,
 }: {
   step: AgentStep;
+  /** 任务已被用户停止 —— pending 态不再提供批准/跳过入口 */
+  stopped: boolean;
   onApprove: () => void;
   onSkip: () => void;
 }) {
@@ -47,29 +50,35 @@ export function AgentStepCard({
         <Badge color="warning">第 {step.attempt} 次尝试</Badge>
       )}
 
-      {/* AI 说的:正文字体 + ✦ 前缀 */}
-      {step.intent && <p className="agent-said">✦ {step.intent}</p>}
-
-      {/* 机器记的:等宽 + 边框。批准时用户看的是这里,不是上面那行 */}
+      {/* 命令原文排在 AI 的描述之前、字号不小于它、底色与卡片拉开 ——
+          AI 读的是终端输出,而输出是攻击者可控的,intent 本身可能是被操纵的产物。
+          用户批准时眼睛必须落在命令上,排版要主动把注意力导过去,不能靠用户自觉。 */}
       <pre className="agent-cmd">{step.command}</pre>
 
+      {/* AI 说的:正文字体 + ✦ 前缀,颜色降一档表达「这是辅助信息」 */}
+      {step.intent && <p className="agent-said">✦ {step.intent}</p>}
+
       {step.state === "pending" && (
-        <>
-          {step.reason && <p className="t-muted fs-sm">需要批准:{step.reason}</p>}
-          {risky && <p className="t-danger fs-sm">这条命令有破坏性,请确认后再执行。</p>}
-          <div className="row gap-sm">
-            <Button
-              variant={risky ? "danger" : "primary"}
-              onClick={() => {
-                if (risky && !armed) { setArmed(true); return; }
-                onApprove();
-              }}
-            >
-              {risky && armed ? "确认执行?" : "批准执行"}
-            </Button>
-            <Button variant="ghost" onClick={onSkip}>跳过这步</Button>
-          </div>
-        </>
+        stopped ? (
+          <p className="t-faint fs-sm">任务已停止,这一步不再受理批准或跳过。</p>
+        ) : (
+          <>
+            {step.reason && <p className="t-muted fs-sm">需要批准:{step.reason}</p>}
+            {risky && <p className="t-danger fs-sm">这条命令有破坏性,请确认后再执行。</p>}
+            <div className="row gap-8">
+              <Button
+                variant={risky ? "danger" : "primary"}
+                onClick={() => {
+                  if (risky && !armed) { setArmed(true); return; }
+                  onApprove();
+                }}
+              >
+                {risky && armed ? "确认执行?" : "批准执行"}
+              </Button>
+              <Button variant="ghost" onClick={onSkip}>跳过这步</Button>
+            </div>
+          </>
+        )
       )}
 
       {step.state === "running" && (
