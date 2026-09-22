@@ -53,18 +53,24 @@ export function TextInput({
 export function Badge({
   color = "neutral",
   dot = false,
+  frame = false,
   className,
   children,
   style,
 }: {
   color?: "accent" | "success" | "warning" | "danger" | "neutral";
   dot?: boolean;
+  /** 方框描边式(蓝图风);默认是 pill */
+  frame?: boolean;
   className?: string;
   children: ReactNode;
   style?: CSSProperties;
 }) {
   return (
-    <span className={`badge badge-${color}${className ? ` ${className}` : ""}`} style={style}>
+    <span
+      className={`badge badge-${color}${frame ? " badge-frame" : ""}${className ? ` ${className}` : ""}`}
+      style={style}
+    >
       {dot && <span className="dot" />}
       {children}
     </span>
@@ -129,26 +135,66 @@ export function Progress({
   );
 }
 
+const SCREEN_ORDER = [
+  "terminal", "hosts", "transfer", "forwards", "certs",
+  "monitor", "keys", "snippets", "sync", "settings",
+] as const;
+
 export function ScreenHeader({
   eyebrow,
   title,
   count,
+  screen,
   children,
 }: {
   eyebrow: string;
   title: string;
   count?: string;
+  /** 传了才显示序号;序号取自 types.ts 的 Screen 枚举顺序,表示真实位置 */
+  screen?: (typeof SCREEN_ORDER)[number];
   children?: ReactNode;
 }) {
+  const idx = screen ? SCREEN_ORDER.indexOf(screen) + 1 : 0;
   return (
     <div className="screen-header">
       <div className="spacer">
-        <div className="eyebrow">{eyebrow}</div>
+        <div className="eyebrow">
+          {eyebrow}
+          {idx > 0 && (
+            <span className="screen-ord">
+              {String(idx).padStart(2, "0")}/{SCREEN_ORDER.length}
+            </span>
+          )}
+        </div>
         <h1 className="screen-title">
           {title} {count && <span className="count">{count}</span>}
         </h1>
       </div>
       {children}
+    </div>
+  );
+}
+
+const READOUT_TONE = { ok: "success", warn: "warning", bad: "danger" } as const;
+
+export function Readout({
+  label,
+  value,
+  unit,
+  tone,
+}: {
+  label: string;
+  value: string | number;
+  unit?: string;
+  tone?: "ok" | "warn" | "bad";
+}) {
+  return (
+    <div className="readout" data-tone={tone ? READOUT_TONE[tone] : undefined}>
+      <span className="readout-label">{label}</span>
+      <span className="readout-value">
+        {value}
+        {unit && <span className="readout-unit">{unit}</span>}
+      </span>
     </div>
   );
 }
