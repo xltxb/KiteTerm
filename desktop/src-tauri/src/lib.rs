@@ -1,5 +1,6 @@
 pub mod account;
 mod acme;
+mod agent;
 pub mod ai;
 mod commands;
 mod cmdguard;
