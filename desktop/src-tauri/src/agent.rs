@@ -171,7 +171,8 @@ pub async fn exec_step(
     }
     let step = rx
         .await
-        .map_err(|_| AppError("AGENT_STEP_ABORTED: 这一步没有结果(会话可能已关闭)".to_string()))?;
+        .map_err(|_| AppError("AGENT_STEP_ABORTED: 这一步没有结果(会话可能已关闭)".to_string()))?
+        .map_err(|msg| AppError(msg.to_string()))?;
 
     Ok(AgentStepResult {
         auto_ran: !approved,
