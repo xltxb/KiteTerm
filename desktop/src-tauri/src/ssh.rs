@@ -399,6 +399,29 @@ pub async fn open_shell_session(
     Ok(info)
 }
 
+/// 会话内层循环的结束原因 —— 决定要不要自动重连。
+///
+/// 早先这里只有一个 `user_closed: bool`,于是「远端 shell 正常退出」和「连接断了」
+/// 无从区分:用户敲 exit,SSH 先发 ExitStatus 再关通道,代码却把它当异常断开,
+/// 转头就把人重连回去,结果是退不出这个会话。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionEnd {
+    /// 用户关标签,或在 ZMODEM 传输中关掉会话
+    UserClosed,
+    /// 远端 shell 自己退了(exit / logout),收到了 ExitStatus
+    RemoteExited,
+    /// 通道没给退出状态就没了 —— 当作异常断开
+    Broken,
+}
+
+/// 只有异常断开、且设置开着,才自动重连。
+///
+/// 另外两种都是「有人主动要结束」:用户关标签是他自己点的,远端 shell 退出是他敲的 exit。
+/// 这两种情况下重连都是在跟用户对着干。
+fn should_reconnect(end: SessionEnd, auto_reconnect: bool) -> bool {
+    end == SessionEnd::Broken && auto_reconnect
+}
+
 /// 会话主循环:通道输出 → 前端事件;控制消息 → 通道;异常断开时按设置自动重连
 #[allow(clippy::too_many_arguments)]
 async fn run_session(
@@ -416,7 +439,8 @@ async fn run_session(
     recorder: Arc<Mutex<Option<Recorder>>>,
 ) {
     'outer: loop {
-        let mut user_closed = false;
+        // 默认按异常断开处理:没拿到明确的退出信号就宁可重连,也好过把人静默地踢下线
+        let mut end = SessionEnd::Broken;
         // 每个连接维护一个握手探测器;命中并接管后复位
         let mut detector = Detector::new();
         // 拖入文件后的待发列表,等远端 rz 启动时消费
@@ -468,7 +492,7 @@ async fn run_session(
                                     // 传输结束:复位探测器,恢复正常循环
                                     detector = Detector::new();
                                     if closed {
-                                        user_closed = true;
+                                        end = SessionEnd::UserClosed;
                                         break;
                                     }
                                 }
@@ -477,7 +501,13 @@ async fn run_session(
                         Some(ChannelMsg::ExtendedData { ref data, .. }) => {
                             emit_data(&app, &id, data);
                         }
-                        Some(ChannelMsg::ExitStatus { .. }) | Some(ChannelMsg::Close) | None => {
+                        // 远端 shell 正常退出。它之后还会跟 Eof/Close,但退出状态只有这里能看到,
+                        // 错过就再也分不清「他敲了 exit」和「线断了」
+                        Some(ChannelMsg::ExitStatus { .. }) => {
+                            end = SessionEnd::RemoteExited;
+                            break;
+                        }
+                        Some(ChannelMsg::Close) | None => {
                             break;
                         }
                         _ => {}
@@ -492,7 +522,7 @@ async fn run_session(
                             let _ = channel.window_change(c as u32, r as u32, 0, 0).await;
                         }
                         Some(Ctl::Close) | None => {
-                            user_closed = true;
+                            end = SessionEnd::UserClosed;
                             let _ = channel.eof().await;
                             break;
                         }
@@ -520,12 +550,7 @@ async fn run_session(
             }
         }
 
-        if user_closed {
-            break;
-        }
-
-        // 异常断开:按设置决定是否自动重连
-        if !read_settings(&db).auto_reconnect {
+        if !should_reconnect(end, read_settings(&db).auto_reconnect) {
             break;
         }
         if let Some(info) = manager.update_info(&id, |i| i.state = "connecting".into()) {
@@ -1209,12 +1234,34 @@ pub fn spawn_latency_loop(app: AppHandle, db: Arc<Db>) {
 #[cfg(test)]
 mod tests {
     use super::{
-        await_receive_dir, split_droppable, transfer_done_line, Ctl, DirChoice, PendingDrop,
-        PwdProbe, DROP_PENDING_TTL, DROP_RZ_COMMAND, PWD_PROBE_CAP,
+        await_receive_dir, should_reconnect, split_droppable, transfer_done_line, Ctl, DirChoice,
+        PendingDrop, PwdProbe, SessionEnd, DROP_PENDING_TTL, DROP_RZ_COMMAND, PWD_PROBE_CAP,
     };
     use std::path::{Path, PathBuf};
     use std::time::{Duration, Instant};
     use tokio::sync::mpsc;
+
+    /// 用户敲 exit 让远端 shell 正常退出,必须当场结束会话。
+    /// 早先把 ExitStatus 和「连接断了」归成一类,结果用户一 exit 就被自动重连拽回去,退不掉。
+    #[test]
+    fn remote_shell_exit_never_reconnects() {
+        assert!(!should_reconnect(SessionEnd::RemoteExited, true), "开着自动重连也不该拽回来");
+        assert!(!should_reconnect(SessionEnd::RemoteExited, false));
+    }
+
+    /// 用户关标签同理:是他自己要走
+    #[test]
+    fn user_closing_tab_never_reconnects() {
+        assert!(!should_reconnect(SessionEnd::UserClosed, true));
+        assert!(!should_reconnect(SessionEnd::UserClosed, false));
+    }
+
+    /// 只有真的断线才重连,且要看设置
+    #[test]
+    fn broken_link_reconnects_only_when_setting_allows() {
+        assert!(should_reconnect(SessionEnd::Broken, true));
+        assert!(!should_reconnect(SessionEnd::Broken, false));
+    }
 
     #[test]
     fn pending_drop_is_consumed_once_while_fresh() {
