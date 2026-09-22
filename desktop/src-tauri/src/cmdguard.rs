@@ -23,8 +23,8 @@ const READONLY: &[&str] = &[
     "ls", "cat", "head", "tail", "stat", "file", "wc", "readlink", "realpath",
     // 搜索
     "grep", "egrep", "fgrep", "find", "which", "whereis",
-    // 系统信息
-    "pwd", "whoami", "id", "hostname", "uname", "uptime", "date", "env", "printenv",
+    // 系统信息(env 不在此列:它是命令执行器,env rm -rf x 会真的删)
+    "pwd", "whoami", "id", "hostname", "uname", "uptime", "date", "printenv",
     // 进程
     "ps", "pgrep", "top",
     // 磁盘
@@ -86,43 +86,125 @@ fn is_deceptive(c: char) -> bool {
     ) || (c.is_control() && c != '\t')
 }
 
-/// 白名单命令里仍可能藏着写操作(find -delete)或挂起(tail -f)
+/// 参数里是否出现某个短选项。
+///
+/// Unix 短选项可以粘连:`tail -vf` 与 `tail -v -f` 等价。用精确相等判断会漏掉
+/// 粘连形式 —— `tail -vf` 被当成没有 -f,于是自动跑一条永不返回的命令。
+fn has_short(args: &[&str], flag: char) -> bool {
+    args.iter().any(|a| {
+        a.starts_with('-') && !a.starts_with("--") && a.chars().skip(1).any(|c| c == flag)
+    })
+}
+
+/// 参数里是否出现某个长选项,含 `--opt=value` 粘连形式
+fn has_long(args: &[&str], name: &str) -> bool {
+    args.iter().any(|a| *a == name || a.starts_with(&format!("{name}=")))
+}
+
+/// 取 `-n <值>` 或 `-n<值>` 的数值,拿不到就 None
+fn n_value(args: &[&str]) -> Option<u32> {
+    for (i, a) in args.iter().enumerate() {
+        if *a == "-n" {
+            return args.get(i + 1)?.parse().ok();
+        }
+        if let Some(rest) = a.strip_prefix("-n") {
+            if !rest.is_empty() && !rest.starts_with('-') {
+                return rest.parse().ok();
+            }
+        }
+    }
+    None
+}
+
+/// 白名单命令里仍可能藏着写操作(sort -o)、执行(find -exec)或挂起(tail -f)
 fn check_args(exe: &str, args: &[&str]) -> Verdict {
-    let has = |f: &str| args.iter().any(|a| *a == f);
     match exe {
         "find" => {
-            for bad in ["-exec", "-execdir", "-delete", "-fls", "-fprint", "-fprintf"] {
-                if has(bad) {
-                    return Verdict::NeedsApproval("find 带有会执行或删除的参数");
+            // -fprint0 / -ok / -okdir 都是真实原语:前者写文件,后两者是交互式 -exec
+            for bad in [
+                "-exec", "-execdir", "-ok", "-okdir", "-delete",
+                "-fls", "-fprint", "-fprint0", "-fprintf",
+            ] {
+                if args.contains(&bad) {
+                    return Verdict::NeedsApproval("find 带有会执行、删除或写文件的参数");
                 }
             }
             Verdict::ReadOnly
         }
-        "tail" | "head" => {
-            if has("-f") || has("--follow") {
-                return Verdict::NeedsApproval("跟随模式不会自行结束");
-            }
-            Verdict::ReadOnly
-        }
-        "journalctl" => {
-            if has("-f") || has("--follow") {
+        // -F 是 follow with retry,和 -f 一样不会结束
+        "tail" | "head" | "journalctl" => {
+            if has_short(args, 'f') || has_short(args, 'F') || has_long(args, "--follow") {
                 return Verdict::NeedsApproval("跟随模式不会自行结束");
             }
             Verdict::ReadOnly
         }
         "ping" => {
-            if has("-c") {
+            if has_short(args, 'c') {
                 Verdict::ReadOnly
             } else {
                 Verdict::NeedsApproval("ping 未限制次数,不会自行结束")
             }
         }
         "top" => {
-            if has("-b") && has("-n") {
+            if !has_short(args, 'b') {
+                return Verdict::NeedsApproval("top 需 -b 批处理模式");
+            }
+            // -n 的值必须是正整数:-n 0 的行为依实现而定,不赌
+            match n_value(args) {
+                Some(n) if n >= 1 => Verdict::ReadOnly,
+                _ => Verdict::NeedsApproval("top 需 -n 指定正整数轮数才会自行结束"),
+            }
+        }
+        // date -s / --set 会改系统时钟
+        "date" => {
+            if has_short(args, 's') || has_long(args, "--set") {
+                return Verdict::NeedsApproval("date 带 -s/--set 会修改系统时钟");
+            }
+            Verdict::ReadOnly
+        }
+        // sort -o / --output 把结果写进任意文件
+        "sort" => {
+            if has_short(args, 'o') || has_long(args, "--output") {
+                return Verdict::NeedsApproval("sort 带 -o/--output 会写文件");
+            }
+            Verdict::ReadOnly
+        }
+        // uniq 的第二个位置参数就是输出文件
+        "uniq" => {
+            if args.iter().filter(|a| !a.starts_with('-')).count() > 1 {
+                return Verdict::NeedsApproval("uniq 的第二个位置参数是输出文件");
+            }
+            Verdict::ReadOnly
+        }
+        // hostname 带参数是改主机名
+        "hostname" => {
+            if args.iter().any(|a| !a.starts_with('-')) {
+                return Verdict::NeedsApproval("带参数的 hostname 会修改主机名");
+            }
+            Verdict::ReadOnly
+        }
+        // ip 能改网络:只放行明确的查询形态
+        "ip" => {
+            if args.len() <= 1 || args.iter().any(|a| matches!(*a, "show" | "list" | "sh")) {
                 Verdict::ReadOnly
             } else {
-                Verdict::NeedsApproval("top 需 -b -n 才是批处理模式")
+                Verdict::NeedsApproval("ip 只放行 show/list 查询")
             }
+        }
+        // ifconfig 无参数或只给接口名是查询,再多就可能是 up/down/addr 配置
+        "ifconfig" => {
+            if args.len() <= 1 {
+                Verdict::ReadOnly
+            } else {
+                Verdict::NeedsApproval("带配置参数的 ifconfig 会改网络状态")
+            }
+        }
+        // ss -K/--kill 会强杀连接
+        "ss" => {
+            if has_short(args, 'K') || has_long(args, "--kill") {
+                return Verdict::NeedsApproval("ss -K 会强杀连接");
+            }
+            Verdict::ReadOnly
         }
         // 包管理只放行查询子命令 —— dpkg -i / rpm -U / apt install 都是写操作
         "dpkg" => match args.first() {
@@ -138,13 +220,22 @@ fn check_args(exe: &str, args: &[&str]) -> Verdict {
             _ => Verdict::NeedsApproval("apt 只放行 list 子命令"),
         },
         "systemctl" => match args.first() {
-            Some(&("status" | "is-active" | "is-enabled" | "list-units" | "show")) => Verdict::ReadOnly,
+            Some(&("status" | "is-active" | "is-enabled" | "list-units" | "show")) => {
+                Verdict::ReadOnly
+            }
             _ => Verdict::NeedsApproval("systemctl 子命令不是只读的"),
         },
-        "git" => match args.first() {
-            Some(&("status" | "log" | "diff" | "show" | "branch")) => Verdict::ReadOnly,
-            _ => Verdict::NeedsApproval("git 子命令不是只读的"),
-        },
+        "git" => {
+            // --output= 能把 diff 写进任意文件
+            if has_long(args, "--output") {
+                return Verdict::NeedsApproval("git --output 会写文件");
+            }
+            // branch 不只是列出,git branch <name> 会建分支,-d 会删
+            match args.first() {
+                Some(&("status" | "log" | "diff" | "show")) => Verdict::ReadOnly,
+                _ => Verdict::NeedsApproval("git 子命令不是只读的"),
+            }
+        }
         "mount" => {
             if args.is_empty() {
                 Verdict::ReadOnly
@@ -185,6 +276,22 @@ mod tests {
         ro("rpm -qa");
         ro("apt list");
         ro("mount");
+        ro("git status");
+        ro("git diff");
+        ro("git show HEAD");
+        ro("systemctl is-active sshd");
+        ro("systemctl is-enabled sshd");
+        ro("systemctl list-units");
+        ro("systemctl show sshd");
+        ro("ip addr show");
+        ro("ip route");
+        ro("ifconfig");
+        ro("ss -tunlp");
+        ro("hostname");
+        ro("date");
+        ro("date -u");
+        ro("sort file.txt");
+        ro("uniq file.txt");
     }
 
     /// shell 结构逃逸 —— 第一道闸,拦掉绝大多数花样
@@ -213,6 +320,8 @@ mod tests {
         need("awk '{print}' f");     // awk 能写文件,同理
         need("./deploy.sh");
         need("/usr/bin/whatever");
+        need("env rm -rf /tmp/x");   // env 是命令执行器,不进白名单
+        need("env");
     }
 
     /// 白名单命令里藏着的写操作或挂起
@@ -235,6 +344,27 @@ mod tests {
         need("rpm -U pkg.rpm");
         need("apt install nginx");
         need("mount /dev/sdb1 /mnt"); // 带参数的 mount 会挂载
+        need("find . -fls out.txt");
+        need("find . -fprint out.txt");
+        need("find . -fprint0 out.txt");
+        need("find . -fprintf out.txt %p");
+        need("find . -ok rm {} ;");
+        need("find . -okdir rm {} ;");
+        need("git branch new-feature");      // 建分支是写操作
+        need("git branch -d old");
+        need("git diff --output=/tmp/x");    // 写任意文件
+        need("date -s '2020-01-01'");        // 改系统时钟
+        need("date --set=2020-01-01");
+        need("sort -o /etc/passwd f");       // 写任意文件
+        need("sort --output=/tmp/x f");
+        need("uniq in.txt out.txt");         // 第二个位置参数是输出文件
+        need("hostname newname");            // 改主机名
+        need("ip link set eth0 down");       // 改网络状态
+        need("ip addr add 1.2.3.4/24 dev eth0");
+        need("ifconfig eth0 down");
+        need("ss -K dst 1.2.3.4");           // 强杀连接
+        need("top -b -n 0");                 // 0 轮行为依实现而定
+        need("top -b");                      // 无 -n
     }
 
     /// 交互式命令没有安全用法,不进白名单
@@ -270,5 +400,32 @@ mod tests {
         need("ls \u{202E}txt.elif");        // RTL override:显示与实际不符
         need("ls \u{200B}/etc");            // 零宽空格
         need("cat \u{2066}/etc/passwd\u{2069}"); // bidi 隔离
+    }
+
+    /// 粘连短选项不能绕过检测。
+    ///
+    /// `tail -vf` 与 `tail -v -f` 等价,但参数 token 是 "-vf"。用精确相等判断会
+    /// 漏掉它,于是一条永不返回的命令被判为只读、自动执行 —— 循环就挂在那里了。
+    #[test]
+    fn clustered_short_options_are_not_bypassable() {
+        need("tail -vf /var/log/syslog");
+        need("tail -nf 5 /var/log/syslog");
+        need("tail -F /var/log/syslog");      // follow with retry,同样不结束
+        need("journalctl -xef");
+        need("sort -rno /etc/passwd f");      // -o 粘在 -rn 后面
+
+        // 不能误伤:这些短选项里没有被禁的那个字母
+        ro("tail -n 20 /var/log/syslog");
+        ro("tail -c 100 file");
+        ro("head -n 5 file");
+        ro("ping -i 1 -c 3 example.com");
+    }
+
+    /// 规则存在但原先无测试覆盖的几处 —— 改错或删掉时要能挂
+    #[test]
+    fn previously_uncovered_rules() {
+        need("ls\rrm -rf /tmp/x");          // \r 也是 SHELL_META
+        need("ls \u{FEFF}/etc");            // 零宽不换行空格
+        need("ls \u{1B}[2J/etc");           // ANSI 转义,is_control 分支
     }
 }
