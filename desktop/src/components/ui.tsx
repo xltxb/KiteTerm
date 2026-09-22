@@ -134,8 +134,8 @@ export function Progress({
 }
 
 const SCREEN_ORDER: readonly Screen[] = [
-  "terminal", "hosts", "transfer", "forwards", "certs",
-  "monitor", "keys", "snippets", "sync", "settings",
+  "terminal", "hosts", "transfer", "forwards", "monitor",
+  "certs", "keys", "snippets", "sync", "settings",
 ] as const;
 
 export function ScreenHeader({
