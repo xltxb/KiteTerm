@@ -51,8 +51,27 @@ export function looksLikeNaturalLanguage(line: string): boolean {
   return words.length >= 3 && INTENT_WORDS.test(s);
 }
 
-/** 从终端整行文本里剥掉 shell 提示符,取用户输入的部分 */
+/**
+ * 从终端整行文本里剥掉 shell 提示符,取用户输入的部分。
+ *
+ * 字符集含 ❯ ➜ » —— starship、oh-my-zsh 这些主题的提示符符号不是 ASCII 的 >,
+ * 漏了它们整行提示符都会被当成用户输入。
+ *
+ * 提示符字符后面的空白是可选的:xterm 的 translateToString(true) 会 trim 掉尾部空白,
+ * 所以空行的光标行读出来就是「❯」而不是「❯ 」。
+ *
+ * **认不出提示符时返回空串,而不是返回整行** —— 不知道哪里是用户输入就别猜。
+ * 与本文件的既定取向一致:宁可漏判(少一次便利)也不要误判(把提示符当成用户的话
+ * 送给 AI,或者让「交给 AI」按钮在空行上也亮起来)。
+ */
 export function stripPrompt(rawLine: string): string {
-  const m = rawLine.match(/^.*?[$#%>]\s(.*)$/);
-  return (m ? m[1] : rawLine).trim();
+  const m = rawLine.match(/^.*?[$#%>❯➜»](?:\s(.*))?$/);
+  if (!m) return "";
+  let s = m[1] ?? "";
+  // 右提示符(zsh 的 RPROMPT)渲染在行的最右端,与用户输入之间是一大片填充空格。
+  // 人不会连着敲这么多空格,以此为界切掉 —— 否则「❯␣␣␣…␣␣~」这种空行会被读成输入「~」。
+  // 代价是命令里若真有 4 个以上连续空格(如 echo "a    b")会被截断,换取的是空行不误触发。
+  const rprompt = s.search(/ {4,}/);
+  if (rprompt >= 0) s = s.slice(0, rprompt);
+  return s.trim();
 }
