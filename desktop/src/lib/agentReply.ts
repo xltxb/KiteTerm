@@ -7,6 +7,9 @@
  *  安全相关的一条:readonly 缺失时按 false(需批准)处理。默认成 true 等于
  *  在放宽安全边界,而这个字段本就只能让自动执行更少、不能更多。 */
 
+/** 一条命令的长度上限 */
+const MAX_COMMAND_LEN = 4096;
+
 export interface AgentNext {
   intent: string;
   command: string;
@@ -41,6 +44,11 @@ export function parseAgentReply(raw: string): AgentReply | { error: string } {
 
   const o = obj as Record<string, unknown>;
   const analysis = typeof o.analysis === "string" ? o.analysis : "";
+  // done 必须是明确的布尔值。含糊就报错 —— readonly 含糊时落到 false 是收紧,
+  // done 含糊时落到 false 却是「继续执行下一步」,方向相反,不能同样静默处理。
+  if (o.done !== undefined && typeof o.done !== "boolean") {
+    return { error: "AI 返回的 done 字段不是布尔值" };
+  }
   const done = o.done === true;
   const summary = typeof o.summary === "string" ? o.summary : undefined;
 
@@ -53,6 +61,14 @@ export function parseAgentReply(raw: string): AgentReply | { error: string } {
   const nn = n as Record<string, unknown>;
   const command = typeof nn.command === "string" ? nn.command.trim() : "";
   if (!command) return { error: "AI 给出的下一步没有命令" };
+  if (command.length > MAX_COMMAND_LEN) {
+    return { error: "AI 给出的命令过长" };
+  }
+  // 一步就是一条命令。内嵌换行意味着多条 —— 用户批准时看到的很可能只是第一行,
+  // 而批准路径不过 cmdguard 的 shell 结构检查。
+  if (/[\n\r]/.test(command)) {
+    return { error: "AI 给出的命令含换行,一步只能是一条命令" };
+  }
 
   return {
     analysis,
