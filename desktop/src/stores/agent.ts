@@ -227,49 +227,67 @@ export const useAgentStore = create<AgentState>((set, get) => {
     tasks: {},
 
     start: async (sessionId, goal) => {
-      // 复用 stores/ai 的既有判定:没配置模型就别白跑一轮网络请求
-      const hasProvider = !!useAiStore.getState().activeProvider();
-      set((s) => ({
-        tasks: {
-          ...s.tasks,
-          [sessionId]: {
-            goal,
-            sessionId,
-            steps: [],
-            running: hasProvider,
-            stopped: false,
-            consecutiveFailures: 0,
-            endReason: hasProvider ? undefined : "尚未配置可用的 AI 模型 —— 在右栏「AI 助手」里添加。",
+      try {
+        // 复用 stores/ai 的既有判定:没配置模型就别白跑一轮网络请求
+        const hasProvider = !!useAiStore.getState().activeProvider();
+        set((s) => ({
+          tasks: {
+            ...s.tasks,
+            [sessionId]: {
+              goal,
+              sessionId,
+              steps: [],
+              running: hasProvider,
+              stopped: false,
+              consecutiveFailures: 0,
+              endReason: hasProvider ? undefined : "尚未配置可用的 AI 模型 —— 在右栏「AI 助手」里添加。",
+            },
           },
-        },
-      }));
-      if (hasProvider) await safeRun(sessionId, "");
+        }));
+        if (hasProvider) await safeRun(sessionId, "");
+      } catch (e) {
+        // action 里任何一步抛异常都不能让任务卡在 running ——
+        // settle() 里的 nonce 生成就在 safeRun 的保护范围之外
+        finish(sessionId, friendly(e));
+      }
     },
 
     approve: async (sessionId, stepId) => {
-      const step = stepOf(sessionId, stepId);
-      if (!step || step.state !== "pending") return;
-      patchStep(sessionId, stepId, { state: "running" });
-      setRunning(sessionId, true);
-      let r: AgentStepResult;
       try {
-        r = await ipc.agentExec(sessionId, step.command, step.aiReadonly, true);
+        const step = stepOf(sessionId, stepId);
+        if (!step || step.state !== "pending") return;
+        patchStep(sessionId, stepId, { state: "running" });
+        setRunning(sessionId, true);
+        let r: AgentStepResult;
+        try {
+          r = await ipc.agentExec(sessionId, step.command, step.aiReadonly, true);
+        } catch (e) {
+          // 会话已关闭 / SSH 掉线 / 已中止等:后端会返回 Err,不能让任务永远卡在 running
+          patchStep(sessionId, stepId, { state: "failed" });
+          return finish(sessionId, friendly(e));
+        }
+        const feed = settle(sessionId, stepId, r);
+        await safeRun(sessionId, feed);
       } catch (e) {
-        // 会话已关闭 / SSH 掉线 / 已中止等:后端会返回 Err,不能让任务永远卡在 running
-        patchStep(sessionId, stepId, { state: "failed" });
-        return finish(sessionId, friendly(e));
+        // action 里任何一步抛异常都不能让任务卡在 running ——
+        // settle() 里的 nonce 生成就在 safeRun 的保护范围之外
+        finish(sessionId, friendly(e));
       }
-      const feed = settle(sessionId, stepId, r);
-      await safeRun(sessionId, feed);
     },
 
     skip: (sessionId, stepId) => {
-      const step = stepOf(sessionId, stepId);
-      if (!step || step.state !== "pending") return;
-      patchStep(sessionId, stepId, { state: "skipped" });
-      setRunning(sessionId, true);
-      // 告诉 AI 这步被跳过了,让它换个路子 —— 跳过不计入连续失败
-      void safeRun(sessionId, `用户跳过了这一步(${step.command}),请换一个方式。`);
+      try {
+        const step = stepOf(sessionId, stepId);
+        if (!step || step.state !== "pending") return;
+        patchStep(sessionId, stepId, { state: "skipped" });
+        setRunning(sessionId, true);
+        // 告诉 AI 这步被跳过了,让它换个路子 —— 跳过不计入连续失败
+        void safeRun(sessionId, `用户跳过了这一步(${step.command}),请换一个方式。`);
+      } catch (e) {
+        // action 里任何一步抛异常都不能让任务卡在 running ——
+        // settle() 里的 nonce 生成就在 safeRun 的保护范围之外
+        finish(sessionId, friendly(e));
+      }
     },
 
     stop: (sessionId) => {
