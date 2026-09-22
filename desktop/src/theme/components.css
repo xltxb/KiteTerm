@@ -17,14 +17,25 @@
   background: var(--surface-page);
   color: var(--text-body);
 }
-.app-main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+.app-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background-color: var(--surface-page);
+  background-image:
+    linear-gradient(var(--grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+  background-size: var(--grid-size) var(--grid-size);
+}
 /* 终端屏常挂载,靠 display 切换可见性,避免重挂 xterm DOM */
 .screen-slot { flex-direction: column; height: 100%; overflow: hidden; }
 .screen-slot[data-visible="true"] { display: flex; }
 .screen-slot[data-visible="false"] { display: none; }
 
 /* ---- 屏幕通用 ---- */
-.screen { flex: 1; overflow: auto; padding: 28px 32px; }
+.screen { flex: 1; overflow: auto; padding: 28px 32px; background: transparent; }
 .screen-inner { margin: 0 auto; width: 100%; }
 .screen-inner.narrow { max-width: 760px; }
 .screen-inner.medium { max-width: 880px; }
@@ -66,7 +77,25 @@
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-xs);
+  position: relative;
 }
+.card::before,
+.card::after {
+  content: "";
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  border-color: var(--accent);
+  opacity: 0.55;
+  pointer-events: none;
+}
+.card::before { top: -1px; left: -1px; border-top: 1px solid; border-left: 1px solid; }
+.card::after { bottom: -1px; right: -1px; border-bottom: 1px solid; border-right: 1px solid; }
+/* .clip 在同一元素上叠加 overflow:hidden(HostsScreen 的主机列表卡、
+   TransferScreen 的文件选择器卡),角标伸到盒子外 1px 会被自己裁掉——
+   改成贴内边缘,正好落在裁切线内侧,不受影响 */
+.card.clip::before { top: 0; left: 0; }
+.card.clip::after { bottom: 0; right: 0; }
 
 .icon-chip {
   flex: none;
