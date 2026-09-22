@@ -194,6 +194,10 @@ fn check_args(exe: &str, args: &[&str]) -> Verdict {
             if args.iter().any(|a| a.starts_with("-b")) {
                 return Verdict::NeedsApproval("ip -b/-batch 会从输入流执行任意 ip 命令");
             }
+            // ip monitor 持续监听 netlink 事件,永不返回 —— 不改状态,但会把循环挂死
+            if args.first() == Some(&"monitor") {
+                return Verdict::NeedsApproval("ip monitor 持续监听,不会自行结束");
+            }
             match args.get(1) {
                 None => Verdict::ReadOnly, // `ip` / `ip addr`:省略动词时隐含 show
                 Some(&("show" | "list" | "lst" | "sh")) => Verdict::ReadOnly,
@@ -208,10 +212,20 @@ fn check_args(exe: &str, args: &[&str]) -> Verdict {
                 Verdict::NeedsApproval("带配置参数的 ifconfig 会改网络状态")
             }
         }
-        // ss -K/--kill 会强杀连接
+        // netstat -c 每秒重复输出,永不返回
+        "netstat" => {
+            if has_short(args, 'c') || has_long(args, "--continuous") {
+                return Verdict::NeedsApproval("netstat -c 会持续输出,不会自行结束");
+            }
+            Verdict::ReadOnly
+        }
+        // ss -K 会强杀连接;-E 持续显示 socket 事件,永不返回
         "ss" => {
             if has_short(args, 'K') || has_long(args, "--kill") {
                 return Verdict::NeedsApproval("ss -K 会强杀连接");
+            }
+            if has_short(args, 'E') || has_long(args, "--events") {
+                return Verdict::NeedsApproval("ss -E 会持续输出,不会自行结束");
             }
             Verdict::ReadOnly
         }
@@ -463,5 +477,23 @@ mod tests {
         // 正常查询仍要放行
         ro("ip addr show");
         ro("ip link");
+    }
+
+    /// 不改状态、但永不返回的命令 —— 「会自行终止」是只读判定的第二个维度。
+    ///
+    /// 这类命令放行的后果不是数据被改,而是执行循环挂在那里等到超时。
+    /// 前面 tail -f / top / ping 已各有规则,这几条是同一类里容易漏掉的。
+    #[test]
+    fn harmless_but_endless_commands_need_approval() {
+        need("ip monitor");                 // 持续监听 netlink 事件
+        need("netstat -c");                 // 每秒重复输出
+        need("netstat --continuous");
+        need("ss -E");                      // 持续显示 socket 事件
+        need("ss --events");
+
+        // 同名命令的正常形态仍要放行
+        ro("netstat -tunlp");
+        ro("ss -tunlp");
+        ro("ip addr show");
     }
 }
