@@ -56,5 +56,40 @@ function check(cond: boolean, msg: string) {
 // 空
 check("error" in parseAgentReply(""), "空输入应报错");
 
+// readonly 必须严格等于 true —— 字符串 "true" 是真值,但不是布尔 true
+{
+  const r = parseAgentReply(
+    '{"analysis":"a","next":{"intent":"i","command":"ls","readonly":"true"},"done":false}',
+  );
+  check(!("error" in r) && r.next?.readonly === false,
+    'readonly 为字符串 "true" 时必须按 false(需批准)处理');
+}
+{
+  const r = parseAgentReply(
+    '{"analysis":"a","next":{"intent":"i","command":"ls","readonly":1},"done":false}',
+  );
+  check(!("error" in r) && r.next?.readonly === false, "readonly 为数字 1 时同样按 false 处理");
+}
+
+// done 含糊就报错,不能静默当成 false 继续往下跑
+check("error" in parseAgentReply('{"analysis":"a","done":"true"}'),
+  'done 为字符串 "true" 应报错');
+check("error" in parseAgentReply(
+  '{"analysis":"a","done":1,"next":{"intent":"i","command":"ls","readonly":true}}'),
+  "done 为数字 1 应报错");
+
+// 一步只能是一条命令
+check("error" in parseAgentReply(
+  '{"analysis":"a","done":false,"next":{"intent":"i","command":"ls\\n rm -rf /tmp/x","readonly":true}}'),
+  "命令含换行应报错 —— 用户批准时可能只看到第一行");
+
+// 超长命令
+{
+  const long = "a".repeat(5000);
+  check("error" in parseAgentReply(
+    `{"analysis":"a","done":false,"next":{"intent":"i","command":"${long}","readonly":true}}`),
+    "超长命令应报错");
+}
+
 if (failed > 0) { console.error(`agentReply 自检未通过:${failed} 项`); process.exit(1); }
 console.log("AGENT_REPLY_PASS");
