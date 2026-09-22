@@ -119,10 +119,6 @@ export const useAgentStore = create<AgentState>((set, get) => {
     });
   }
 
-  function setRunning(sessionId: string, running: boolean) {
-    patch(sessionId, { running });
-  }
-
   function bumpFailures(sessionId: string, ok: boolean) {
     const task = getTask(sessionId);
     if (!task) return;
@@ -209,6 +205,12 @@ export const useAgentStore = create<AgentState>((set, get) => {
       }
 
       if (r.verdict === "needs_approval" && !r.autoRan) {
+        // 用户可能正好在这个窗口点了停止 —— 这一步的 agentExec 不走 SSH、几乎立即
+        // 返回,窗口虽窄但连点就会撞上。stop() 已经把 status 置成了 ended(终态),
+        // 这里不能无条件把它拉回 waiting:卡片会重新出现,而 stopped 守卫又让批准/
+        // 跳过点了没反应,用户得再点一次停止才能脱困。已经是终态就直接交回,不用
+        // 再调 finish() —— stop() 早就落好了 endReason。
+        if (getTask(sessionId)?.stopped) return;
         // 停下等用户点批准。approve() 会续上循环。
         // 这里 return 之后再没有代码会跑 —— status 必须显式置成 waiting,
         // 不能指望之后哪一步再来补终态,不然「停止」会在这里把任务锁死。
@@ -273,7 +275,10 @@ export const useAgentStore = create<AgentState>((set, get) => {
         // 命令仍会真的发到远端执行,只是要等它跑完下一轮才收尾。
         if (!step || step.state !== "pending" || getTask(sessionId)?.stopped) return;
         patchStep(sessionId, stepId, { state: "running" });
-        setRunning(sessionId, true);
+        // status 从 waiting 恢复成 running —— 不然任务明明在跑,status 却还停在
+        // waiting,违反这个字段自己的三态语义(目前唯一读它的地方只判 ended,
+        // 暂无可观察影响,但留着这个错值迟早会坑到以后想用 running 态的代码)。
+        patch(sessionId, { running: true, status: "running" });
         let r: AgentStepResult;
         try {
           r = await ipc.agentExec(sessionId, step.command, step.aiReadonly, true);
@@ -297,7 +302,9 @@ export const useAgentStore = create<AgentState>((set, get) => {
         // 同 approve():停止之后不再受理跳过,任务已经在收尾路上了
         if (!step || step.state !== "pending" || getTask(sessionId)?.stopped) return;
         patchStep(sessionId, stepId, { state: "skipped" });
-        setRunning(sessionId, true);
+        // 同 approve():status 从 waiting 恢复成 running,不然任务在跑、status 却
+        // 停在 waiting,违反三态语义。
+        patch(sessionId, { running: true, status: "running" });
         // 告诉 AI 这步被跳过了,让它换个路子 —— 跳过不计入连续失败
         void safeRun(sessionId, `用户跳过了这一步(${step.command}),请换一个方式。`);
       } catch (e) {
