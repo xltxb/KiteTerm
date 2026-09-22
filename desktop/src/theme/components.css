@@ -207,7 +207,7 @@
   transition: var(--transition-colors);
 }
 .textarea::placeholder { color: var(--text-faint); }
-.textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus-ring); }
+.textarea:focus { border-color: var(--accent); box-shadow: var(--glow-sm); outline: none; }
 
 /* 裸输入框:嵌在已有外框里的搜索/命令输入(⌘K 面板、终端搜索条) */
 .input-bare {
