@@ -116,5 +116,24 @@ check("error" in parseAgentReply(
   check(!("error" in r), "制表符不该被拦");
 }
 
+// 带空格的命令必须通过 —— 这是最常见的形态。
+// 之前 DECEPTIVE 里混进过一个字面空格,导致任何带参数的命令都被拒、功能上线即死,
+// 而当时所有「期望成功」的用例命令恰好都不含空格,测试全绿放它过去了。
+for (const cmd of ["df -h", "ls -la /etc", "systemctl status sshd", "grep -n foo /var/log/syslog"]) {
+  const r = parseAgentReply(JSON.stringify({
+    analysis: "a", done: false, next: { intent: "i", command: cmd, readonly: true },
+  }));
+  check(!("error" in r), `带空格的命令必须通过: ${cmd}`);
+}
+
+// 用不含空格的命令,隔离验证这两个字符自身被拦 ——
+// 之前的用例是 "ls\\u2028rm -rf /tmp/x",含空格,拦住的其实是空格不是 U+2028
+check("error" in parseAgentReply(JSON.stringify({
+  analysis: "a", done: false, next: { intent: "i", command: "ls\u2028pwd", readonly: true },
+})), "U+2028 应被拦(命令本身不含空格)");
+check("error" in parseAgentReply(JSON.stringify({
+  analysis: "a", done: false, next: { intent: "i", command: "ls\u2029pwd", readonly: true },
+})), "U+2029 应被拦(命令本身不含空格)");
+
 if (failed > 0) { console.error(`agentReply 自检未通过:${failed} 项`); process.exit(1); }
 console.log("AGENT_REPLY_PASS");

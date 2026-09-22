@@ -427,6 +427,10 @@ fn should_reconnect(end: SessionEnd, auto_reconnect: bool) -> bool {
 /// 一步等哨兵的上限。超了就放弃这一步,把已收到的输出交出去。
 const AGENT_STEP_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// 残留探针的绝对上限。超过就强制丢弃 —— 迟到的哨兵可能永远不来
+/// (比如用户按 Ctrl-C,bash 会中止整个命令列表,`; printf` 那半截根本不执行)。
+const AGENT_STALE_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// 一步 agent 命令的等待状态
 struct AgentWait {
     probe: crate::agent::EndProbe,
@@ -467,11 +471,16 @@ async fn run_session(
         let mut agent_wait: Option<AgentWait> = None;
         // 上一步超时放弃后,它的命令还在远端跑。它最终吐出的哨兵还会飘过来 ——
         // 在那之前到达的都是上一步的残留,既不能算进下一步,也不能在这期间注入新命令。
-        let mut agent_stale: Option<crate::agent::EndProbe> = None;
+        // 附带记下置位的时刻:迟到的哨兵可能永远不来(比如用户按了 Ctrl-C),
+        // 得有个独立的绝对上限,别让这个会话的 agent 永久锁死。
+        let mut agent_stale: Option<(crate::agent::EndProbe, Instant)> = None;
         loop {
             // 等哨兵时才有 deadline;算在 select 之前,async 块按值捕获,
             // 免得借用了 agent_wait、分支体里又要 take 它
             let agent_deadline = agent_wait.as_ref().map(|w| w.started + AGENT_STEP_TIMEOUT);
+            // 残留探针的独立上限,与 agent_deadline 分开算 —— 不能和 agent_wait 的
+            // deadline 混在一起,两者的生命周期本就不重叠(stale 置位时 agent_wait 已被 take)
+            let stale_deadline = agent_stale.as_ref().map(|(_, since)| *since + AGENT_STALE_TIMEOUT);
 
             tokio::select! {
                 msg = channel.wait() => {
@@ -522,7 +531,7 @@ async fn run_session(
                                 }
                             }
                             // 先收上一步迟到的哨兵 —— 收到了才算把上一步清干净
-                            if let Some(stale) = agent_stale.as_mut() {
+                            if let Some((stale, _)) = agent_stale.as_mut() {
                                 if stale.push(data).is_some() {
                                     agent_stale = None;
                                 }
@@ -570,11 +579,14 @@ async fn run_session(
                                 let _ = reply.send(Err("AGENT_BUSY: 上一步还在执行"));
                             } else if agent_stale.is_some() {
                                 let _ = reply.send(Err(
-                                    "AGENT_BUSY_STALE: 上一步已超时但命令仍在远端运行,请在终端里按 Ctrl-C 或等它结束",
+                                    "AGENT_BUSY_STALE: 上一步已超时,它的命令可能还在远端运行。等它结束,或者新开一个标签页。",
                                 ));
-                            } else if channel.data(cmd.as_bytes()).await.is_err() {
-                                break;
                             } else {
+                                // 先清掉用户可能敲了一半的输入 —— 只读命令是自动注入的,
+                                // 用户没机会先把手挪开。\x15 是 readline 的 kill-line。
+                                // (这挡不住用户正开着 vim/less 的情况,那属于已知限制。)
+                                if channel.data(&b"\x15"[..]).await.is_err() { break; }
+                                if channel.data(cmd.as_bytes()).await.is_err() { break; }
                                 agent_wait = Some(AgentWait {
                                     probe: crate::agent::EndProbe::new(&nonce),
                                     reply,
@@ -615,7 +627,7 @@ async fn run_session(
                     if let Some(w) = agent_wait.take() {
                         // 这条命令还在远端跑,它的哨兵迟早会来 —— 留个探针专门收它,
                         // 收到之前这个会话不接新步骤
-                        agent_stale = Some(crate::agent::EndProbe::new(&w.nonce));
+                        agent_stale = Some((crate::agent::EndProbe::new(&w.nonce), Instant::now()));
                         let (output, truncated) = w.probe.into_buffered();
                         let _ = w.reply.send(Ok(crate::agent::StepOutput {
                             output,
@@ -623,6 +635,16 @@ async fn run_session(
                             truncated,
                         }));
                     }
+                }
+                // 残留探针的独立超时:迟到的哨兵可能永远不来(用户按 Ctrl-C 中止了整条
+                // 命令列表),不能让这个会话的 agent 永久锁死,超过上限就强制丢弃
+                _ = async {
+                    match stale_deadline {
+                        Some(d) => tokio::time::sleep_until(tokio::time::Instant::from_std(d)).await,
+                        None => std::future::pending::<()>().await,
+                    }
+                } => {
+                    agent_stale = None;
                 }
             }
         }

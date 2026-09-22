@@ -93,6 +93,7 @@ export function AgentStepCard({
           <Badge color={step.exitCode === 0 ? "success" : "danger"}>
             退出码 {step.exitCode}
           </Badge>
+          {step.truncated && <Badge color="warning">输出已截断</Badge>}
           <pre className="agent-out">
             {open ? step.output : clamp(step.output ?? "", MAX_LINES)}
           </pre>

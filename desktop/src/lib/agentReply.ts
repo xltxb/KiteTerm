@@ -21,7 +21,7 @@ const MAX_COMMAND_LEN = 4096;
  *  这与 Rust 侧 cmdguard.rs 的 is_deceptive 是同一套字符集:那边守自动执行路径,
  *  这边守批准路径(批准的命令不过 cmdguard)。 */
 const DECEPTIVE =
-  /[\u0000-\u0008\u000A-\u001F\u007F  ​-‏‪-‮⁦-⁩﻿]/;
+  /[\u0000-\u0008\u000A-\u001F\u007F-\u009F\u200B-\u200F\u2028\u2029\u202A-\u202E\u2066-\u2069\uFEFF]/;
 
 export interface AgentNext {
   intent: string;
