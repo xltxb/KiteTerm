@@ -18,9 +18,15 @@ export function XtermPane({ sessionId }: { sessionId: string }) {
       term.open(el);
       addons.opened = true;
       try {
-        term.loadAddon(new WebglAddon());
-      } catch {
-        // WebGL 不可用时回退 canvas 渲染
+        const webgl = new WebglAddon();
+        webgl.onContextLoss(() => {
+          console.error("[kite:term] WebGL context 丢失 —— 此后渲染退化为 DOM,终端会明显变卡");
+        });
+        term.loadAddon(webgl);
+      } catch (e) {
+        // xterm 5.x 已移除内置 canvas renderer,挂不上 WebGL 时退到的是 DOM
+        // renderer(每字符一个 DOM 元素),会明显变卡 —— 所以这里不静默吞掉
+        console.error("[kite:term] WebGL 不可用,已退回 DOM renderer:", e);
       }
     } else if (term.element && term.element.parentElement !== el) {
       el.appendChild(term.element);
