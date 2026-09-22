@@ -66,7 +66,7 @@
   font-family: var(--font-display);
   font-size: 26px;
   font-weight: 700;
-  letter-spacing: -0.02em;
+  letter-spacing: 0.08em;
   color: var(--text-strong);
 }
 .screen-title .count { font-size: 18px; font-weight: 600; background: linear-gradient(90deg, var(--azure-500), var(--cyan-400)); -webkit-background-clip: text; background-clip: text; color: transparent; }
@@ -153,12 +153,12 @@
 /* 只放一个图标的方按钮 */
 .btn.square { width: 34px; padding: 0; }
 .btn-md { height: 40px; padding: 0 18px; font-size: 13.5px; }
-.btn-primary { background: var(--accent); color: var(--text-on-accent); }
-.btn-primary:hover { background: var(--accent-hover); box-shadow: var(--glow-sm); }
-.btn-secondary { background: var(--surface-sunken); color: var(--text-strong); border: 1px solid var(--border-default); }
-.btn-secondary:hover { background: var(--surface-raised); }
-.btn-outline { background: transparent; color: var(--text-strong); border: 1px solid var(--border-default); }
-.btn-outline:hover { background: var(--surface-hover); }
+.btn-primary { background: var(--accent); color: var(--text-on-accent); border: 1px solid var(--accent); font-weight: var(--weight-semibold); }
+.btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); box-shadow: var(--glow-sm); }
+.btn-secondary,
+.btn-outline { background: transparent; color: var(--accent-text); border: 1px solid var(--border-default); }
+.btn-secondary:hover { background: var(--surface-raised); border-color: var(--accent); color: var(--accent-hover); }
+.btn-outline:hover { background: var(--surface-hover); border-color: var(--accent); color: var(--accent-hover); }
 .btn-ghost { background: transparent; color: var(--text-muted); }
 .btn-ghost:hover { background: var(--surface-hover); color: var(--text-strong); }
 .btn-danger { background: var(--danger); color: #fff; }
@@ -182,7 +182,7 @@
 .input.sm { height: 30px; font-size: var(--ui-sm); }
 /* 屏幕右上角的列表搜索框 */
 .input.search { width: 220px; }
-.input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus-ring); }
+.input:focus { border-color: var(--accent); box-shadow: var(--glow-sm); outline: none; }
 .input-label {
   display: block;
   font-size: 11.5px;
@@ -255,9 +255,14 @@
   gap: 5px;
   height: 22px;
   padding: 0 9px;
-  border-radius: var(--radius-full);
-  font-size: 11px;
+  border-radius: var(--radius-xs);
+  border: 1px solid currentColor;
+  background: transparent;
+  font-family: var(--font-mono);
+  font-size: 10px;
   font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
   white-space: nowrap;
 }
 .badge .dot { width: 6px; height: 6px; border-radius: var(--radius-full); background: currentColor; }
@@ -427,11 +432,17 @@
 .nav-item[data-active="true"] {
   color: var(--accent-text);
   background: var(--accent-subtle);
-  box-shadow: inset 2.5px 0 0 var(--accent);
+  border-left: 2px solid var(--accent);
+  padding-left: 10px;   /* 原 12px,减去竖条宽度以免文字位移 */
 }
 .nav-item[data-active="true"]:hover { background: var(--accent-subtle); }
 .nav-item.sm { gap: 10px; font-size: var(--ui-sm); }
 .sidebar[data-collapsed="true"] .nav-item { justify-content: center; padding: 9px 0; }
+.sidebar[data-collapsed="true"] .nav-item[data-active="true"] {
+  border-left-width: 2px;
+  padding-left: 0;
+  justify-content: center;
+}
 
 .brand-mark {
   width: 34px;
@@ -549,7 +560,8 @@
   font-size: var(--ui-xs);
   color: var(--text-muted);
 }
-.statusbar .grp { display: flex; align-items: center; gap: 6px; }
+.statusbar .grp { display: flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
+.statusbar .grp + .grp { border-left: 1px solid var(--border-subtle); padding-left: 16px; }
 
 /* ---- 终端内的 AI 触发按钮 ---- */
 .ai-fab {
@@ -683,8 +695,16 @@
   align-items: center;
   gap: 8px;
   padding: 10px 14px 6px 14px;
+  border-bottom: 1px solid var(--border-subtle);
 }
-.panel-title { font-size: 13px; font-weight: var(--weight-bold); color: var(--text-strong); }
+.panel-title {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: var(--weight-semibold);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
 .panel-body { padding: 10px 14px; }
 .panel-foot { padding: 10px 14px; }
 /* 面板中间那段可滚动区 */
