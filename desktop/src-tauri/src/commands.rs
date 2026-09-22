@@ -192,14 +192,14 @@ pub async fn toggle_forward(
         )
         .await?;
     } else {
-        state.forwards.stop(&id);
+        state.forwards.stop(&state.db, &id);
     }
     Ok(())
 }
 
 #[tauri::command]
 pub fn delete_forward(state: State<AppState>, id: String) -> Result<()> {
-    state.forwards.stop(&id);
+    state.forwards.stop(&state.db, &id);
     state.db.delete_forward(&id)
 }
 
