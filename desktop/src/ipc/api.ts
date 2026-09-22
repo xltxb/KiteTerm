@@ -1,5 +1,6 @@
 import type {
   AccountInfo,
+  AgentStepResult,
   AiMode,
   AiProvider,
   AiSettings,
@@ -190,6 +191,13 @@ export interface KiteIpc {
     terminalContext: string,
     mode?: AiMode,
   ): Promise<string>;
+  /** AI 分步执行:注入一条命令并等它跑完这一步 */
+  agentExec(
+    sessionId: string,
+    command: string,
+    aiReadonly: boolean,
+    approved: boolean,
+  ): Promise<AgentStepResult>;
 
   // ---- 会话恢复 / 退出 ----
   restoreTargets(): Promise<string[]>;

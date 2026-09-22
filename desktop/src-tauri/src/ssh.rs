@@ -150,6 +150,8 @@ pub enum Ctl {
     ReceiveInto(Option<std::path::PathBuf>),
     /// 拖文件到终端:自动向远端敲 rz,并把这些文件作为随后 rz 的发送列表(仿 Xshell)
     DropUpload(Vec<std::path::PathBuf>),
+    /// AI 分步执行:注入一条带哨兵的命令,并把这一步的输出与退出码回传
+    AgentStep(String, String, tokio::sync::oneshot::Sender<crate::agent::StepOutput>),
     /// 用户在浮条点取消
     CancelTransfer,
 }
@@ -448,6 +450,12 @@ async fn run_session(
         // 拖入文件时随 rz 一起敲的工作目录探针,以及它抓回来的远端当前目录
         let mut pwd_probe = PwdProbe::default();
         let mut remote_cwd: Option<String> = None;
+        // AI 分步执行:等待哨兵中的那一步(探针 / 回传端 / 起始时刻)
+        let mut agent_wait: Option<(
+            crate::agent::EndProbe,
+            tokio::sync::oneshot::Sender<crate::agent::StepOutput>,
+            Instant,
+        )> = None;
         loop {
             tokio::select! {
                 msg = channel.wait() => {
@@ -497,6 +505,26 @@ async fn run_session(
                                     }
                                 }
                             }
+                            // 注意:先在借用里把判断算完,再 take —— as_mut() 的借用
+                            // 还活着时调 take() 过不了借用检查
+                            if agent_wait.is_some() {
+                                let (done, timed_out) = {
+                                    let (probe, _, started) = agent_wait.as_mut().unwrap();
+                                    (probe.push(data), started.elapsed() > Duration::from_secs(30))
+                                };
+                                if let Some(step) = done {
+                                    let (_, reply, _) = agent_wait.take().unwrap();
+                                    let _ = reply.send(step);
+                                } else if timed_out {
+                                    let (probe, reply, _) = agent_wait.take().unwrap();
+                                    // 超时:把已经收到的输出交出去,退出码记 -1
+                                    let _ = reply.send(crate::agent::StepOutput {
+                                        output: probe.into_buffered(),
+                                        exit_code: -1,
+                                        truncated: false,
+                                    });
+                                }
+                            }
                         }
                         Some(ChannelMsg::ExtendedData { ref data, .. }) => {
                             emit_data(&app, &id, data);
@@ -525,6 +553,12 @@ async fn run_session(
                             end = SessionEnd::UserClosed;
                             let _ = channel.eof().await;
                             break;
+                        }
+                        Some(Ctl::AgentStep(cmd, nonce, reply)) => {
+                            // 注入带哨兵的命令,随后把这一步的输出交给 EndProbe 切分。
+                            // 30 秒拿不到哨兵就放弃这一步(命令可能在等输入)。
+                            if channel.data(cmd.as_bytes()).await.is_err() { break; }
+                            agent_wait = Some((crate::agent::EndProbe::new(&nonce), reply, Instant::now()));
                         }
                         Some(Ctl::DropUpload(paths)) => {
                             let (files, rejected) = split_droppable(paths);
@@ -979,6 +1013,9 @@ async fn run_with_cancel(
                     Some(Ctl::Resize(c, r)) => { *deferred_resize = Some((c, r)); }
                     // 传输期间键入与迟到的选文件/选目录消息一律忽略
                     Some(Ctl::Data(_)) | Some(Ctl::SendFiles(_)) | Some(Ctl::ReceiveInto(_)) | Some(Ctl::DropUpload(_)) => {}
+                    // 传输期间来的 agent 步骤直接丢掉 —— sender 一 drop,
+                    // 等在另一头的 exec_step 就会收到 AGENT_STEP_ABORTED
+                    Some(Ctl::AgentStep(..)) => {}
                 },
             }
         };
@@ -1014,6 +1051,9 @@ async fn await_receive_dir(
             Some(Ctl::Close) | None => return DirChoice::Cancelled { close: true },
             Some(Ctl::Resize(c, r)) => *deferred_resize = Some((c, r)),
             Some(Ctl::Data(_)) | Some(Ctl::SendFiles(_)) | Some(Ctl::DropUpload(_)) => {}
+            // 等前端选保存目录期间来的 agent 步骤直接丢掉 —— sender 一 drop,
+            // 等在另一头的 exec_step 就会收到 AGENT_STEP_ABORTED
+            Some(Ctl::AgentStep(..)) => {}
         }
     }
 }
@@ -1084,6 +1124,9 @@ async fn handle_zmodem(
                         }
                         Some(Ctl::Resize(c, r)) => deferred_resize = Some((c, r)),
                         Some(Ctl::Data(_)) | Some(Ctl::ReceiveInto(_)) | Some(Ctl::DropUpload(_)) => {}
+                        // 等前端选发送文件期间来的 agent 步骤直接丢掉 —— sender 一 drop,
+                        // 等在另一头的 exec_step 就会收到 AGENT_STEP_ABORTED
+                        Some(Ctl::AgentStep(..)) => {}
                     }
                 }
             }

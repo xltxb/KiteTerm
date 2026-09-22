@@ -255,6 +255,17 @@ pub fn session_close(app: AppHandle, state: State<AppState>, id: String) -> Resu
     Ok(())
 }
 
+#[tauri::command]
+pub async fn agent_exec(
+    state: State<'_, AppState>,
+    session_id: String,
+    command: String,
+    ai_readonly: bool,
+    approved: bool,
+) -> Result<crate::agent::AgentStepResult> {
+    crate::agent::exec_step(&state.sessions, &session_id, &command, ai_readonly, approved).await
+}
+
 // ---- sftp / transfer ----
 
 #[tauri::command]
