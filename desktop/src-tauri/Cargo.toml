@@ -55,7 +55,3 @@ rustls-pki-types = "1"
 codegen-units = 1
 lto = true
 strip = true
-
-[dev-dependencies]
-# mock_app() 用于在测试里构造 AppHandle<MockRuntime>;只在 test profile 生效
-tauri = { version = "2", features = ["test"] }

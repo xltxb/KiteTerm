@@ -4,8 +4,11 @@
 //! 请求照实连出去),一个回显 TCP 服务 —— 然后让 `direct_conn` / `socks5_conn`
 //! 在两者之间真地搬运字节,验证通路、流量计数与取消语义。
 //!
-//! `start_forward` 也在内:它对 runtime 泛型,测试传 `mock_app()` 的
-//! `AppHandle<MockRuntime>`,产品代码那头仍是 `AppHandle<Wry>`。
+//! 覆盖不到 `start_forward`:它要 `AppHandle`。函数本身对 runtime 泛型,给得出
+//! `mock_app()` 的句柄就能测,但那要把 tauri 的 `test` feature 放进
+//! dev-dependencies —— cargo test 与 cargo build 的 feature 集就此分家,tauri 得
+//! 各编译一份。为这一个用例不值,遂作罢。listener 管理与 stop 的联动由 forward.rs
+//! 里的单元测试覆盖。
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -33,14 +36,6 @@ impl russh::server::Handler for TestSshServer {
         &mut self,
         _user: &str,
         _password: &str,
-    ) -> std::result::Result<russh::server::Auth, Self::Error> {
-        Ok(russh::server::Auth::Accept)
-    }
-
-    async fn auth_publickey(
-        &mut self,
-        _user: &str,
-        _key: &russh::keys::ssh_key::PublicKey,
     ) -> std::result::Result<russh::server::Auth, Self::Error> {
         Ok(russh::server::Auth::Accept)
     }
@@ -268,112 +263,4 @@ async fn cancelling_closes_a_live_connection() {
         .expect("取消后连接应关闭,而不是挂住")
         .unwrap();
     assert_eq!(n, 0, "取消后应读到 EOF");
-}
-
-// ---- start_forward:连 listener 带 stop 的整条链路 ----
-
-/// 借一个空闲端口号(拿到即释放,测试里够用)
-async fn free_port() -> u16 {
-    let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    l.local_addr().unwrap().port()
-}
-
-/// 备齐 start_forward 的五个参数:它内部走 connect_host 且不传密码,
-/// 所以主机必须配密钥认证 —— 生成一把 ed25519 存进库,服务端一律放行
-async fn fixture(
-    name: &str,
-    ssh_port: u16,
-    echo_port: u16,
-) -> (Arc<Db>, Arc<Vault>, Arc<crate::ssh::SessionManager>, Arc<super::ForwardManager>, crate::models::ForwardRule) {
-    std::env::set_var("KITE_NO_KEYCHAIN", "1");
-    let dir = std::env::temp_dir().join("kite-forward-e2e").join(name);
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-
-    let db = Arc::new(Db::open(dir.clone()).unwrap());
-    let vault = Arc::new(Vault::open(&dir).unwrap());
-
-    let key = crate::vault::generate("ed25519", "e2e").unwrap();
-    let enc = vault.encrypt(key.private_pem.as_bytes()).unwrap();
-    let key_id = db
-        .insert_key("e2e", &key.algo, &key.fingerprint, &key.public_openssh, &enc)
-        .unwrap();
-
-    let host = Host {
-        id: format!("h-{name}"),
-        name: name.into(),
-        addr: "127.0.0.1".into(),
-        port: ssh_port,
-        user: "tester".into(),
-        group_id: String::new(),
-        tags: vec![],
-        key_id: Some(key_id),
-        last_connected_at: None,
-        latency_ms: None,
-    };
-    db.upsert_host_raw(&host).unwrap();
-
-    let rule = db
-        .insert_forward(&crate::models::ForwardInput {
-            kind: "L".into(),
-            local_port: free_port().await,
-            target: format!("127.0.0.1:{echo_port}"),
-            via_host_id: host.id.clone(),
-        })
-        .unwrap();
-
-    (db, vault, Arc::new(Default::default()), Arc::new(Default::default()), rule)
-}
-
-/// 整条链路:start_forward 起监听 → 字节经真 SSH 抵达目标 → stop 掐断连接并把流量落库
-#[tokio::test]
-async fn start_forward_serves_traffic_then_stop_closes_it() {
-    let echo_port = spawn_echo_server().await;
-    let ssh_port = spawn_ssh_server().await;
-    let (db, vault, sessions, forwards, rule) = fixture("start", ssh_port, echo_port).await;
-
-    let app = tauri::test::mock_app();
-    super::start_forward(
-        app.handle().clone(),
-        db.clone(),
-        vault,
-        sessions,
-        forwards.clone(),
-        rule.clone(),
-    )
-    .await
-    .expect("转发应能起来");
-
-    // 连转发端口,数据应经 SSH 通道抵达回显服务再回来
-    let mut client = TcpStream::connect(("127.0.0.1", rule.local_port)).await.unwrap();
-    client.write_all(b"hello").await.unwrap();
-    let mut buf = [0u8; 5];
-    tokio::time::timeout(Duration::from_secs(5), client.read_exact(&mut buf))
-        .await
-        .expect("回显应在 5 秒内返回")
-        .unwrap();
-    assert_eq!(&buf, b"hello");
-
-    forwards.stop(&db, &rule.id);
-
-    // 停用后:进行中的连接被掐断
-    let mut tail = [0u8; 8];
-    let n = tokio::time::timeout(Duration::from_secs(5), client.read(&mut tail))
-        .await
-        .expect("停用后连接应关闭,而不是挂住")
-        .unwrap();
-    assert_eq!(n, 0, "停用后应读到 EOF");
-
-    // 停用后:残留流量已补写入库(flush 那一轮 3 秒才到,这里靠 stop 收尾)
-    let traffic = || {
-        let f = db.list_forwards().unwrap().into_iter().find(|f| f.id == rule.id).unwrap();
-        (f.bytes_up, f.bytes_down)
-    };
-    wait_for(|| traffic() == (5, 5), "流量落库为 (5, 5)").await;
-
-    // 停用后:端口不再被监听
-    assert!(
-        TcpStream::connect(("127.0.0.1", rule.local_port)).await.is_err(),
-        "停用后不应还能连上转发端口"
-    );
 }
