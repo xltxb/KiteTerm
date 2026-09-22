@@ -44,12 +44,12 @@ struct PlatformConfig {
     registration_default: String,
     /// 功能门禁总闸(KITE_FEATURE_GATING,默认 off)。
     ///
-    /// off:8 项产品开关(login/sync/ai/key_sync/recording_sync/ai_command/
-    ///     ai_diagnose/ai_summary)全部失效 —— 客户端不隐藏任何入口,服务端
+    /// off:9 项产品开关(login/sync/ai/key_sync/recording_sync/ai_command/
+    ///     ai_diagnose/ai_summary/ai_agent)全部失效 —— 客户端不隐藏任何入口,服务端
     ///     也不据此拦截。平台只当账户与凭据的中枢,不管功能可见性。
     ///     安全策略类开关(email_verify/totp_required/multi_device)不受总闸
     ///     影响,总闸关闭时依旧按各自设置生效。
-    /// on: 8 项产品开关生效,由管理控制台逐项开关并下发。
+    /// on: 9 项产品开关生效,由管理控制台逐项开关并下发。
     ///
     /// 之所以做成部署配置而不是控制台开关:它决定的是这套管控要不要存在,
     /// 属于部署形态,不该被日常运维误点。

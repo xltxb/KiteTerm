@@ -5,7 +5,7 @@ describe("features", () => {
   it("默认值与门禁", async () => {
     const r = await exports.default.fetch(`${base}/api/features`);
     const j = await r.json() as Record<string, unknown>;
-    expect(j).toMatchObject({ login: true, keySync: true, aiSummary: true, emailVerify: false, totpRequired: false, multiDevice: true, enforced: false, registration: "open" });
+    expect(j).toMatchObject({ login: true, keySync: true, aiSummary: true, aiAgent: true, emailVerify: false, totpRequired: false, multiDevice: true, enforced: false, registration: "open" });
     expect(j.passwordMinLength).toBe(8);
     // 关掉 login:总闸 off 时生效值仍为 true
     await env.DB.prepare("INSERT INTO platform_settings (key,value) VALUES ('feature_login','0')").run();

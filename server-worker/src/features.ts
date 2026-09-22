@@ -3,7 +3,7 @@ import { settingGet, settingSet } from "./settings";
 export const NAMES: ReadonlyArray<readonly [string, boolean, boolean]> = [
   ["login", true, true], ["sync", true, true], ["ai", true, true],
   ["key_sync", true, true], ["recording_sync", true, true],
-  ["ai_command", true, true], ["ai_diagnose", true, true], ["ai_summary", true, true],
+  ["ai_command", true, true], ["ai_diagnose", true, true], ["ai_summary", true, true], ["ai_agent", true, true],
   ["email_verify", false, false], ["totp_required", false, false], ["multi_device", true, false],
 ];
 const meta = (name: string) => NAMES.find(([n]) => n === name) ?? [name, true, true] as const;

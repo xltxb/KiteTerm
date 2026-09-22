@@ -16,6 +16,7 @@ pub const NAMES: &[(&str, bool, bool)] = &[
     ("ai_command", true, true),
     ("ai_diagnose", true, true),
     ("ai_summary", true, true),
+    ("ai_agent", true, true),
     ("email_verify", false, false),
     ("totp_required", false, false),
     ("multi_device", true, false),

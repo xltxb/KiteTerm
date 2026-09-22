@@ -15,6 +15,7 @@ const UNKNOWN: Features = {
   aiCommand: true,
   aiDiagnose: true,
   aiSummary: true,
+  aiAgent: true,
   emailVerify: false,
   totpRequired: false,
   multiDevice: true,
@@ -67,6 +68,7 @@ export type FeatureName =
   | "aiCommand"
   | "aiDiagnose"
   | "aiSummary"
+  | "aiAgent"
   | "emailVerify"
   | "totpRequired"
   | "multiDevice";
@@ -77,6 +79,6 @@ export function useFeature(name: FeatureName): boolean {
 }
 
 /** AI 子功能:总开关关了子项一律关 */
-export function useAiFeature(name: "aiCommand" | "aiDiagnose" | "aiSummary"): boolean {
+export function useAiFeature(name: "aiCommand" | "aiDiagnose" | "aiSummary" | "aiAgent"): boolean {
   return useFeaturesStore((s) => s.features.ai && s.features[name]);
 }
