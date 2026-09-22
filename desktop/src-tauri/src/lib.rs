@@ -14,6 +14,8 @@ mod recorder;
 pub mod rewrap;
 mod sftp;
 pub mod ssh;
+#[cfg(test)]
+mod test_support;
 pub mod sync;
 pub mod vault;
 
