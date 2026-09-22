@@ -233,6 +233,8 @@ export interface Features {
   aiCommand: boolean;
   aiDiagnose: boolean;
   aiSummary: boolean;
+  /** Agent 能执行命令,与前三项「生成文本给人看」性质不同,单独可禁 */
+  aiAgent: boolean;
   emailVerify: boolean;
   totpRequired: boolean;
   multiDevice: boolean;

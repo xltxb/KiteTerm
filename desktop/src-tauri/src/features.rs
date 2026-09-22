@@ -1,7 +1,7 @@
 //! 功能开关:由管理平台下发,客户端缓存后据此决定哪些入口可见。
 //!
 //! 是否启用门禁由平台的部署配置 `KITE_FEATURE_GATING` 决定,随开关一起下发
-//! (`enforced` 字段)。总闸关闭时不做任何限制,各项功能(11 项)全部可用 ——
+//! (`enforced` 字段)。总闸关闭时不做任何限制,各项功能(12 项)全部可用 ——
 //! 平台此时只当账户与凭据的中枢,不管功能可见性。
 //!
 //! 取值顺序:
@@ -52,6 +52,9 @@ pub struct Features {
     pub ai_diagnose: bool,
     #[serde(default = "default_true")]
     pub ai_summary: bool,
+    /// Agent 能执行命令,与「生成文本给人看」的三项性质不同,单独可禁
+    #[serde(default = "default_true")]
+    pub ai_agent: bool,
     /// 安全策略:由服务端拦截,客户端只用来提示
     #[serde(default)]
     pub email_verify: bool,
@@ -85,6 +88,7 @@ impl Features {
             ai_command: true,
             ai_diagnose: true,
             ai_summary: true,
+            ai_agent: true,
             email_verify: false,
             totp_required: false,
             multi_device: true,
