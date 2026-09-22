@@ -1026,3 +1026,64 @@
 .readout[data-tone="success"] .readout-value { color: var(--success-text); }
 .readout[data-tone="warning"] .readout-value { color: var(--warning-text); }
 .readout[data-tone="danger"] .readout-value { color: var(--danger-text); }
+
+/* ---- AI 分步执行(Agent)任务面板 ----
+   核心约束:「AI 说的」(intent / analysis,.agent-said)与「机器记的」
+   (命令原文 / 输出,.agent-cmd / .agent-out)必须在视觉上分开——前者是正文
+   字体,后者是等宽字体且带边框。AI 读的是终端输出,攻击者能操纵输出内容,
+   analysis 因此可能被诱导性文字污染;用户点「批准执行」前,眼睛必须落在
+   命令原文的等宽边框里,而不是 AI 对它的转述上。 */
+
+/* 面板头允许竖排:主机名一行、输入/开始一行、说明再一行,而不是全部挤在一行 */
+.agent-head { flex-direction: column; align-items: stretch; gap: 8px; }
+
+/* 卡片骨架间距。.gap-sm 沿用既有 8px 档位,只是给 agent 卡片的按钮行起个更贴切的名字 */
+.gap-sm { gap: 8px; }
+
+.agent-step,
+.agent-summary {
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* AI 说的:正文字体,✦ 前缀已在文案里带出,这里只管排版 */
+.agent-said {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--ui-sm);
+  line-height: 1.6;
+  color: var(--text-body);
+}
+
+/* 机器记的:等宽字体 + 边框,命令原文用更重的边框,与「只是参考」的输出区分开 */
+.agent-cmd,
+.agent-out {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--ui-xs);
+  line-height: 1.6;
+  color: var(--term-code-fg);
+  background: var(--term-bg);
+  border-radius: var(--radius-md);
+  padding: 8px 10px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.agent-cmd { border: 1px solid var(--border-strong); }
+.agent-out { border: 1px solid var(--border-subtle); color: var(--text-body); }
+
+/* 五种卡片态的边框着色,方便在长列表里一眼扫出状态,不依赖只看徽章文字 */
+.agent-step.is-pending { border-color: var(--warning); }
+.agent-step.is-running { border-color: var(--accent); }
+.agent-step.is-ok      { border-color: var(--success); }
+.agent-step.is-failed  { border-color: var(--danger); }
+
+/* 跳过的步骤整卡降到 --text-faint,只保留 intent 与命令原文(交由 JSX 不渲染其余分支) */
+.agent-step.is-skipped { color: var(--text-faint); }
+.agent-step.is-skipped .agent-said,
+.agent-step.is-skipped .agent-cmd {
+  color: var(--text-faint);
+  border-color: var(--border-subtle);
+}

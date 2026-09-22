@@ -2,16 +2,9 @@
 import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, CornerDownLeft, Loader2, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui";
+import { isRisky } from "@/lib/riskyCommand";
 import { useAiStore } from "@/stores/ai";
 import { getTerminalContext, useSessionStore } from "@/stores/session";
-
-/** 命中这些模式的命令给出显著风险提示 */
-const RISKY = [
-  /\brm\s+-[a-zA-Z]*[rf]/, /\bmkfs\b/, /\bdd\s+if=/, /:\s*\(\)\s*\{.*\};\s*:/,
-  /\bshutdown\b/, /\breboot\b/, /\bhalt\b/, /\bkill(all)?\s+-9\b/,
-  /\bchmod\s+-R\s+777\b/, /\bchown\s+-R\b/, /\bdrop\s+(table|database)\b/i,
-  /\btruncate\b/, />\s*\/dev\/[sh]d[a-z]/, /\bgit\s+push\s+.*--force/,
-];
 
 export function AiCommandBar({
   onClose,
@@ -64,7 +57,7 @@ export function AiCommandBar({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const risky = command ? RISKY.some((re) => re.test(command)) : false;
+  const risky = command ? isRisky(command) : false;
 
   const insert = async (execute: boolean) => {
     if (!command || !activeId) return;
