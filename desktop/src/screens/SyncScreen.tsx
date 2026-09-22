@@ -19,7 +19,7 @@ export function SyncScreen() {
   return (
     <div className="screen vscroll">
       <div className="screen-inner narrow">
-        <ScreenHeader eyebrow="CLOUD SYNC" title="云同步" />
+        <ScreenHeader eyebrow="CLOUD SYNC" title="云同步" screen="sync" />
         <SyncHeroCard />
         <AccountCard />
         <ScopeCard />

@@ -37,7 +37,7 @@ export function SettingsScreen() {
   return (
     <div className="screen vscroll">
       <div className="screen-inner narrow">
-        <ScreenHeader eyebrow="SETTINGS" title="设置" />
+        <ScreenHeader eyebrow="SETTINGS" title="设置" screen="settings" />
 
         <div className="card pad-band mb-16">
           <div className="settings-section-title">外观</div>

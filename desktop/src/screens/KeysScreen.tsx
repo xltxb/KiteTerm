@@ -110,7 +110,7 @@ export function KeysScreen() {
   return (
     <div className="screen vscroll">
       <div className="screen-inner medium">
-        <ScreenHeader eyebrow="SSH KEYS" title="密钥管理">
+        <ScreenHeader eyebrow="SSH KEYS" title="密钥管理" screen="keys">
           <Button variant="outline" onClick={() => setShowImport(true)}>导入</Button>
           <Button variant="primary" onClick={() => setShowGen(true)}>生成新密钥</Button>
         </ScreenHeader>
