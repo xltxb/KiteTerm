@@ -180,14 +180,20 @@ export function Readout({
   value,
   unit,
   tone,
+  inline = false,
 }: {
   label: string;
   value: string | number;
   unit?: string;
   tone?: "ok" | "warn" | "bad";
+  /** 横排紧凑式,给状态栏这类单行容器用;默认竖排,给卡片内的读数用 */
+  inline?: boolean;
 }) {
   return (
-    <div className="readout" data-tone={tone ? READOUT_TONE[tone] : undefined}>
+    <div
+      className={inline ? "readout inline" : "readout"}
+      data-tone={tone ? READOUT_TONE[tone] : undefined}
+    >
       <span className="readout-label">{label}</span>
       <span className="readout-value">
         {value}

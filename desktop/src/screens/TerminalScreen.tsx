@@ -276,6 +276,7 @@ export function TerminalScreen() {
                     value={active.latencyMs != null ? active.latencyMs : "—"}
                     unit={active.latencyMs != null ? "ms" : undefined}
                     tone={active.state === "connected" ? "ok" : "warn"}
+                    inline
                   />
                 </span>
                 <span>{active.cipher}</span>
@@ -291,7 +292,12 @@ export function TerminalScreen() {
             {active.recording && active.recordingSince && (
               <span className="grp t-danger">
                 <span className="dot-lg dot-rec" />
-                <Readout label="REC" value={fmtDuration(Date.now() - active.recordingSince)} tone="bad" />
+                <Readout
+                  label="REC"
+                  value={fmtDuration(Date.now() - active.recordingSince)}
+                  tone="bad"
+                  inline
+                />
               </span>
             )}
             <span>UTF-8</span>
