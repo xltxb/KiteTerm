@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Runtime};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
@@ -71,8 +71,8 @@ async fn handle_for_host(
 }
 
 /// 应用启动时恢复所有启用中的转发规则;起不来的规则自动置为停用
-pub fn spawn_restore_enabled(
-    app: AppHandle,
+pub fn spawn_restore_enabled<R: Runtime>(
+    app: AppHandle<R>,
     db: Arc<Db>,
     vault: Arc<Vault>,
     sessions: Arc<SessionManager>,
@@ -102,8 +102,8 @@ pub fn spawn_restore_enabled(
 }
 
 /// 定期把流量计数落库并推送前端;规则停用后任务自行退出
-fn spawn_traffic_flush(
-    app: AppHandle,
+fn spawn_traffic_flush<R: Runtime>(
+    app: AppHandle<R>,
     db: Arc<Db>,
     rule_id: String,
     up: Arc<AtomicU64>,
@@ -126,8 +126,8 @@ fn spawn_traffic_flush(
     });
 }
 
-pub async fn start_forward(
-    app: AppHandle,
+pub async fn start_forward<R: Runtime>(
+    app: AppHandle<R>,
     db: Arc<Db>,
     vault: Arc<Vault>,
     sessions: Arc<SessionManager>,
@@ -194,8 +194,8 @@ pub async fn start_forward(
 
 /// R 型远程转发:让服务器监听 rule.local_port,进站连接经 SSH 回送到本地 rule.target。
 /// 使用专用 SSH 连接以持有 R 登记表;连接由 keeper 任务保活,停用时随任务中止而断开。
-async fn start_remote_forward(
-    app: AppHandle,
+async fn start_remote_forward<R: Runtime>(
+    app: AppHandle<R>,
     db: Arc<Db>,
     vault: Arc<Vault>,
     forwards: Arc<ForwardManager>,
