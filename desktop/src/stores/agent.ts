@@ -255,7 +255,9 @@ export const useAgentStore = create<AgentState>((set, get) => {
     approve: async (sessionId, stepId) => {
       try {
         const step = stepOf(sessionId, stepId);
-        if (!step || step.state !== "pending") return;
+        // 用户已经点过停止:这一步不再放行,否则「停止」形同虚设 ——
+        // 命令仍会真的发到远端执行,只是要等它跑完下一轮才收尾。
+        if (!step || step.state !== "pending" || getTask(sessionId)?.stopped) return;
         patchStep(sessionId, stepId, { state: "running" });
         setRunning(sessionId, true);
         let r: AgentStepResult;
@@ -278,7 +280,8 @@ export const useAgentStore = create<AgentState>((set, get) => {
     skip: (sessionId, stepId) => {
       try {
         const step = stepOf(sessionId, stepId);
-        if (!step || step.state !== "pending") return;
+        // 同 approve():停止之后不再受理跳过,任务已经在收尾路上了
+        if (!step || step.state !== "pending" || getTask(sessionId)?.stopped) return;
         patchStep(sessionId, stepId, { state: "skipped" });
         setRunning(sessionId, true);
         // 告诉 AI 这步被跳过了,让它换个路子 —— 跳过不计入连续失败
