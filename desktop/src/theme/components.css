@@ -45,7 +45,7 @@
   content: "";
   width: 16px;
   height: 2px;
-  border-radius: 99px;
+  border-radius: var(--radius-full);
   background: linear-gradient(90deg, var(--azure-500), var(--cyan-400));
   flex: none;
 }
@@ -64,13 +64,13 @@
 .card {
   background: var(--surface-card);
   border: 1px solid var(--border-subtle);
-  border-radius: 14px;
+  border-radius: var(--radius-lg);
   box-shadow: var(--shadow-xs);
 }
 
 .icon-chip {
   flex: none;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   background: var(--accent-subtle);
   color: var(--accent-text);
   display: flex;
@@ -89,7 +89,7 @@
   font-family: var(--font-mono);
   font-size: 10.5px;
   padding: 2px 8px;
-  border-radius: 99px;
+  border-radius: var(--radius-full);
   background: var(--surface-sunken);
   border: 1px solid var(--border-subtle);
   color: var(--text-muted);
@@ -108,7 +108,7 @@
   justify-content: center;
   gap: 7px;
   border: none;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   font-family: var(--font-sans);
   font-weight: 600;
   cursor: pointer;
@@ -140,7 +140,7 @@
   height: 36px;
   background: var(--surface-sunken);
   border: 1px solid var(--border-default);
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   padding: 0 12px;
   outline: none;
   font-family: var(--font-sans);
@@ -198,7 +198,7 @@
   width: 40px;
   height: 24px;
   flex: none;
-  border-radius: 99px;
+  border-radius: var(--radius-full);
   background: var(--surface-sunken);
   border: 1px solid var(--border-default);
   cursor: pointer;
@@ -212,7 +212,7 @@
   left: 2px;
   width: 18px;
   height: 18px;
-  border-radius: 99px;
+  border-radius: var(--radius-full);
   background: #fff;
   box-shadow: var(--shadow-xs);
   transition: transform 220ms var(--ease-spring);
@@ -226,12 +226,12 @@
   gap: 5px;
   height: 22px;
   padding: 0 9px;
-  border-radius: 99px;
+  border-radius: var(--radius-full);
   font-size: 11px;
   font-weight: 600;
   white-space: nowrap;
 }
-.badge .dot { width: 6px; height: 6px; border-radius: 99px; background: currentColor; }
+.badge .dot { width: 6px; height: 6px; border-radius: var(--radius-full); background: currentColor; }
 .badge-accent { background: var(--accent-subtle); color: var(--accent-text); }
 .badge-success { background: var(--success-subtle); color: var(--success-text); }
 .badge-warning { background: var(--warning-subtle); color: var(--warning-text); }
@@ -239,10 +239,10 @@
 .badge-neutral { background: var(--surface-sunken); color: var(--text-muted); border: 1px solid var(--border-subtle); }
 
 /* ---- 分段选择 ---- */
-.seg { display: flex; gap: 2px; background: var(--surface-sunken); border-radius: 10px; padding: 3px; }
+.seg { display: flex; gap: 2px; background: var(--surface-sunken); border-radius: var(--radius-md); padding: 3px; }
 .seg-item {
   padding: 5px 14px;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   font-size: 12.5px;
   font-weight: 600;
   cursor: pointer;
@@ -256,10 +256,10 @@
 .seg-item.mono[data-active="true"] { color: var(--accent-text); }
 
 /* ---- 进度条 ---- */
-.progress { height: 6px; border-radius: 99px; background: var(--surface-sunken); overflow: hidden; }
+.progress { height: 6px; border-radius: var(--radius-full); background: var(--surface-sunken); overflow: hidden; }
 .progress > div {
   height: 100%;
-  border-radius: 99px;
+  border-radius: var(--radius-full);
   background: linear-gradient(90deg, var(--azure-500), var(--cyan-400));
   transition: width 340ms var(--ease-out);
 }
@@ -276,7 +276,7 @@
   font-size: 11px;
   padding: 3px 8px;
   border: 1px solid var(--border-default);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: var(--surface-sunken);
   color: var(--text-muted);
   white-space: nowrap;
@@ -294,8 +294,8 @@
 .settings-section-title { font-size: 12px; font-weight: 700; color: var(--text-muted); padding: 12px 0 4px 0; }
 
 /* ---- 状态点 ---- */
-.dot-lg { width: 7px; height: 7px; flex: none; border-radius: 99px; background: var(--text-faint); }
-.dot-sm { width: 6px; height: 6px; flex: none; border-radius: 99px; background: var(--text-faint); }
+.dot-lg { width: 7px; height: 7px; flex: none; border-radius: var(--radius-full); background: var(--text-faint); }
+.dot-sm { width: 6px; height: 6px; flex: none; border-radius: var(--radius-full); background: var(--text-faint); }
 .dot-ok { background: var(--success); }
 .dot-warn { background: var(--warning); }
 .dot-danger { background: var(--danger); }
@@ -306,7 +306,7 @@
   width: 30px;
   height: 30px;
   flex: none;
-  border-radius: 99px;
+  border-radius: var(--radius-full);
   background: var(--accent-subtle);
   color: var(--accent-text);
   display: flex;
@@ -535,7 +535,7 @@
   align-items: center;
   justify-content: center;
   gap: 6px;
-  border-radius: 99px;
+  border-radius: var(--radius-full);
   cursor: pointer;
   user-select: none;
   white-space: nowrap;
@@ -593,7 +593,7 @@
   flex: 1;
   text-align: center;
   padding: 6px 0;
-  border-radius: 99px;
+  border-radius: var(--radius-full);
   font-size: var(--ui-sm);
   font-weight: var(--weight-semibold);
   color: var(--text-muted);
@@ -683,7 +683,7 @@
   align-self: flex-end;
   max-width: 88%;
   padding: 8px 12px;
-  border-radius: 12px 12px 4px 12px;
+  border-radius: var(--radius-lg) var(--radius-lg) var(--radius-xs) var(--radius-lg);
   background: var(--accent-subtle);
   color: var(--text-strong);
   font-size: var(--ui-sm);
@@ -692,7 +692,7 @@
 }
 .bubble-ai {
   padding: 9px 12px;
-  border-radius: 12px 12px 12px 4px;
+  border-radius: var(--radius-lg) var(--radius-lg) var(--radius-lg) var(--radius-xs);
   background: var(--surface-sunken);
   border: 1px solid var(--border-subtle);
   color: var(--text-body);
@@ -822,7 +822,7 @@
   max-width: 92vw;
   background: var(--surface-raised);
   border: 1px solid var(--border-default);
-  border-radius: 14px;
+  border-radius: var(--radius-lg);
   box-shadow: var(--shadow-xl);
   padding: 22px 24px;
 }
@@ -894,7 +894,7 @@
   width: 220px;
   background: var(--surface-raised);
   border: 1px solid var(--border-default);
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   box-shadow: var(--shadow-lg);
   padding: 6px;
   display: flex;
@@ -905,7 +905,7 @@
   align-items: center;
   gap: 10px;
   padding: 8px 10px;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
   font-size: var(--ui-sm);
   color: var(--text-strong);
@@ -928,7 +928,7 @@
   gap: 8px;
   background: var(--surface-raised);
   border: 1px solid var(--border-default);
-  border-radius: 99px;
+  border-radius: var(--radius-full);
   padding: 9px 18px;
   box-shadow: var(--shadow-lg);
   font-size: var(--ui-sm);
