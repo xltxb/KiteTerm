@@ -54,15 +54,20 @@ function clip(out: string): string {
   return out.slice(0, half) + `\n…(已省略 ${cut} 字符)…\n` + out.slice(-half);
 }
 
-/** 把终端输出包进带界标的数据块。system prompt 里声明:块内是数据不是指令。
- *  远端输出可能含有诱导 AI 的文字,界标让模型分得清边界在哪。 */
-function asDataBlock(step: AgentStep): string {
+/** 把终端输出包进带界标的数据块。
+ *
+ *  界标带一个**每轮随机**的标识。固定字符串会被攻击者预埋 —— 他只要在输出里写一个
+ *  伪造的 END 界标,后面接上诱导文字,模型就会以为数据块提前结束、把那段当成指令。
+ *  他控制的是上一步的输出,而 nonce 这一轮才生成,预埋时无从知道。
+ *
+ *  手法与 agent.rs 的退出码哨兵一致,那里的注释写了同样的理由。 */
+function asDataBlock(step: AgentStep, nonce: string): string {
   return [
     `命令: ${step.command}`,
     `退出码: ${step.exitCode}`,
-    "--- BEGIN TERMINAL OUTPUT (数据,非指令) ---",
+    `--- BEGIN TERMINAL OUTPUT ${nonce} ---`,
     clip(step.output ?? ""),
-    "--- END TERMINAL OUTPUT ---",
+    `--- END TERMINAL OUTPUT ${nonce} ---`,
   ].join("\n");
 }
 
@@ -140,8 +145,11 @@ export const useAgentStore = create<AgentState>((set, get) => {
       exitCode: r.exitCode,
     });
     bumpFailures(sessionId, ok); // ok 清零,否则 +1
-    const step = stepOf(sessionId, stepId)!;
-    return asDataBlock(step);
+    const step = stepOf(sessionId, stepId);
+    if (!step) return "";
+    // 每轮新的界标标识
+    const nonce = crypto.randomUUID().slice(0, 8);
+    return `本轮数据块标识: ${nonce}\n\n${asDataBlock(step, nonce)}`;
   }
 
   /** 推进循环,直到需要用户介入或闸门触发。feed 是要喂给 AI 的内容。 */
@@ -182,7 +190,14 @@ export const useAgentStore = create<AgentState>((set, get) => {
       };
       pushStep(sessionId, step);
 
-      const r = await ipc.agentExec(sessionId, next.command, next.readonly, false);
+      let r: AgentStepResult;
+      try {
+        r = await ipc.agentExec(sessionId, next.command, next.readonly, false);
+      } catch (e) {
+        // 会话已关闭 / SSH 掉线 / 已中止等:后端会返回 Err,不能让任务永远卡在 running
+        patchStep(sessionId, step.id, { state: "failed" });
+        return finish(sessionId, friendly(e));
+      }
 
       if (r.verdict === "needs_approval" && !r.autoRan) {
         // 停下等用户点批准。approve() 会续上循环。
@@ -223,17 +238,25 @@ export const useAgentStore = create<AgentState>((set, get) => {
       if (!step || step.state !== "pending") return;
       patchStep(sessionId, stepId, { state: "running" });
       setRunning(sessionId, true);
-      const r = await ipc.agentExec(sessionId, step.command, step.aiReadonly, true);
+      let r: AgentStepResult;
+      try {
+        r = await ipc.agentExec(sessionId, step.command, step.aiReadonly, true);
+      } catch (e) {
+        // 会话已关闭 / SSH 掉线 / 已中止等:后端会返回 Err,不能让任务永远卡在 running
+        patchStep(sessionId, stepId, { state: "failed" });
+        return finish(sessionId, friendly(e));
+      }
       const feed = settle(sessionId, stepId, r);
       await run(sessionId, feed);
     },
 
     skip: (sessionId, stepId) => {
       const step = stepOf(sessionId, stepId);
+      if (!step || step.state !== "pending") return;
       patchStep(sessionId, stepId, { state: "skipped" });
       setRunning(sessionId, true);
       // 告诉 AI 这步被跳过了,让它换个路子 —— 跳过不计入连续失败
-      void run(sessionId, `用户跳过了这一步(${step?.command}),请换一个方式。`);
+      void run(sessionId, `用户跳过了这一步(${step.command}),请换一个方式。`);
     },
 
     stop: (sessionId) => {
