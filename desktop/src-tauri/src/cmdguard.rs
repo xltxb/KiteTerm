@@ -194,8 +194,9 @@ fn check_args(exe: &str, args: &[&str]) -> Verdict {
             if args.iter().any(|a| a.starts_with("-b")) {
                 return Verdict::NeedsApproval("ip -b/-batch 会从输入流执行任意 ip 命令");
             }
-            // ip monitor 持续监听 netlink 事件,永不返回 —— 不改状态,但会把循环挂死
-            if args.first() == Some(&"monitor") {
+            // iproute2 的对象名是前缀匹配:ip mo / ip mon / ip moni 都等价于
+            // ip monitor,精确相等拦不住。monitor 持续监听 netlink 事件,永不返回。
+            if args.first().is_some_and(|a| !a.is_empty() && "monitor".starts_with(a)) {
                 return Verdict::NeedsApproval("ip monitor 持续监听,不会自行结束");
             }
             match args.get(1) {
@@ -212,10 +213,15 @@ fn check_args(exe: &str, args: &[&str]) -> Verdict {
                 Verdict::NeedsApproval("带配置参数的 ifconfig 会改网络状态")
             }
         }
-        // netstat -c 每秒重复输出,永不返回
+        // netstat -c(Linux)与 -w <秒>(BSD/macOS)都会持续输出,永不返回。
+        // 注意 -w 会误伤 Linux net-tools 的 --raw 简写(显示 raw socket,只读),
+        // 接受这个误拦 —— 多问一次比挂到 30 秒超时强。
         "netstat" => {
             if has_short(args, 'c') || has_long(args, "--continuous") {
                 return Verdict::NeedsApproval("netstat -c 会持续输出,不会自行结束");
+            }
+            if has_short(args, 'w') {
+                return Verdict::NeedsApproval("netstat -w 按间隔持续输出(BSD/macOS)");
             }
             Verdict::ReadOnly
         }
@@ -486,8 +492,12 @@ mod tests {
     #[test]
     fn harmless_but_endless_commands_need_approval() {
         need("ip monitor");                 // 持续监听 netlink 事件
+        need("ip mo");                      // iproute2 前缀匹配,等价于 ip monitor
+        need("ip mon");
+        need("ip monito");
         need("netstat -c");                 // 每秒重复输出
         need("netstat --continuous");
+        need("netstat -w 1");               // BSD/macOS 的 interval 模式
         need("ss -E");                      // 持续显示 socket 事件
         need("ss --events");
 
