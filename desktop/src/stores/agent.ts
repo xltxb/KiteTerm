@@ -210,6 +210,19 @@ export const useAgentStore = create<AgentState>((set, get) => {
     }
   }
 
+  /** 包住整个循环的兜底。
+   *
+   *  run() 是个长循环,里面任何一处未预料的异常都会让任务卡在 running:true ——
+   *  UI 一直转圈,用户只能手动停止,而且得不到任何解释。逐个给 await 包 catch 是
+   *  打地鼠,这里统一兜住:循环怎么死的不重要,重要的是任务状态必须落到终态。 */
+  async function safeRun(sessionId: string, feed: string) {
+    try {
+      await run(sessionId, feed);
+    } catch (e) {
+      finish(sessionId, friendly(e));
+    }
+  }
+
   return {
     tasks: {},
 
@@ -230,7 +243,7 @@ export const useAgentStore = create<AgentState>((set, get) => {
           },
         },
       }));
-      if (hasProvider) await run(sessionId, "");
+      if (hasProvider) await safeRun(sessionId, "");
     },
 
     approve: async (sessionId, stepId) => {
@@ -247,7 +260,7 @@ export const useAgentStore = create<AgentState>((set, get) => {
         return finish(sessionId, friendly(e));
       }
       const feed = settle(sessionId, stepId, r);
-      await run(sessionId, feed);
+      await safeRun(sessionId, feed);
     },
 
     skip: (sessionId, stepId) => {
@@ -256,7 +269,7 @@ export const useAgentStore = create<AgentState>((set, get) => {
       patchStep(sessionId, stepId, { state: "skipped" });
       setRunning(sessionId, true);
       // 告诉 AI 这步被跳过了,让它换个路子 —— 跳过不计入连续失败
-      void run(sessionId, `用户跳过了这一步(${step.command}),请换一个方式。`);
+      void safeRun(sessionId, `用户跳过了这一步(${step.command}),请换一个方式。`);
     },
 
     stop: (sessionId) => {
