@@ -27,9 +27,16 @@ pub struct ForwardManager {
 }
 
 impl ForwardManager {
-    pub fn stop(&self, rule_id: &str) {
-        if let Some(f) = self.active.lock().unwrap().remove(rule_id) {
-            f.task.abort();
+    /// 停用规则:中止转发任务,并把计数器里尚未落库的残留字节补写一次。
+    /// 不补写的话,最后一轮 flush(每 3 秒)之后的流量会随规则移除一起丢掉。
+    pub fn stop(&self, db: &Db, rule_id: &str) {
+        // 先取出再操作,避免持 active 锁期间去拿 db 锁
+        let removed = self.active.lock().unwrap().remove(rule_id);
+        let Some(f) = removed else { return };
+        f.task.abort();
+        let (u, d) = (f.up.swap(0, Ordering::Relaxed), f.down.swap(0, Ordering::Relaxed));
+        if u > 0 || d > 0 {
+            let _ = db.add_forward_traffic(rule_id, u, d);
         }
     }
 }
@@ -321,4 +328,98 @@ fn split_target(target: &str) -> Result<(&str, u16)> {
         .rsplit_once(':')
         .ok_or_else(|| AppError(format!("目标格式应为 host:port: {target}")))?;
     Ok((h, p.parse().map_err(|_| AppError(format!("端口无效: {p}")))?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::ForwardInput;
+
+    fn scratch_db(name: &str) -> Db {
+        let dir = std::env::temp_dir().join("kite-forward-test").join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        Db::open(dir).unwrap()
+    }
+
+    fn sample_rule(db: &Db) -> ForwardRule {
+        db.insert_forward(&ForwardInput {
+            kind: "L".into(),
+            local_port: 18080,
+            target: "127.0.0.1:80".into(),
+            via_host_id: "h1".into(),
+        })
+        .unwrap()
+    }
+
+    /// 往活跃表塞一条规则,其计数器已累积到 (up, down) 但还没轮到 flush
+    fn park(mgr: &ForwardManager, rule_id: &str, up: u64, down: u64) {
+        let f = ActiveForward {
+            task: tokio::spawn(std::future::pending::<()>()),
+            up: Arc::new(AtomicU64::new(up)),
+            down: Arc::new(AtomicU64::new(down)),
+        };
+        mgr.active.lock().unwrap().insert(rule_id.to_string(), f);
+    }
+
+    fn traffic_of(db: &Db, id: &str) -> (u64, u64) {
+        let r = db.list_forwards().unwrap().into_iter().find(|f| f.id == id).unwrap();
+        (r.bytes_up, r.bytes_down)
+    }
+
+    /// 停用时计数器里的残留字节要补写入库,且在既有累计值上累加而非覆盖
+    #[tokio::test]
+    async fn stop_flushes_residual_traffic_on_top_of_existing() {
+        let db = scratch_db("flush");
+        let rule = sample_rule(&db);
+        db.add_forward_traffic(&rule.id, 100, 200).unwrap();
+
+        let mgr = ForwardManager::default();
+        park(&mgr, &rule.id, 7, 9);
+        mgr.stop(&db, &rule.id);
+
+        assert_eq!(traffic_of(&db, &rule.id), (107, 209), "残留字节应累加到既有流量上");
+        assert!(mgr.active.lock().unwrap().is_empty(), "规则应已移出活跃表");
+    }
+
+    /// 计数器为空时不应改动已落库的流量
+    #[tokio::test]
+    async fn stop_with_empty_counters_keeps_traffic_unchanged() {
+        let db = scratch_db("empty");
+        let rule = sample_rule(&db);
+        db.add_forward_traffic(&rule.id, 42, 43).unwrap();
+
+        let mgr = ForwardManager::default();
+        park(&mgr, &rule.id, 0, 0);
+        mgr.stop(&db, &rule.id);
+
+        assert_eq!(traffic_of(&db, &rule.id), (42, 43));
+    }
+
+    /// 单向流量也要落库(只有上行或只有下行时不能整条跳过)
+    #[tokio::test]
+    async fn stop_flushes_one_sided_traffic() {
+        let db = scratch_db("onesided");
+        let rule = sample_rule(&db);
+
+        let mgr = ForwardManager::default();
+        park(&mgr, &rule.id, 0, 512);
+        mgr.stop(&db, &rule.id);
+
+        assert_eq!(traffic_of(&db, &rule.id), (0, 512));
+    }
+
+    /// 停用一条不在活跃表里的规则应安静返回,不 panic 也不动数据
+    #[tokio::test]
+    async fn stop_on_unknown_rule_is_noop() {
+        let db = scratch_db("unknown");
+        let rule = sample_rule(&db);
+        db.add_forward_traffic(&rule.id, 5, 5).unwrap();
+
+        let mgr = ForwardManager::default();
+        mgr.stop(&db, &rule.id);
+        mgr.stop(&db, "no-such-rule");
+
+        assert_eq!(traffic_of(&db, &rule.id), (5, 5));
+    }
 }
