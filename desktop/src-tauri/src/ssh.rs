@@ -424,6 +424,9 @@ fn should_reconnect(end: SessionEnd, auto_reconnect: bool) -> bool {
     end == SessionEnd::Broken && auto_reconnect
 }
 
+/// 一步等哨兵的上限。超了就放弃这一步,把已收到的输出交出去。
+const AGENT_STEP_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// 会话主循环:通道输出 → 前端事件;控制消息 → 通道;异常断开时按设置自动重连
 #[allow(clippy::too_many_arguments)]
 async fn run_session(
@@ -457,6 +460,12 @@ async fn run_session(
             Instant,
         )> = None;
         loop {
+            // 等哨兵时才有 deadline;算在 select 之前,async 块按值捕获,
+            // 免得借用了 agent_wait、分支体里又要 take 它
+            let agent_deadline = agent_wait
+                .as_ref()
+                .map(|(_, _, started)| *started + AGENT_STEP_TIMEOUT);
+
             tokio::select! {
                 msg = channel.wait() => {
                     match msg {
@@ -505,24 +514,14 @@ async fn run_session(
                                     }
                                 }
                             }
-                            // 注意:先在借用里把判断算完,再 take —— as_mut() 的借用
-                            // 还活着时调 take() 过不了借用检查
                             if agent_wait.is_some() {
-                                let (done, timed_out) = {
-                                    let (probe, _, started) = agent_wait.as_mut().unwrap();
-                                    (probe.push(data), started.elapsed() > Duration::from_secs(30))
+                                let done = {
+                                    let (probe, _, _) = agent_wait.as_mut().unwrap();
+                                    probe.push(data)
                                 };
                                 if let Some(step) = done {
                                     let (_, reply, _) = agent_wait.take().unwrap();
                                     let _ = reply.send(step);
-                                } else if timed_out {
-                                    let (probe, reply, _) = agent_wait.take().unwrap();
-                                    // 超时:把已经收到的输出交出去,退出码记 -1
-                                    let _ = reply.send(crate::agent::StepOutput {
-                                        output: probe.into_buffered(),
-                                        exit_code: -1,
-                                        truncated: false,
-                                    });
                                 }
                             }
                         }
@@ -555,10 +554,20 @@ async fn run_session(
                             break;
                         }
                         Some(Ctl::AgentStep(cmd, nonce, reply)) => {
-                            // 注入带哨兵的命令,随后把这一步的输出交给 EndProbe 切分。
-                            // 30 秒拿不到哨兵就放弃这一步(命令可能在等输入)。
-                            if channel.data(cmd.as_bytes()).await.is_err() { break; }
-                            agent_wait = Some((crate::agent::EndProbe::new(&nonce), reply, Instant::now()));
+                            // 上一步还在等哨兵时拒绝新的,而不是覆盖 —— 覆盖会让上一步
+                            // 的命令已在远端跑着却无人接收结果,两条命令的输出还会混进
+                            // 同一个探针。reply 在这里 drop,调用方收到 AGENT_STEP_ABORTED。
+                            if agent_wait.is_some() {
+                                drop(reply);
+                            } else if channel.data(cmd.as_bytes()).await.is_err() {
+                                break;
+                            } else {
+                                agent_wait = Some((
+                                    crate::agent::EndProbe::new(&nonce),
+                                    reply,
+                                    Instant::now(),
+                                ));
+                            }
                         }
                         Some(Ctl::DropUpload(paths)) => {
                             let (files, rejected) = split_droppable(paths);
@@ -579,6 +588,23 @@ async fn run_session(
                         Some(Ctl::SendFiles(_)) | Some(Ctl::ReceiveInto(_)) | Some(Ctl::CancelTransfer) => {
                             // 非传输态收到,忽略(仅传输态由 zmodem::run 消费)
                         }
+                    }
+                }
+                // 超时必须是独立分支 —— 挂住的命令不产生输出,
+                // 依附在数据分支上的判断永远等不到被求值的机会
+                _ = async {
+                    match agent_deadline {
+                        Some(d) => tokio::time::sleep_until(tokio::time::Instant::from_std(d)).await,
+                        None => std::future::pending::<()>().await,
+                    }
+                } => {
+                    if let Some((probe, reply, _)) = agent_wait.take() {
+                        let (output, truncated) = probe.into_buffered();
+                        let _ = reply.send(crate::agent::StepOutput {
+                            output,
+                            exit_code: -1,
+                            truncated,
+                        });
                     }
                 }
             }
