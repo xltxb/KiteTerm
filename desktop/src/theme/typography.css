@@ -1,13 +1,13 @@
 /* ============================================================
    Vela — Typography tokens
-   Display: Space Grotesk (techy geometric)
+   Display: JetBrains Mono (HUD 等宽大写) + Noto Sans SC 回退
    Body/UI: Manrope + Noto Sans SC (中英混排)
    Mono:    JetBrains Mono
    ============================================================ */
 
 :root {
   /* ---- Families (CJK fallback baked in for 中英混排) ---- */
-  --font-display: "Space Grotesk", "Noto Sans SC", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-display: "JetBrains Mono", "Noto Sans SC", ui-monospace, "SF Mono", "PingFang SC", "Microsoft YaHei", monospace;
   --font-sans:    "Manrope", "Noto Sans SC", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
   --font-mono:    "JetBrains Mono", "SF Mono", ui-monospace, "Cascadia Code", Menlo, monospace;
 
