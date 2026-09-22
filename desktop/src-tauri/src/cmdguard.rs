@@ -176,19 +176,28 @@ fn check_args(exe: &str, args: &[&str]) -> Verdict {
             }
             Verdict::ReadOnly
         }
-        // hostname 带参数是改主机名
+        // hostname 带名字是改主机名;-F/--file 从文件读取再设置,同样是写操作,
+        // 而且 -Ffile 粘连写法整个 token 以 - 开头,躲得过下面那条位置参数检查
         "hostname" => {
+            if has_short(args, 'F') || has_long(args, "--file") {
+                return Verdict::NeedsApproval("hostname -F/--file 会修改主机名");
+            }
             if args.iter().any(|a| !a.starts_with('-')) {
                 return Verdict::NeedsApproval("带参数的 hostname 会修改主机名");
             }
             Verdict::ReadOnly
         }
-        // ip 能改网络:只放行明确的查询形态
+        // ip 能改网络;-b/-batch 还是个命令执行通道(从输入流读 ip 命令逐条执行,
+        // 没有输入时挂起)。动词只看对象紧后那一位,不扫全表 ——
+        // `ip addr add ... label list` 的 label 值可以是任意字符串,扫全表会被骗。
         "ip" => {
-            if args.len() <= 1 || args.iter().any(|a| matches!(*a, "show" | "list" | "sh")) {
-                Verdict::ReadOnly
-            } else {
-                Verdict::NeedsApproval("ip 只放行 show/list 查询")
+            if args.iter().any(|a| a.starts_with("-b")) {
+                return Verdict::NeedsApproval("ip -b/-batch 会从输入流执行任意 ip 命令");
+            }
+            match args.get(1) {
+                None => Verdict::ReadOnly, // `ip` / `ip addr`:省略动词时隐含 show
+                Some(&("show" | "list" | "lst" | "sh")) => Verdict::ReadOnly,
+                _ => Verdict::NeedsApproval("ip 只放行 <对象> show/list 查询"),
             }
         }
         // ifconfig 无参数或只给接口名是查询,再多就可能是 up/down/addr 配置
@@ -285,9 +294,13 @@ mod tests {
         ro("systemctl show sshd");
         ro("ip addr show");
         ro("ip route");
+        ro("ip");
+        ro("ip addr");
+        ro("ip link show");
         ro("ifconfig");
         ro("ss -tunlp");
         ro("hostname");
+        ro("hostname -f");   // -f 是 FQDN 查询,小写,只读
         ro("date");
         ro("date -u");
         ro("sort file.txt");
@@ -361,6 +374,12 @@ mod tests {
         need("hostname newname");            // 改主机名
         need("ip link set eth0 down");       // 改网络状态
         need("ip addr add 1.2.3.4/24 dev eth0");
+        need("ip -b");                        // 从 stdin 读 ip 命令执行 + 挂起
+        need("ip -batch /tmp/cmds");
+        need("ip addr add 1.2.3.4/24 dev eth0 label list"); // label 值骗过 show/list 扫描
+        need("hostname -F /etc/hostname");    // 从文件读取并设置
+        need("hostname -F/etc/hostname");     // 粘连写法
+        need("hostname --file=/etc/hostname");
         need("ifconfig eth0 down");
         need("ss -K dst 1.2.3.4");           // 强杀连接
         need("top -b -n 0");                 // 0 轮行为依实现而定
@@ -427,5 +446,22 @@ mod tests {
         need("ls\rrm -rf /tmp/x");          // \r 也是 SHELL_META
         need("ls \u{FEFF}/etc");            // 零宽不换行空格
         need("ls \u{1B}[2J/etc");           // ANSI 转义,is_control 分支
+    }
+
+    /// 规则自身写宽导致的逃逸 —— 这两个洞都是为了少写几行代码放宽判定造成的。
+    ///
+    /// `ip -b` 栽在「参数少就放行」的短路上,`label list` 栽在「扫全表找关键词」上。
+    /// 判定子命令要认位置,别认关键词出现过没有。
+    #[test]
+    fn loose_rule_shapes_do_not_leak() {
+        // 参数少不等于安全:-batch 本身就是命令执行通道
+        need("ip -b");
+        need("ip -batch");
+        // 关键词出现在任意位置不等于它是子命令
+        need("ip addr add 1.2.3.4/24 dev eth0 label show");
+        need("ip route del default label list");
+        // 正常查询仍要放行
+        ro("ip addr show");
+        ro("ip link");
     }
 }
