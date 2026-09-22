@@ -459,9 +459,12 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--accent);
-  color: var(--text-on-accent);
-  box-shadow: var(--glow-sm);
+  /* 线框式:主按钮才是全局唯一的实心元素,品牌标不跟它抢。
+     早先这里是 azure→cyan 渐变,清理旧色板时一度改成纯 accent 实心块 ——
+     在深青黑底上像贴了块亮青补丁。 */
+  background: var(--accent-subtle);
+  color: var(--accent-text);
+  border: 1px solid var(--accent-subtle-border);
 }
 .brand-name {
   font-family: var(--font-display);
@@ -487,9 +490,15 @@
 .transfer-hint{position:absolute;left:12px;bottom:12px;z-index:var(--z-raised);display:flex;align-items:center;gap:8px;max-width:420px;padding:6px 10px;border-radius:var(--radius-md);background:var(--surface-raised);color:var(--text);box-shadow:var(--shadow-md);font-size:12px}
 .term-canvas {
   position: absolute;
-  inset: 0;
-  padding: 20px 24px;
+  /* 用 inset 内缩而不是 padding:xterm 于是拿到一个没有 padding 的盒子,
+     FitAddon 直接按容器尺寸算行列,不必解析 padding —— 早先 padding 写在
+     这里时它少扣了上下两边,画布比容器高 33px(约 2 行),溢出到状态栏和
+     右栏上,看着就像终端压在右栏上面。
+     内缩也不能用 padding 挪到 .term-surface:那层还挂着 .ai-fab /
+     .error-hint 等绝对定位子元素,给它加 padding 会把这些一起往里推。 */
+  inset: 20px 24px;
   background: var(--term-bg);
+  overflow: hidden;
 }
 
 /* 拖文件到终端画布时的遮罩:盖住 xterm,提示松开即 ZMODEM 上传 */
@@ -568,7 +577,6 @@
   color: var(--text-muted);
 }
 .statusbar .grp { display: flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
-.statusbar .grp + .grp { border-left: 1px solid var(--border-subtle); padding-left: 16px; }
 
 /* ---- 终端内的 AI 触发按钮 ---- */
 .ai-fab {
@@ -641,7 +649,7 @@
   flex: 1;
   text-align: center;
   padding: 6px 0;
-  border-radius: var(--radius-full);
+  border-radius: var(--radius-sm);
   font-size: var(--ui-sm);
   font-weight: var(--weight-semibold);
   color: var(--text-muted);
@@ -992,6 +1000,12 @@
 }
 
 .readout { display: flex; flex-direction: column; gap: 2px; }
+/* 横排变体:给状态栏这类单行容器用。竖排读数会把单行撑成两行,
+   且数值字号会盖过周围所有文字 —— 尺度对不上。 */
+.readout.inline { flex-direction: row; align-items: baseline; gap: 5px; }
+.readout.inline .readout-label { font-size: var(--ui-xs); letter-spacing: 0.06em; }
+.readout.inline .readout-value { font-size: var(--ui-xs); }
+.readout.inline .readout-unit { font-size: var(--ui-xs); }
 .readout-label {
   font-family: var(--font-mono);
   font-size: 10px;

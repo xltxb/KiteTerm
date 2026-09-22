@@ -35,6 +35,8 @@ body {
 @keyframes vspin { to { transform: rotate(360deg); } }
 
 .vscroll::-webkit-scrollbar { width: 8px; height: 8px; }
-.vscroll::-webkit-scrollbar-thumb { background: var(--border-default); border-radius: var(--radius-full); }
+.vscroll::-webkit-scrollbar-thumb { background: var(--border-subtle); border-radius: var(--radius-full); }
+.vscroll::-webkit-scrollbar-thumb:hover { background: var(--border-default); }
 .vterm .xterm-viewport::-webkit-scrollbar { width: 8px; }
-.vterm .xterm-viewport::-webkit-scrollbar-thumb { background: var(--border-default); border-radius: var(--radius-full); }
+.vterm .xterm-viewport::-webkit-scrollbar-thumb { background: var(--border-subtle); border-radius: var(--radius-full); }
+.vterm .xterm-viewport::-webkit-scrollbar-thumb:hover { background: var(--border-default); }
