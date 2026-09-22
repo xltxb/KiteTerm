@@ -76,7 +76,7 @@ export function SnippetsScreen() {
   return (
     <div className="screen vscroll">
       <div className="screen-inner wide">
-        <ScreenHeader eyebrow="SNIPPETS" title="命令片段">
+        <ScreenHeader eyebrow="SNIPPETS" title="命令片段" screen="snippets">
           <TextInput className="search" placeholder="搜索片段…" value={query} onChange={(e) => setQuery(e.target.value)} />
           <Button variant="primary" onClick={() => setShowNew(true)}>新建片段</Button>
         </ScreenHeader>

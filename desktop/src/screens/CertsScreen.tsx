@@ -141,7 +141,7 @@ export function CertsScreen() {
   return (
     <div className="screen vscroll" onClick={() => setMenu(null)}>
       <div className="screen-inner medium" style={{ position: "relative" }}>
-        <ScreenHeader eyebrow="SSL CERTIFICATES" title="SSL 证书" count={`${activeCount} 有效`} />
+        <ScreenHeader eyebrow="SSL CERTIFICATES" title="SSL 证书" count={`${activeCount} 有效`} screen="certs" />
 
         {/* 签发表单 */}
         <div className="card pad-card mb-16" style={{ opacity: activeSession ? 1 : 0.6 }}>
