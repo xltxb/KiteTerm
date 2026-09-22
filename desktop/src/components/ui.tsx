@@ -54,22 +54,19 @@ export function TextInput({
 export function Badge({
   color = "neutral",
   dot = false,
-  frame = false,
   className,
   children,
   style,
 }: {
   color?: "accent" | "success" | "warning" | "danger" | "neutral";
   dot?: boolean;
-  /** 方框描边式(蓝图风);默认是 pill */
-  frame?: boolean;
   className?: string;
   children: ReactNode;
   style?: CSSProperties;
 }) {
   return (
     <span
-      className={`badge badge-${color}${frame ? " badge-frame" : ""}${className ? ` ${className}` : ""}`}
+      className={`badge badge-${color}${className ? ` ${className}` : ""}`}
       style={style}
     >
       {dot && <span className="dot" />}
