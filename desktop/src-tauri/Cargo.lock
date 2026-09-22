@@ -2857,6 +2857,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "tokio",
+ "tokio-util",
  "url",
  "uuid",
  "whoami",

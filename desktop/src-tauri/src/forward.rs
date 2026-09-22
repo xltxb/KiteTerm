@@ -8,6 +8,7 @@ use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
 use crate::db::Db;
 use crate::error::{AppError, Result};
@@ -17,6 +18,9 @@ use crate::vault::Vault;
 
 pub struct ActiveForward {
     task: JoinHandle<()>,
+    /// 取消已建立的连接。task 只是 accept 循环,abort 它拦不住已经接通的连接:
+    /// 那些是循环里独立 spawn 的,且 L/D 型可能复用别处的 SSH 会话,不会随之断开。
+    cancel: CancellationToken,
     pub up: Arc<AtomicU64>,
     pub down: Arc<AtomicU64>,
 }
@@ -33,7 +37,8 @@ impl ForwardManager {
         // 先取出再操作,避免持 active 锁期间去拿 db 锁
         let removed = self.active.lock().unwrap().remove(rule_id);
         let Some(f) = removed else { return };
-        f.task.abort();
+        f.cancel.cancel(); // 断开进行中的连接
+        f.task.abort(); // 停下 accept 循环(R 型的 keeper 由 cancel 自行退出)
         let (u, d) = (f.up.swap(0, Ordering::Relaxed), f.down.swap(0, Ordering::Relaxed));
         if u > 0 || d > 0 {
             let _ = db.add_forward_traffic(rule_id, u, d);
@@ -138,32 +143,47 @@ pub async fn start_forward(
     let (t_up, t_down) = (up.clone(), down.clone());
     let kind = rule.kind.clone();
     let target = rule.target.clone();
+    let cancel = CancellationToken::new();
+    let accept_cancel = cancel.clone();
 
     let task = tokio::spawn(async move {
         loop {
-            let Ok((stream, peer)) = listener.accept().await else { break };
+            let accepted = tokio::select! {
+                _ = accept_cancel.cancelled() => break,
+                r = listener.accept() => r,
+            };
+            let Ok((stream, peer)) = accepted else { break };
             let handle = handle.clone();
             let kind = kind.clone();
             let target = target.clone();
             let (up, down) = (t_up.clone(), t_down.clone());
+            // 子令牌:规则停用时连同这条连接一起取消,select 落空即 drop 掉
+            // stream 与 SSH channel,双向搬运随之结束
+            let conn_cancel = accept_cancel.child_token();
             tokio::spawn(async move {
-                let r = if kind == "D" {
-                    socks5_conn(handle, stream, peer.port(), up, down).await
-                } else {
-                    direct_conn(handle, stream, peer.port(), &target, up, down).await
+                let conn = async {
+                    if kind == "D" {
+                        socks5_conn(handle, stream, peer.port(), up, down).await
+                    } else {
+                        direct_conn(handle, stream, peer.port(), &target, up, down).await
+                    }
                 };
-                if let Err(e) = r {
-                    eprintln!("[forward] 连接处理失败: {e}");
+                tokio::select! {
+                    _ = conn_cancel.cancelled() => {}
+                    r = conn => {
+                        if let Err(e) = r {
+                            eprintln!("[forward] 连接处理失败: {e}");
+                        }
+                    }
                 }
             });
         }
     });
 
-    forwards
-        .active
-        .lock()
-        .unwrap()
-        .insert(rule.id.clone(), ActiveForward { task, up: up.clone(), down: down.clone() });
+    forwards.active.lock().unwrap().insert(
+        rule.id.clone(),
+        ActiveForward { task, cancel, up: up.clone(), down: down.clone() },
+    );
     spawn_traffic_flush(app, db, rule.id.clone(), up, down);
     Ok(())
 }
@@ -198,16 +218,18 @@ async fn start_remote_forward(
         .await
         .map_err(|e| AppError(format!("远端监听 127.0.0.1:{} 被拒绝: {e}", rule.local_port)))?;
 
-    // keeper:持有专用连接;task.abort() 即丢弃 handle → 连接关闭,远端监听随之失效
+    // keeper:持有专用连接;取消(或 abort)后丢弃 handle → 连接关闭,远端监听随之
+    // 失效,服务器侧已建立的 channel 也一并断开
+    let cancel = CancellationToken::new();
+    let keeper_cancel = cancel.clone();
     let task = tokio::spawn(async move {
         let _keep = handle;
-        std::future::pending::<()>().await;
+        keeper_cancel.cancelled().await;
     });
-    forwards
-        .active
-        .lock()
-        .unwrap()
-        .insert(rule.id.clone(), ActiveForward { task, up: up.clone(), down: down.clone() });
+    forwards.active.lock().unwrap().insert(
+        rule.id.clone(),
+        ActiveForward { task, cancel, up: up.clone(), down: down.clone() },
+    );
     spawn_traffic_flush(app, db, rule.id.clone(), up, down);
     Ok(())
 }
@@ -352,14 +374,18 @@ mod tests {
         .unwrap()
     }
 
-    /// 往活跃表塞一条规则,其计数器已累积到 (up, down) 但还没轮到 flush
-    fn park(mgr: &ForwardManager, rule_id: &str, up: u64, down: u64) {
+    /// 往活跃表塞一条规则,其计数器已累积到 (up, down) 但还没轮到 flush。
+    /// 返回它的取消令牌,供测试挂模拟连接
+    fn park(mgr: &ForwardManager, rule_id: &str, up: u64, down: u64) -> CancellationToken {
+        let cancel = CancellationToken::new();
         let f = ActiveForward {
             task: tokio::spawn(std::future::pending::<()>()),
+            cancel: cancel.clone(),
             up: Arc::new(AtomicU64::new(up)),
             down: Arc::new(AtomicU64::new(down)),
         };
         mgr.active.lock().unwrap().insert(rule_id.to_string(), f);
+        cancel
     }
 
     fn traffic_of(db: &Db, id: &str) -> (u64, u64) {
@@ -421,5 +447,32 @@ mod tests {
         mgr.stop(&db, "no-such-rule");
 
         assert_eq!(traffic_of(&db, &rule.id), (5, 5));
+    }
+
+    /// 停用必须掐断进行中的连接。这些连接是 accept 循环里独立 spawn 的,
+    /// abort 那个循环任务碰不到它们,只能靠子令牌级联取消收口
+    #[tokio::test]
+    async fn stop_cancels_in_flight_connections() {
+        let db = scratch_db("inflight");
+        let rule = sample_rule(&db);
+        let mgr = ForwardManager::default();
+        let cancel = park(&mgr, &rule.id, 0, 0);
+
+        // 模拟一条已接通的连接:与真实连接一样挂在子令牌上,自身永不主动结束
+        let conn_cancel = cancel.child_token();
+        let conn = tokio::spawn(async move {
+            tokio::select! {
+                _ = conn_cancel.cancelled() => "cancelled",
+                _ = std::future::pending::<()>() => "never",
+            }
+        });
+
+        mgr.stop(&db, &rule.id);
+
+        let ended = tokio::time::timeout(std::time::Duration::from_secs(1), conn).await;
+        assert_eq!(
+            ended.expect("连接任务应在停用后结束,而不是继续搬运数据").unwrap(),
+            "cancelled"
+        );
     }
 }
