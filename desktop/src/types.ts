@@ -201,6 +201,19 @@ export interface AiSettings {
 /** AI 协助场景 */
 export type AiMode = "chat" | "explain" | "command" | "summary";
 
+/** AI 分步执行:一步的结果 */
+export interface AgentStepResult {
+  /** 是否未经批准就自动执行了 */
+  autoRan: boolean;
+  verdict: "readonly" | "needs_approval";
+  /** 需批准时的原因,给用户看 */
+  reason: string;
+  output: string;
+  exitCode: number;
+  /** 输出超了上限、前半截被丢掉了 —— 界面要标出来,别让人以为这就是全部 */
+  truncated: boolean;
+}
+
 /** 管理平台账户 */
 /** 管理平台下发的功能开关。
  *

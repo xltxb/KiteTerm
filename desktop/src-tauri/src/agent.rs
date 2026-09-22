@@ -94,6 +94,90 @@ impl EndProbe {
         self.truncated = false;
         Some(StepOutput { output, exit_code, truncated })
     }
+
+    /// 超时放弃这一步时,把已经攒下的输出交出去
+    pub fn into_buffered(self) -> String {
+        String::from_utf8_lossy(&self.buf).into_owned()
+    }
+}
+
+use crate::cmdguard::{judge, Verdict};
+use crate::error::{AppError, Result};
+use crate::ssh::{Ctl, SessionManager};
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentStepResult {
+    /// 是否未经用户批准就自动执行了
+    pub auto_ran: bool,
+    /// "readonly" | "needs_approval"
+    pub verdict: String,
+    /// 需批准时的原因,给用户看
+    pub reason: String,
+    pub output: String,
+    pub exit_code: i32,
+    /// 输出超了缓冲上限、前半截被丢掉了。
+    /// **必须透传到前端** —— 不能让 AI 把砍过的输出当完整结果来推理
+    pub truncated: bool,
+}
+
+/// 执行一步。`ai_readonly` 是 AI 自己的声明 —— 它只能让自动执行更少,不能更多:
+/// 本地判定说需批准时,AI 说只读也不会自动跑。
+///
+/// `approved` 为 true 表示用户已经在界面上点过批准,此时跳过判定直接执行。
+pub async fn exec_step(
+    manager: &SessionManager,
+    session_id: &str,
+    command: &str,
+    ai_readonly: bool,
+    approved: bool,
+) -> Result<AgentStepResult> {
+    let verdict = judge(command);
+    let local_ro = verdict == Verdict::ReadOnly;
+    let may_auto = local_ro && ai_readonly;
+
+    if !approved && !may_auto {
+        let reason = match verdict {
+            Verdict::NeedsApproval(r) => r.to_string(),
+            Verdict::ReadOnly => "AI 声明这是写操作".to_string(),
+        };
+        return Ok(AgentStepResult {
+            auto_ran: false,
+            verdict: "needs_approval".into(),
+            reason,
+            output: String::new(),
+            exit_code: 0,
+            truncated: false,
+        });
+    }
+
+    // 每步一个随机 nonce —— 标记若是固定字节串,攻击者在 AI 会读的文件里
+    // 预埋那几个字节就能伪造「命令已结束,退出码 0」
+    let nonce = uuid::Uuid::new_v4().simple().to_string()[..8].to_string();
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    {
+        let sessions = manager.sessions.lock().unwrap();
+        let entry = sessions
+            .get(session_id)
+            .ok_or_else(|| AppError(format!("AGENT_NO_SESSION: 会话不存在: {session_id}")))?;
+        entry
+            .ctl
+            .send(Ctl::AgentStep(wrap_command(command, !approved, &nonce), nonce.clone(), tx))
+            .map_err(|_| AppError("AGENT_SESSION_CLOSED: 会话已关闭".to_string()))?;
+    }
+    let step = rx
+        .await
+        .map_err(|_| AppError("AGENT_STEP_ABORTED: 这一步没有结果(会话可能已关闭)".to_string()))?;
+
+    Ok(AgentStepResult {
+        auto_ran: !approved,
+        verdict: if local_ro { "readonly" } else { "needs_approval" }.into(),
+        reason: String::new(),
+        output: step.output,
+        exit_code: step.exit_code,
+        truncated: step.truncated,
+    })
 }
 
 #[cfg(test)]
