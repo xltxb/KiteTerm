@@ -2,6 +2,7 @@ pub mod account;
 mod acme;
 pub mod ai;
 mod commands;
+mod cmdguard;
 pub mod db;
 pub mod error;
 pub mod features;
