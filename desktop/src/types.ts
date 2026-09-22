@@ -199,7 +199,7 @@ export interface AiSettings {
 }
 
 /** AI 协助场景 */
-export type AiMode = "chat" | "explain" | "command" | "summary";
+export type AiMode = "chat" | "explain" | "command" | "summary" | "agent";
 
 /** AI 分步执行:一步的结果 */
 export interface AgentStepResult {
