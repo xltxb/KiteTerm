@@ -26,10 +26,10 @@ export function AiAgentPane() {
   // agent 目前只支持 SSH 会话:本地会话在后端会直接收到 AGENT_STEP_ABORTED,
   // 干脆在这里拦住,别让用户点了半天才发现跑不动。
   const isLocal = session?.kind === "local";
-  // 「结束」看的是循环有没有落到终态(summary / endReason 已写入),
-  // 而不是这一刻 running 是不是 false —— 等批准的 pending 步骤也会让
-  // running 暂时为 false,那不算结束,只是在等用户。
-  const ended = !!task && !task.running && (task.summary !== undefined || task.endReason !== undefined);
+  // 「结束」看的是显式的 status 字段,不能用 running/summary 去推导 ——
+  // 在 pending 步骤上点停止、或 AI 回 done 却没给 summary,这两种情况下
+  // running 和 summary/endReason 都推不出正确答案,只有 status 是可靠的。
+  const ended = task?.status === "ended";
   const active = !!task && !ended;
 
   const hostLabel = session

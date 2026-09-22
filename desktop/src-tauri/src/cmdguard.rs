@@ -83,6 +83,7 @@ fn is_deceptive(c: char) -> bool {
         '\u{202A}'..='\u{202E}'    // bidi 嵌入/覆盖
         | '\u{2066}'..='\u{2069}'  // bidi 隔离
         | '\u{200B}'..='\u{200F}'  // 零宽字符 + 方向标记
+        | '\u{2028}' | '\u{2029}'  // 行/段分隔符 —— 是 Zl/Zp,is_control() 不认
         | '\u{FEFF}'               // 零宽不换行空格
     ) || (c.is_control() && c != '\t')
 }
@@ -441,6 +442,8 @@ mod tests {
         need("ls \u{202E}txt.elif");        // RTL override:显示与实际不符
         need("ls \u{200B}/etc");            // 零宽空格
         need("cat \u{2066}/etc/passwd\u{2069}"); // bidi 隔离
+        need("ls \u{2028}pwd");             // 行分隔符,is_control 不认
+        need("ls \u{2029}pwd");             // 段分隔符
     }
 
     /// 粘连短选项不能绕过检测。
