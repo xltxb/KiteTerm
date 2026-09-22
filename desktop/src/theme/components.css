@@ -168,8 +168,8 @@
 .btn-outline:hover { background: var(--surface-hover); border-color: var(--accent); color: var(--accent-hover); }
 .btn-ghost { background: transparent; color: var(--text-muted); }
 .btn-ghost:hover { background: var(--surface-hover); color: var(--text-strong); }
-.btn-danger { background: var(--danger); color: #fff; }
-.btn-danger:hover { filter: brightness(1.1); }
+.btn-danger { background: transparent; color: var(--danger-text); border: 1px solid var(--danger); }
+.btn-danger:hover { background: var(--danger-subtle); border-color: var(--danger-text); }
 
 /* ---- 输入框 ---- */
 .input {
