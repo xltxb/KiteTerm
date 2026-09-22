@@ -12,6 +12,7 @@ interface UiState {
   /** 上一次应用过的宽度档位 —— 只在跨档时自动调整,档内尊重用户的手动操作 */
   widthTier: WidthTier;
   rightTab: "snip" | "rec" | "ai";
+  aiMode: "chat" | "agent";
   settings: AppSettings;
   go: (screen: Screen) => void;
   setPalette: (open: boolean) => void;
@@ -19,6 +20,7 @@ interface UiState {
   toggleRightPanel: () => void;
   applyWidth: (width: number) => void;
   setRightTab: (tab: "snip" | "rec" | "ai") => void;
+  setAiMode: (mode: "chat" | "agent") => void;
   setSettings: (patch: Partial<AppSettings>) => void;
   loadSettings: () => Promise<void>;
 }
@@ -37,6 +39,7 @@ export const useUiStore = create<UiState>((set, get) => ({
   rightPanelOpen: true,
   widthTier: "wide",
   rightTab: "snip",
+  aiMode: "chat",
   settings: DEFAULT_SETTINGS,
   go: (screen) => set({ screen, paletteOpen: false }),
   setPalette: (open) => set({ paletteOpen: open }),
@@ -50,6 +53,7 @@ export const useUiStore = create<UiState>((set, get) => ({
     set({ widthTier: tier, ...layoutForTier(tier) });
   },
   setRightTab: (tab) => set({ rightTab: tab }),
+  setAiMode: (mode) => set({ aiMode: mode }),
   setSettings: (patch) => {
     const settings = { ...get().settings, ...patch };
     set({ settings });
