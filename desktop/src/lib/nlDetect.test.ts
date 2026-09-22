@@ -62,7 +62,28 @@ expectStrip("lin@prod-web-01:~$ 找出占用端口的进程", "找出占用端�
 expectStrip("root@host:/var/log# tail -f a.log", "tail -f a.log");
 expectStrip("user% ls", "ls");
 expectStrip("> continue", "continue");
-expectStrip("没有提示符的裸文本", "没有提示符的裸文本");
+// 认不出提示符就返回空,不再把整行当用户输入 —— 理由见 stripPrompt 的注释。
+// 这类行出现在 vim / cat 等待输入这些场景里,本来就不该被当成待翻译的命令。
+expectStrip("没有提示符的裸文本", "");
+
+// —— 非 ASCII 提示符符号(starship / oh-my-zsh 这类主题) ——
+// ❯ 是 U+276F 不是 ASCII 的 >,漏了它整行提示符都会被当成用户输入:
+// 空行时「交给 AI」按钮会亮起来,点下去把「❯」送给 AI;有输入时送过去的也是带提示符的脏数据。
+expectStrip("❯", "");                       // 空行
+expectStrip("1 ❯", "");                     // 空行,上条命令失败时提示符里带退出码
+expectStrip("❯ ls -la", "ls -la");
+expectStrip("❯ 看看磁盘占用", "看看磁盘占用");
+expectStrip("» pwd", "pwd");
+// oh-my-zsh 的 ➜ 后面跟的是路径,没有分隔标志可认,只能剥到 ➜ 为止 —— 已知局限
+expectStrip("➜  ~ ls", "~ ls");
+
+// —— 右提示符(zsh RPROMPT):渲染在行最右端,与输入之间是一大片填充空格 ——
+// 实测到的真实光标行:U+276F 后面几十个空格,最后一个 ~。没这条会被读成输入「~」,
+// 于是空行也显示「交给 AI」,点下去把 ~ 送给 AI。
+expectStrip("❯" + " ".repeat(52) + "~", "");
+expectStrip("❯ ls -la" + " ".repeat(44) + "~", "ls -la");
+expectStrip("❯ 看看磁盘为什么满了" + " ".repeat(38) + "~/work", "看看磁盘为什么满了");
+expectStrip("abiu@host:~$ tail -f a.log" + " ".repeat(30) + "12:04", "tail -f a.log");
 
 if (failed === 0) {
   console.log("NL_DETECT_PASS");
