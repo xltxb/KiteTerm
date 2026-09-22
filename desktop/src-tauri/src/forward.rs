@@ -1,5 +1,9 @@
 //! 端口转发:L(本地)/ D(SOCKS5 动态)实时转发与流量统计;R(远程)暂未支持。
 
+/// 端到端测试:真 SSH 通道 + 真 TCP 目标(进程内起服务器,无需外部依赖)
+#[cfg(test)]
+mod e2e;
+
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
