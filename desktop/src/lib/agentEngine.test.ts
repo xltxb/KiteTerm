@@ -1,0 +1,215 @@
+/** AI 分步执行循环的自检。ipc、AI、状态存取都换成可控的假实现,逐拍推进。 */
+import { createAgentEngine, type AgentTask, type EngineDeps } from "./agentEngine.ts";
+import type { AgentStepResult } from "../types.ts";
+
+let failed = 0;
+function check(cond: boolean, msg: string) {
+  if (!cond) { console.error("FAIL: " + msg); failed++; }
+}
+
+interface Deferred<T> { promise: Promise<T>; resolve: (v: T) => void; reject: (e: unknown) => void }
+function deferred<T>(): Deferred<T> {
+  let resolve!: (v: T) => void, reject!: (e: unknown) => void;
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+}
+const tick = async () => { for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0)); };
+
+function env() {
+  const tasks: Record<string, AgentTask> = {};
+  const asks: { content: string; d: Deferred<string> }[] = [];
+  const execs: { sessionId: string; command: string; approved: boolean; d: Deferred<AgentStepResult> }[] = [];
+  let id = 0;
+  const state = { enabled: true };
+  const deps: EngineDeps = {
+    getTask: (s) => tasks[s],
+    putTask: (s, t) => { tasks[s] = t; },
+    allSessionIds: () => Object.keys(tasks),
+    aiAsk: (messages) => {
+      const d = deferred<string>();
+      asks.push({ content: messages.map((m) => m.content).join("\n"), d });
+      return d.promise;
+    },
+    agentExec: (sessionId, command, _ro, approved) => {
+      const d = deferred<AgentStepResult>();
+      execs.push({ sessionId, command, approved, d });
+      return d.promise;
+    },
+    hasProvider: () => true,
+    enabled: () => state.enabled,
+    newId: () => `id${++id}`,
+    nonce: () => `nonce${++id}`,
+  };
+  return { tasks, asks, execs, state, engine: createAgentEngine(deps) };
+}
+
+const next = (command: string, readonly = true) =>
+  JSON.stringify({ analysis: `分析:${command}`, next: { intent: "意图", command, readonly }, done: false });
+const ran = (output: string, exitCode = 0): AgentStepResult =>
+  ({ autoRan: true, verdict: "readonly", reason: "", output, exitCode, truncated: false });
+const needsApproval: AgentStepResult =
+  { autoRan: false, verdict: "needs_approval", reason: "不在只读白名单内", output: "", exitCode: 0, truncated: false };
+
+// ---- 基本流程 ----
+{
+  const e = env();
+  void e.engine.start("s", "看看磁盘");
+  await tick();
+  check(e.asks.length === 1, "开始后先问 AI");
+  e.asks[0].d.resolve(next("df -h"));
+  await tick();
+  check(e.execs.length === 1 && e.execs[0].command === "df -h", "AI 给的命令被执行");
+  e.execs[0].d.resolve(ran("/dev/sda1 50%"));
+  await tick();
+  e.asks[1].d.resolve(JSON.stringify({ analysis: "够用", done: true, summary: "磁盘还剩一半" }));
+  await tick();
+  check(e.tasks.s.status === "ended" && e.tasks.s.summary === "磁盘还剩一半", "AI 回 done 后任务结束");
+}
+
+// ---- 需批准:停下等用户,批准后以 approved=true 执行并继续 ----
+{
+  const e = env();
+  void e.engine.start("s", "重启 nginx");
+  await tick();
+  e.asks[0].d.resolve(next("systemctl restart nginx", false));
+  await tick();
+  e.execs[0].d.resolve(needsApproval);
+  await tick();
+  check(e.tasks.s.status === "waiting", "需批准时任务进入 waiting");
+  const step = e.tasks.s.steps[0];
+  check(step.state === "pending" && step.reason === "不在只读白名单内", "卡片带上原因");
+  void e.engine.approve("s", step.id);
+  await tick();
+  check(e.execs.length === 2 && e.execs[1].approved, "批准后以 approved=true 执行");
+  e.execs[1].d.resolve(ran(""));
+  await tick();
+  check(e.asks.length === 2, "批准的步骤跑完后继续问 AI");
+}
+
+// ---- #4:停止后马上开新任务,旧循环不能劫持新任务 ----
+{
+  const e = env();
+  void e.engine.start("s", "旧目标");
+  await tick();
+  e.asks[0].d.resolve(next("find / -name x"));
+  await tick();
+  check(e.execs.length === 1, "旧任务的命令在执行");
+
+  e.engine.stop("s");
+  void e.engine.start("s", "新目标");
+  await tick();
+  check(e.asks.length === 2 && e.asks[1].content.includes("新目标"), "新任务开始问 AI");
+  e.asks[1].d.resolve(next("pwd"));
+  await tick();
+  check(e.execs.length === 2, "新任务的命令在执行");
+
+  // 旧任务那一步现在才返回
+  e.execs[0].d.resolve(ran("old output"));
+  await tick();
+  check(e.asks.length === 2, "旧循环不能再替新任务问 AI");
+  check(e.tasks.s.goal === "新目标", "任务还是新任务");
+  check(e.tasks.s.steps.length === 1 && e.tasks.s.steps[0].command === "pwd", "旧循环不能往新任务里写步骤");
+  check(e.tasks.s.status === "running", "新任务不能被旧循环弄成结束");
+
+  e.execs[1].d.resolve(ran("/root"));
+  await tick();
+  check(e.asks.length === 3, "新任务照常推进");
+}
+
+// ---- #6:AI 每轮要看到此前所有步骤 ----
+{
+  const e = env();
+  void e.engine.start("s", "释放 8080 端口");
+  await tick();
+  e.asks[0].d.resolve(next("ss -tlnp"));
+  await tick();
+  e.execs[0].d.resolve(ran("LISTEN 0.0.0.0:8080 pid=1234"));
+  await tick();
+  e.asks[1].d.resolve(next("ps -p 1234 -o cmd"));
+  await tick();
+  e.execs[1].d.resolve(ran("java -jar old.jar"));
+  await tick();
+  const c = e.asks[2].content;
+  check(c.includes("释放 8080 端口"), "带目标");
+  check(c.includes("pid=1234") && c.includes("java -jar old.jar"), "两步的输出都在");
+  check(c.indexOf("ss -tlnp") < c.indexOf("ps -p 1234"), "按执行顺序排列");
+  // 第 2 轮的回复(next = ps …)里的 analysis 是对第 1 步 ss 输出的解读,挂在第 1 步上
+  check(c.includes("你当时的分析: 分析:ps -p 1234 -o cmd"), "带上 AI 当时对每步的分析");
+  // 只声明一个本轮标识,所有数据块都用它
+  const m = c.match(/本轮数据块标识: (\S+)/g) ?? [];
+  check(m.length === 1, "只声明一次本轮标识");
+  const nonce = m[0]?.split(": ")[1] ?? "";
+  check(c.split(`--- BEGIN TERMINAL OUTPUT ${nonce} ---`).length - 1 === 2, "每步一个数据块,都用本轮标识");
+
+  // 跳过的步骤也要出现在历史里
+  e.asks[2].d.resolve(next("kill 1234", false));
+  await tick();
+  e.execs[2].d.resolve(needsApproval);
+  await tick();
+  e.engine.skip("s", e.tasks.s.steps[2].id);
+  await tick();
+  const c2 = e.asks[3].content;
+  check(c2.includes("kill 1234") && c2.includes("跳过"), "跳过的步骤在历史里标明");
+  check(c2.includes("pid=1234"), "跳过之后之前的输出还在");
+}
+
+// ---- #6:历史不能无限膨胀,早先步骤的输出要截得更短 ----
+{
+  const e = env();
+  void e.engine.start("s", "g");
+  await tick();
+  for (let i = 0; i < 5; i++) {
+    e.asks[i].d.resolve(next(`cat f${i}`));
+    await tick();
+    e.execs[i].d.resolve(ran("x".repeat(20000)));
+    await tick();
+  }
+  const len = e.asks[5].content.length;
+  check(len < 20000, `5 步各 2 万字的输出,喂给 AI 的总长要有上限(实际 ${len})`);
+}
+
+// ---- #7:管理员关掉开关后,循环不能再继续 ----
+{
+  const e = env();
+  void e.engine.start("s", "g");
+  await tick();
+  e.asks[0].d.resolve(next("ls"));
+  await tick();
+  e.state.enabled = false;
+  e.execs[0].d.resolve(ran("a"));
+  await tick();
+  check(e.asks.length === 1, "关掉之后不再问 AI");
+  check(e.tasks.s.status === "ended", "任务落到终态");
+  check((e.tasks.s.endReason ?? "").includes("关闭"), "说明是管理员关闭的");
+}
+
+// ---- #7:stopAll 停掉所有会话的任务(开关关闭时调用) ----
+{
+  const e = env();
+  void e.engine.start("a", "g");
+  void e.engine.start("b", "g");
+  await tick();
+  e.engine.stopAll("管理员已关闭 AI 分步执行");
+  check(e.tasks.a.status === "ended" && e.tasks.b.status === "ended", "所有任务都停下");
+  check(e.tasks.a.endReason === "管理员已关闭 AI 分步执行", "停止原因如实记录");
+}
+
+// ---- #9:执行出错的步骤要记下原因,卡片据此显示,而不是空退出码 ----
+{
+  const e = env();
+  void e.engine.start("s", "g");
+  await tick();
+  e.asks[0].d.resolve(next("ls"));
+  await tick();
+  e.execs[0].d.reject("AGENT_STEP_ABORTED: 这一步没有结果(会话可能已关闭)");
+  await tick();
+  const st = e.tasks.s.steps[0];
+  check(st.state === "failed", "步骤标为失败");
+  check(st.exitCode === undefined && (st.error ?? "").includes("会话可能已关闭"), "记下出错原因");
+}
+
+if (failed > 0) {
+  console.error(`agentEngine: ${failed} 项失败`);
+  process.exit(1);
+}
+console.log("agentEngine: 全部通过");

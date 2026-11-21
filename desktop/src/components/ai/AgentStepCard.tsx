@@ -90,7 +90,12 @@ export function AgentStepCard({
         </div>
       )}
 
-      {(step.state === "ok" || step.state === "failed") && (
+      {/* 执行本身出错(会话断开等)时没有退出码,显示原因而不是一个空的「退出码」 */}
+      {step.state === "failed" && step.exitCode === undefined && (
+        <p className="t-danger fs-sm">{step.error ?? "执行出错"}</p>
+      )}
+
+      {(step.state === "ok" || (step.state === "failed" && step.exitCode !== undefined)) && (
         <>
           <Badge color={step.exitCode === 0 ? "success" : "danger"}>
             退出码 {step.exitCode}
