@@ -31,16 +31,23 @@ pub struct StepOutput {
 /// stdin 等一个永远不会来的 EOF。批准执行的命令**不加**:`sudo` 要从 tty 读密码,
 /// 断掉 stdin 它就直接失败了;而用户正看着屏幕,交互他自己能处理。
 ///
-/// **前置契约**:`cmd` 里不能含未加引号的 `#` —— 那会把后面的哨兵整段变成注释,
-/// 这一步就永远等不到结束。自动执行路径由 cmdguard 的 SHELL_META 保证这一点。
+/// 命令放在 `{ … }` 组里、并用**两个**换行收尾,哨兵挂在组外。批准的命令不过
+/// cmdguard,尾部什么语法都可能有,这样写三种情况都不会吞掉哨兵:
+/// - 行内 `#` 注释:注释止于第一个换行
+/// - 行尾 `&`:`cmd &` 换行是合法的,而旧写法 `cmd &; printf` 是语法错误
+/// - 行尾 `\`:续行只吃掉第一个换行,第二个换行照常结束命令
+///
+/// 用 `{ }` 而不是子 shell:批准的 `cd /x` 要对后续步骤生效。交互式 shell 读到
+/// 未闭合的 `{` 会继续读后面的行(显示 PS2),整组读完才开始执行。
 pub fn wrap_command(cmd: &str, auto: bool, nonce: &str) -> String {
-    let body = if auto {
-        // 前缀赋值只对这条命令生效;三个分页变量分别管通用、git、systemd
-        format!("PAGER=cat GIT_PAGER=cat SYSTEMD_PAGER=cat {cmd} < /dev/null")
+    let group = if auto {
+        // 前缀赋值只对这条命令生效;三个分页变量分别管通用、git、systemd。
+        // stdin 重定向挂在组上,不跟在命令尾巴后面 —— 那样会被行尾的 `\` 或 `#` 吞掉
+        format!("{{ PAGER=cat GIT_PAGER=cat SYSTEMD_PAGER=cat {cmd}\r\r}} < /dev/null")
     } else {
-        cmd.to_string()
+        format!("{{ {cmd}\r\r}}")
     };
-    format!("{body}; printf '\\033_KTEND:{nonce}:%s\\033\\\\' \"$?\"\r")
+    format!("{group}; printf '\\033_KTEND:{nonce}:%s\\033\\\\' \"$?\"\r")
 }
 
 pub struct EndProbe {
@@ -191,7 +198,7 @@ mod tests {
     #[test]
     fn wrap_appends_apc_sentinel() {
         let w = wrap_command("ls -la", false, "n1");
-        assert!(w.starts_with("ls -la; printf "), "原命令须在前: {w}");
+        assert!(w.starts_with("{ ls -la\r\r}; printf "), "原命令须在前,且包在组里: {w:?}");
         assert!(w.contains("_KTEND:"), "须带哨兵标记: {w}");
         assert!(w.contains("_KTEND:n1:"), "须带 nonce: {w}");
         assert!(w.contains("\\033"), "须用八进制 ESC 而非裸字节: {w}");
@@ -336,6 +343,34 @@ mod tests {
         let (out, truncated) = p.into_buffered();
         assert!(!truncated, "没溢出不该报截断");
         assert_eq!(out, "short output\n");
+    }
+
+    /// 让真实的 bash 跑一遍包装后的命令,取出哨兵里的退出码。
+    ///
+    /// 注入时 `\r` 是回车键;`bash -c` 没有终端行规程,这里换成 `\n` 等价模拟。
+    fn run_wrapped(cmd: &str, auto: bool) -> Option<i32> {
+        let w = wrap_command(cmd, auto, "n1").replace('\r', "\n");
+        let out = std::process::Command::new("bash").arg("-c").arg(&w).output().ok()?;
+        let mut p = EndProbe::new("n1");
+        p.push(&out.stdout).map(|s| s.exit_code)
+    }
+
+    /// 批准的命令不过 cmdguard,命令尾部的语法不能吞掉哨兵。(#8)
+    ///
+    /// 旧写法 `{cmd}; printf …` 下:`#` 把哨兵变成注释;`cmd &; printf` 是语法错误,
+    /// 连原命令都不执行;行尾 `\` 把哨兵吞成续行。三种都等到 30 秒超时。
+    #[test]
+    fn sentinel_survives_trailing_shell_syntax() {
+        if std::process::Command::new("bash").arg("-c").arg("true").status().is_err() {
+            return; // 没有 bash 的环境跳过
+        }
+        for auto in [false, true] {
+            assert_eq!(run_wrapped("true # 启动服务", auto), Some(0), "行内注释 auto={auto}");
+            assert_eq!(run_wrapped("sleep 0 &", auto), Some(0), "行尾 & auto={auto}");
+            assert_eq!(run_wrapped("true \\", auto), Some(0), "行尾反斜杠 auto={auto}");
+            assert_eq!(run_wrapped("false", auto), Some(1), "退出码要透传 auto={auto}");
+            assert_eq!(run_wrapped("ls /nonexistent-kt", auto), Some(2), "auto={auto}");
+        }
     }
 
     /// wrap_command 的拼接顺序 —— 只查子串会漏掉位置错误
