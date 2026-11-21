@@ -17,6 +17,21 @@ pub enum Verdict {
 /// `#` 在列是因为它会把后面追加的哨兵整段变成注释,那一步就永远等不到结束。
 const SHELL_META: &[&str] = &[">", "<", "|", ";", "&", "$(", "`", "\n", "\r", "#"];
 
+/// 会让 shell 改写参数的语法。判定按空白切 token,看到的是改写**之前**的原文,
+/// 真正执行的是改写之后的参数 —— 两者一旦不一致,后面所有参数检查比对的都是假参数:
+/// `find . '-delete'` 的 token 是 `'-delete'`,黑名单认不出,shell 去掉引号后却真的会删。
+///
+/// - `'` `"` `\`:引号与转义(含 `$'…'` ANSI-C 引号)
+/// - `$`:变量展开,`${IFS}` 还会触发字段分割,把一个 token 拆成多个参数
+/// - `{` `}`:花括号展开,`{-delete,-print}` 展开成两个选项
+/// - `!`:历史展开 —— 命令是作为键盘输入注入交互式 shell 的,`!rm` 会被换成之前的命令
+const SHELL_REWRITE: &[char] = &['\'', '"', '\\', '$', '{', '}', '!'];
+
+/// token 开头的通配符:展开结果取决于远端目录里有哪些文件名。
+/// 攻击者若能在目录里放一个名为 `-delete` 的文件,`find *` 展开后就带上了这个选项。
+/// 通配符不在开头时(`/var/log/*.log`)展开结果以固定前缀开头,不会变成选项。
+const GLOB_START: &[char] = &['*', '?', '['];
+
 /// 只读白名单。宁可漏(多问一次)不可多(误放写操作)。
 /// 注意 sed / awk / perl / python 都不在其中:它们能写文件。
 const READONLY: &[&str] = &[
@@ -56,6 +71,13 @@ pub fn judge(command: &str) -> Verdict {
     // 放在 SHELL_META 之后:\n \r 已被上面拦住,报「含 shell 结构」更准。
     if cmd.chars().any(is_deceptive) {
         return Verdict::NeedsApproval("含双向控制或零宽字符,无法确认命令原文");
+    }
+
+    if cmd.contains(SHELL_REWRITE) {
+        return Verdict::NeedsApproval("含引号/转义/变量/花括号/历史展开等会改写参数的 shell 语法");
+    }
+    if cmd.split_whitespace().any(|t| t.starts_with(GLOB_START)) {
+        return Verdict::NeedsApproval("参数以通配符开头,展开后可能变成选项");
     }
 
     let mut parts = cmd.split_whitespace();
@@ -510,5 +532,38 @@ mod tests {
         ro("netstat -tunlp");
         ro("ss -tunlp");
         ro("ip addr show");
+    }
+
+    /// 判定按空白切 token,看到的是 shell 改写**之前**的原文;真正执行的是改写之后的参数。
+    /// 凡是能让两者不一致的语法,一律不能自动执行 —— 否则黑名单比对的是假参数。(#2)
+    #[test]
+    fn shell_rewriting_cannot_smuggle_flags() {
+        // 引号:shell 去掉引号后才是真实参数
+        need("find /var/www '-delete'");
+        need("find /var/www \"-delete\"");
+        need("find . '-exec' rm -rf {} +");
+        need("tail '-f' /var/log/syslog");
+        need("sort '-o' /etc/passwd x");
+        need("git log '--output=x'");
+        need("find . -name x $'-delete'");    // ANSI-C 引号
+        // 反斜杠转义
+        need("find . -de\\lete");
+        need("tail -\\f /var/log/syslog");
+        // 变量展开 + 字段分割
+        need("find . -name x${IFS}-delete");
+        need("find . $X");
+        // 花括号展开
+        need("find . {-delete,-print}");
+        // 交互式 bash 的历史展开:命令是作为键盘输入注入的,会被展开成之前的命令
+        need("find . !rm");
+        need("ls !!");
+        // 以通配符开头的参数:远端目录里若有名为 -delete 的文件,展开后就成了选项
+        need("find *");
+        need("tail ?f");
+
+        // 常规只读形态仍放行
+        ro("ls -la /var/log/nginx");
+        ro("grep -rn error /var/log/app.log");
+        ro("ls /var/log/*.log");             // 通配符不在开头,展开结果以 / 开头
     }
 }
