@@ -151,7 +151,8 @@ pub enum Ctl {
     /// 拖文件到终端:自动向远端敲 rz,并把这些文件作为随后 rz 的发送列表(仿 Xshell)
     DropUpload(Vec<std::path::PathBuf>),
     /// AI 分步执行:注入一条带哨兵的命令,并把这一步的输出与退出码回传
-    AgentStep(String, String, tokio::sync::oneshot::Sender<std::result::Result<crate::agent::StepOutput, &'static str>>),
+    /// 字段:包装好的命令、本步 nonce、是否自动执行(决定有没有超时上限)、回执
+    AgentStep(String, String, bool, crate::agent::StepReply),
     /// 用户在浮条点取消
     CancelTransfer,
 }
@@ -424,23 +425,6 @@ fn should_reconnect(end: SessionEnd, auto_reconnect: bool) -> bool {
     end == SessionEnd::Broken && auto_reconnect
 }
 
-/// 一步等哨兵的上限。超了就放弃这一步,把已收到的输出交出去。
-const AGENT_STEP_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// 残留探针的绝对上限。超过就强制丢弃 —— 迟到的哨兵可能永远不来
-/// (比如用户按 Ctrl-C,bash 会中止整个命令列表,`; printf` 那半截根本不执行)。
-const AGENT_STALE_TIMEOUT: Duration = Duration::from_secs(120);
-
-/// 一步 agent 命令的等待状态
-struct AgentWait {
-    probe: crate::agent::EndProbe,
-    reply: tokio::sync::oneshot::Sender<std::result::Result<crate::agent::StepOutput, &'static str>>,
-    /// 注入那一刻,超时以此为锚点
-    started: Instant,
-    /// 超时放弃时要用它另建探针去收迟到的哨兵
-    nonce: String,
-}
-
 /// 会话主循环:通道输出 → 前端事件;控制消息 → 通道;异常断开时按设置自动重连
 #[allow(clippy::too_many_arguments)]
 async fn run_session(
@@ -467,20 +451,11 @@ async fn run_session(
         // 拖入文件时随 rz 一起敲的工作目录探针,以及它抓回来的远端当前目录
         let mut pwd_probe = PwdProbe::default();
         let mut remote_cwd: Option<String> = None;
-        // AI 分步执行:当前在等哨兵的那一步
-        let mut agent_wait: Option<AgentWait> = None;
-        // 上一步超时放弃后,它的命令还在远端跑。它最终吐出的哨兵还会飘过来 ——
-        // 在那之前到达的都是上一步的残留,既不能算进下一步,也不能在这期间注入新命令。
-        // 附带记下置位的时刻:迟到的哨兵可能永远不来(比如用户按了 Ctrl-C),
-        // 得有个独立的绝对上限,别让这个会话的 agent 永久锁死。
-        let mut agent_stale: Option<(crate::agent::EndProbe, Instant)> = None;
+        // AI 分步执行的等待状态:在等哪一步的哨兵、上一步超时后是否还有残留
+        let mut agent = crate::agent::AgentGate::default();
         loop {
-            // 等哨兵时才有 deadline;算在 select 之前,async 块按值捕获,
-            // 免得借用了 agent_wait、分支体里又要 take 它
-            let agent_deadline = agent_wait.as_ref().map(|w| w.started + AGENT_STEP_TIMEOUT);
-            // 残留探针的独立上限,与 agent_deadline 分开算 —— 不能和 agent_wait 的
-            // deadline 混在一起,两者的生命周期本就不重叠(stale 置位时 agent_wait 已被 take)
-            let stale_deadline = agent_stale.as_ref().map(|(_, since)| *since + AGENT_STALE_TIMEOUT);
+            // 算在 select 之前:async 块按值捕获,免得借用了 agent、分支体里又要改它
+            let agent_deadline = agent.deadline();
 
             tokio::select! {
                 msg = channel.wait() => {
@@ -530,19 +505,7 @@ async fn run_session(
                                     }
                                 }
                             }
-                            // 先收上一步迟到的哨兵 —— 收到了才算把上一步清干净
-                            if let Some((stale, _)) = agent_stale.as_mut() {
-                                if stale.push(data).is_some() {
-                                    agent_stale = None;
-                                }
-                            }
-                            if agent_wait.is_some() {
-                                let done = agent_wait.as_mut().unwrap().probe.push(data);
-                                if let Some(step) = done {
-                                    let w = agent_wait.take().unwrap();
-                                    let _ = w.reply.send(Ok(step));
-                                }
-                            }
+                            agent.on_output(data);
                         }
                         Some(ChannelMsg::ExtendedData { ref data, .. }) => {
                             emit_data(&app, &id, data);
@@ -562,6 +525,8 @@ async fn run_session(
                 ctl = ctl_rx.recv() => {
                     match ctl {
                         Some(Ctl::Data(bytes)) => {
+                            // 用户按 Ctrl-C 会中止正在等的那一步(哨兵不会再来了)
+                            agent.on_user_input(&bytes);
                             if channel.data(&bytes[..]).await.is_err() { break; }
                         }
                         Some(Ctl::Resize(c, r)) => {
@@ -572,27 +537,14 @@ async fn run_session(
                             let _ = channel.eof().await;
                             break;
                         }
-                        Some(Ctl::AgentStep(cmd, nonce, reply)) => {
-                            // 上一步还在等哨兵、或者上一步超时后的残留还没收干净,
-                            // 这时注入新命令会让两条命令的输出混在一起
-                            if agent_wait.is_some() {
-                                let _ = reply.send(Err("AGENT_BUSY: 上一步还在执行"));
-                            } else if agent_stale.is_some() {
-                                let _ = reply.send(Err(
-                                    "AGENT_BUSY_STALE: 上一步已超时,它的命令可能还在远端运行。等它结束,或者新开一个标签页。",
-                                ));
-                            } else {
+                        Some(Ctl::AgentStep(cmd, nonce, auto, reply)) => {
+                            // 上一步还在等哨兵、或上一步超时后的残留还没解除时,begin 会回错误
+                            if agent.begin(nonce, auto, reply, Instant::now()) {
                                 // 先清掉用户可能敲了一半的输入 —— 只读命令是自动注入的,
                                 // 用户没机会先把手挪开。\x15 是 readline 的 kill-line。
                                 // (这挡不住用户正开着 vim/less 的情况,那属于已知限制。)
                                 if channel.data(&b"\x15"[..]).await.is_err() { break; }
                                 if channel.data(cmd.as_bytes()).await.is_err() { break; }
-                                agent_wait = Some(AgentWait {
-                                    probe: crate::agent::EndProbe::new(&nonce),
-                                    reply,
-                                    started: Instant::now(),
-                                    nonce,
-                                });
                             }
                         }
                         Some(Ctl::DropUpload(paths)) => {
@@ -624,27 +576,7 @@ async fn run_session(
                         None => std::future::pending::<()>().await,
                     }
                 } => {
-                    if let Some(w) = agent_wait.take() {
-                        // 这条命令还在远端跑,它的哨兵迟早会来 —— 留个探针专门收它,
-                        // 收到之前这个会话不接新步骤
-                        agent_stale = Some((crate::agent::EndProbe::new(&w.nonce), Instant::now()));
-                        let (output, truncated) = w.probe.into_buffered();
-                        let _ = w.reply.send(Ok(crate::agent::StepOutput {
-                            output,
-                            exit_code: -1,
-                            truncated,
-                        }));
-                    }
-                }
-                // 残留探针的独立超时:迟到的哨兵可能永远不来(用户按 Ctrl-C 中止了整条
-                // 命令列表),不能让这个会话的 agent 永久锁死,超过上限就强制丢弃
-                _ = async {
-                    match stale_deadline {
-                        Some(d) => tokio::time::sleep_until(tokio::time::Instant::from_std(d)).await,
-                        None => std::future::pending::<()>().await,
-                    }
-                } => {
-                    agent_stale = None;
+                    agent.on_deadline();
                 }
             }
         }
