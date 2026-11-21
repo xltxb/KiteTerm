@@ -180,7 +180,7 @@ export function CertsScreen() {
                 </Button>
               </div>
               <div className="fs-xs t-faint mt-8">
-                HTTP-01 经当前 SSH 会话在主机放置校验文件;DNS-01 支持通配符,需配置 DNS API。签发后自动上传证书、重载 nginx,并加入自动续期。
+                HTTP-01 经当前 SSH 会话在主机放置校验文件;DNS-01 支持通配符,签发时会给出一条 TXT 记录,需在域名解析里手动添加后点确认。签发后自动上传证书、重载 nginx,并加入自动续期。
               </div>
             </>
           ) : (
