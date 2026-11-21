@@ -120,9 +120,17 @@ fn has_short(args: &[&str], flag: char) -> bool {
     })
 }
 
-/// 参数里是否出现某个长选项,含 `--opt=value` 粘连形式
+/// 参数里是否出现某个长选项,含 `--opt=value` 粘连形式与缩写形式。
+///
+/// GNU getopt_long 与 git 的 parse-options 都接受无歧义的长选项缩写:
+/// `sort --outp=x` 就是 `sort --output=x`。精确相等会漏掉缩写,所以只要
+/// 参数名是危险选项名的前缀(至少 `--` 加一个字母)就算命中 —— 偶尔误伤
+/// 一个恰好同前缀的无害选项,多问一次而已。
 fn has_long(args: &[&str], name: &str) -> bool {
-    args.iter().any(|a| *a == name || a.starts_with(&format!("{name}=")))
+    args.iter().any(|a| {
+        let opt = a.split('=').next().unwrap_or(a);
+        opt.len() > 2 && opt.starts_with("--") && name.starts_with(opt)
+    })
 }
 
 /// 取 `-n <值>` 或 `-n<值>` 的数值,拿不到就 None
@@ -565,5 +573,28 @@ mod tests {
         ro("ls -la /var/log/nginx");
         ro("grep -rn error /var/log/app.log");
         ro("ls /var/log/*.log");             // 通配符不在开头,展开结果以 / 开头
+    }
+
+    /// GNU getopt_long 与 git 都接受无歧义的长选项缩写,`--outp` 就是 `--output`。(#3)
+    #[test]
+    fn abbreviated_long_options_are_caught() {
+        need("sort --outp=/etc/cron.d/evil list.txt");
+        need("sort --out /tmp/x list.txt");
+        need("date --se=2000-01-01");
+        need("git log --outp=x");
+        need("tail --fol /var/log/syslog");
+        need("tail --fo=name x");
+        need("journalctl --foll");
+        need("hostname --fil=/tmp/n");
+        need("ss --ki");
+        need("ss --ev");
+        need("netstat --contin");
+
+        // 不是这些危险选项前缀的长选项照常放行
+        ro("sort --reverse x");
+        ro("tail --lines=20 x");
+        ro("date --utc");
+        ro("git log --oneline");
+        ro("netstat --tcp");
     }
 }
