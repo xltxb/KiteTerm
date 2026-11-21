@@ -64,12 +64,14 @@ desktop/                    ── 客户端(macOS / Windows 桌面端)
   src/
     app.css                 样式入口 —— 分层导入:token → base → components → utilities
     app/                    布局:Sidebar、CommandPalette(⌘K)
-    screens/                终端 / 主机 / 传输 / 转发 / 监控 / 密钥 / 片段 / 同步 / 设置
-      terminal/               终端屏拆分:XtermPane / SearchBar / AiFab / RightDock
+    screens/                终端 / 主机 / 传输 / 转发 / 监控 / 密钥 / 片段 / 证书 / 同步 / 设置
+      terminal/               终端屏拆分:XtermPane / SearchBar / AiFab / RightDock / TransferHint(ZMODEM 浮条)
       hosts/                  主机屏拆分:HostRow / HostModal / GroupsModal / PasswordModal
       sync/                   同步屏拆分:账户 / 范围 / 设备 / 加密 / 恢复短语等卡片
     components/             Button、Switch、Badge 等基础组件 + AI 面板(components/ai/)
-    lib/                    无依赖工具:nlDetect(白话识别)、format(字节/时长格式化)、
+    lib/                    无依赖工具:nlDetect(白话识别)、errorDetect(失败输出识别)、
+                              breakpoint(窗口宽度档位)、broadcast(输入镜像目标)、dialog(确认框)、
+                              riskyCommand(破坏性命令识别)、format(字节/时长格式化)、
                               agentEngine(AI 分步执行循环,依赖注入,node 直接测)
     stores/                 ui / data / session / transfer / sync / monitor / ai / agent / certs / features
     ipc/                    IPC 契约 + Tauri 实现(桌面端唯一实现)
@@ -80,7 +82,9 @@ desktop/                    ── 客户端(macOS / Windows 桌面端)
                               utilities.css   排布/字号/颜色工具类(排在最后,可覆盖组件类)
                               terminal.ts     读取 --term-* 变量组装 xterm 调色板
   src-tauri/
-    src/ssh.rs              russh 会话、PTY、输出事件流
+    src/ssh.rs              russh 会话、PTY、输出事件流、known_hosts 校验(TOFU)
+    src/local.rs            本地终端:本机伪终端跑默认 shell,复用 SSH 会话的事件与控制通道
+    src/zmodem/             内置 ZMODEM 收发(rz/sz)状态机与帧编解码,含与真实 lrzsz 的互操作测试
     src/agent.rs            AI 分步执行:命令包装与退出码哨兵、单步等待状态机、输出清理
     src/cmdguard.rs         AI 分步执行的只读判定(自动执行的安全边界)
     src/sftp.rs             SFTP 列目录 + 传输队列(进度事件、重试)
@@ -88,23 +92,29 @@ desktop/                    ── 客户端(macOS / Windows 桌面端)
     src/vault.rs            密钥生成(Ed25519/RSA4096)/导入/指纹,私钥经设备密钥加密落库
     src/rewrap.rs           设备密钥迁移:历史 device.key 加密的存量数据换用当前密钥
     src/monitor.rs          经 SSH 采样 CPU/MEM/DISK/负载/网络(无需 agent)
+    src/acme.rs             ACME 证书:签发 / 续期 / 部署状态机与续期守护
     src/recorder.rs         asciicast v2 会话录制
     src/sync.rs             S3 兼容桶 E2E 加密增量同步
+    src/account.rs          对接管理平台:注册 / 登录 / 令牌 / 同步凭据
+    src/features.rs         功能开关:拉取、缓存与取值顺序
+    src/ai.rs               AI 多模型请求(anthropic / openai 兼容 / ollama)与各模式 system prompt
     src/db.rs               SQLite 模型(hosts/keys/snippets/forwards/recordings)
     examples/               集成自检(见文末)
 ```
 
 ## 功能对照(PRD F1–F10)
 
-- **F1 终端会话**:多标签、状态点、状态栏(协议/地址/延迟/加密套件/尺寸)、⌘F 搜索输出、断线自动重连(指数退避 1/2/4/8/8s,可在设置关闭)、多行粘贴护栏 ✅
+- **F1 终端会话**:多标签(双击标签复制会话、⌘W 关闭)、**本地终端**(⌘T,本机默认 shell)、**输入镜像**(⌘⇧B,按键同步到所有已连接的 SSH 标签页)、状态点、状态栏(协议/地址/延迟/加密套件/尺寸)、⌘F 搜索输出、断线自动重连(指数退避 1/2/4/8/8s,可在设置关闭)、多行粘贴护栏、窗口变窄时自动折叠侧栏、再窄收起右栏(按「终端至少剩多少列」定阈值) ✅
 - **F2 主机管理**:分组(新建/重命名/删除,删除时组内主机迁移不丢)+ 标签、搜索、一键连接、新建/编辑/删除、实时延迟探测(30s TCP 测时)✅
 - **F3 文件传输**:SFTP 双栏、上传/下载、队列进度/速率/失败重试、断点续传(续传前比对两端前 1MB SHA-256,不一致自动从头重传)✅
+  **ZMODEM**:内置 rz/sz 收发(无需本机装 lrzsz),终端里直接敲 `rz` / `sz 文件` 即可;**拖文件到 SSH 终端**会自动替你敲 `rz` 并上传到远端当前目录(仿 Xshell)✅
 - **F4 密钥管理**:生成 Ed25519 / RSA4096、导入、指纹、复制公钥、使用统计;密码认证兜底;设备密钥存系统 Keychain(旧文件自动迁移)✅(Touch ID/agent:后续)
 - **F5 端口转发**:L / R / D 三类实转发 + 流量统计 + 应用启动自动恢复启用规则 ✅
 - **F6 命令片段**:片段库 + 终端右栏快捷面板一键运行 + `{{cursor}}` 占位符停留待编辑 ✅
 - **F7 云同步**:**管理平台管控** — 注册/登录后平台下发 **STS 限权临时凭据**(session policy 收敛到 `users/{id}/*`,1h 有效;不支持 STS 的存储自动回退共享凭据,`KITE_STS=require` 可强制);分项开关(主机/密钥/片段/设置/录制/**证书**)、设备列表;**oplog 增量同步**(逐条 E2E 加密 + AAD 绑定对象路径、每设备游标增量拉取、实体级 LWW + lamport、删除墓碑、开关重开补发存量);**30 天压实**(旧条目并入加密快照后删除,新设备纯快照秒级引导,阈值可调);**manifest 主密钥加密 + If-Match/If-None-Match 乐观锁**(冲突重读重算,不支持条件写的存储自动降级);**BIP39 恢复短语**(24 词 = 主密钥,忘记主密码时凭短语恢复);主密码仅本地派生密钥,平台零知识 ✅
 - **F8 会话录制**:asciicast v2 录制(状态栏 REC 计时)+ 内建回放器(播放/暂停/进度/1–4× 倍速)✅
 - **F9 命令面板**:⌘K,统一搜索主机/片段/动作 ✅
+- **SSL 证书(ACME)**:HTTP-01(经当前 SSH 会话在主机放置校验文件)或 DNS-01(支持通配符;目前需手动添加 TXT 记录);签发后自动上传证书并重载 nginx;续期守护每 12 小时检查一次,到期前 30 天内自动续期;证书随云同步跨设备,每张证书由一台设备负责续期 ✅
 - **F10 设置**:深/浅主题、终端字号、光标闪烁、行为开关(启动恢复会话 / 断线自动重连 / 退出前确认均已生效)、快捷键表 ✅
 - **AI 协助**:**模型可自由选择** —— 配置多个模型并随时切换,按所选模型的协议请求对应接口:
   `anthropic`(`/v1/messages`)、`openai` 兼容(`/v1/chat/completions`,覆盖 OpenAI / DeepSeek /
@@ -115,6 +125,7 @@ desktop/                    ── 客户端(macOS / Windows 桌面端)
   生成的命令需确认才写入终端,可选「填入」(不回车)或「直接运行」,破坏性命令显著告警;
   识别规则偏保守(首词是已知命令、含 shell 语法一律按命令执行;加 `?` 前缀可强制走 AI),
   可在设置里关闭;
+  命令失败时自动识别报错输出并提示「AI 诊断」;`⌘⇧S` 对最近一段长输出做结构化摘要;
   右栏对话可读取会话输出,回复中的命令一键「在终端运行」✅
 - **AI 分步执行(任务模式)**:右栏 AI 面板切到「任务」,给一个目标,AI 逐步给出命令并根据每步的输出决定下一步。
   只读命令自动执行,其余停下来等你批准(破坏性命令需二次确认);每步一张卡片,命令原文与 AI 的描述在视觉上分开。
@@ -174,8 +185,10 @@ desktop/                    ── 客户端(macOS / Windows 桌面端)
 - Keychain 不可用的平台回退应用数据目录 0600 文件
 - 录制同步整文件读入内存单次 PUT,无分片
 
-前端用例:`pnpm test`(白话识别规则的正反例 —— 中文/英文意图句判为白话,已知命令、
-含管道或选项、路径、环境变量赋值一律判为命令)。
+前端用例:`pnpm test`,在 node 里直接跑 `desktop/src/lib` 等处的纯逻辑自检:白话识别、确认框、终端配色、
+失败输出识别、输入镜像、窗口宽度档位,以及 AI 分步执行的响应解析、闸门与循环引擎。
+Rust 单测:`cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib`(含 ZMODEM、端口转发、
+AI 分步执行哨兵与只读判定等;Linux 上需先装 GTK/WebKit 开发库)。
 
 集成自检(`desktop/src-tauri/examples/`)。`ai_check` / `sync_check` 用独立临时目录,加
 `KITE_NO_KEYCHAIN=1` 跳过钥匙串授权框;`ssh_check` 读真实应用数据目录,必须与应用同一把
