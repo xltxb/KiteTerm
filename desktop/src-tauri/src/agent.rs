@@ -111,6 +111,76 @@ impl EndProbe {
     }
 }
 
+/// 把一步的原始 PTY 输出整理成给人看、给 AI 读的纯文本。
+///
+/// 原始字节里有两类噪音:shell 回显的整条包装命令(`{ cmd`、PS2 续行、带 nonce 的
+/// printf),以及终端控制序列(颜色、窗口标题、bracketed paste 开关)。前者占掉卡片
+/// 的前几行,后者在 `<pre>` 里显示成 `[0m` 之类的乱码,两者都白白吃掉回灌给 AI 的额度。
+///
+/// 回显只认本步 nonce 的那一行:printf 的格式串原样回显成 `KTEND:<nonce>:%s` 文本,
+/// 而真正的哨兵是 ESC 字节、早被 EndProbe 切掉了。找不到这一行(远端关了回显)就不砍。
+pub fn clean_output(raw: &str, nonce: &str) -> String {
+    let echo_mark = format!("KTEND:{nonce}:%s");
+    let body = match raw.find(&echo_mark) {
+        Some(at) => match raw[at..].find('\n') {
+            Some(nl) => &raw[at + nl + 1..],
+            None => "",
+        },
+        None => raw,
+    };
+    let plain = strip_ansi(body);
+    // 单独的 \r 是「回到行首」,后面的内容会覆盖前面的(进度条就是这么刷新的),
+    // 所以每行只留最后一个 \r 之后的部分;\r\n 里的 \r 也就顺带去掉了
+    plain
+        .split('\n')
+        .map(|line| {
+            let line = line.strip_suffix('\r').unwrap_or(line);
+            line.rsplit('\r').next().unwrap_or(line)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// 去掉终端控制序列:CSI(颜色、光标、私有模式)、OSC(窗口标题等)、
+/// DCS/APC/PM/SOS 字符串,以及其余双字节 ESC 序列和不可见控制字符。
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut it = s.chars().peekable();
+    while let Some(c) = it.next() {
+        if c != '\x1b' {
+            if !c.is_control() || matches!(c, '\n' | '\r' | '\t') {
+                out.push(c);
+            }
+            continue;
+        }
+        match it.next() {
+            // CSI:参数与中间字节之后,以 0x40..=0x7E 的终止字节结束
+            Some('[') => {
+                for c in it.by_ref() {
+                    if ('\x40'..='\x7e').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            // OSC / DCS / APC / PM / SOS:以 BEL 或 ST(ESC \)结束
+            Some(']' | 'P' | '_' | '^' | 'X') => {
+                while let Some(c) = it.next() {
+                    if c == '\x07' {
+                        break;
+                    }
+                    if c == '\x1b' && it.peek() == Some(&'\\') {
+                        it.next();
+                        break;
+                    }
+                }
+            }
+            // 其余 ESC x 双字节序列(字符集切换等)
+            _ => {}
+        }
+    }
+    out
+}
+
 /// 一步的回执通道
 pub type StepReply = tokio::sync::oneshot::Sender<std::result::Result<StepOutput, &'static str>>;
 
@@ -285,7 +355,7 @@ pub async fn exec_step(
         auto_ran: !approved,
         verdict: if local_ro { "readonly" } else { "needs_approval" }.into(),
         reason: String::new(),
-        output: step.output,
+        output: clean_output(&step.output, &nonce),
         exit_code: step.exit_code,
         truncated: step.truncated,
     })
@@ -471,6 +541,37 @@ mod tests {
             assert_eq!(run_wrapped("false", auto), Some(1), "退出码要透传 auto={auto}");
             assert_eq!(run_wrapped("ls /nonexistent-kt", auto), Some(2), "auto={auto}");
         }
+    }
+
+    // ---- clean_output:去掉终端控制序列与命令回显(#9) ----
+
+    use super::clean_output;
+
+    #[test]
+    fn clean_strips_colors_and_carriage_returns() {
+        assert_eq!(clean_output("\x1b[01;34mdir\x1b[0m\r\nfile\r\n", "n1"), "dir\nfile\n");
+    }
+
+    #[test]
+    fn clean_strips_osc_and_private_modes() {
+        // 窗口标题(OSC,BEL 结尾 / ST 结尾)与 bracketed paste 开关
+        assert_eq!(clean_output("\x1b]0;root@host: ~\x07ok\n", "n1"), "ok\n");
+        assert_eq!(clean_output("\x1b]2;t\x1b\\ok\n", "n1"), "ok\n");
+        assert_eq!(clean_output("\x1b[?2004lok\n", "n1"), "ok\n");
+    }
+
+    /// 真实 PTY 里抓到的字节:shell 先回显整条包装命令(含 PS2 续行),然后才是输出
+    #[test]
+    fn clean_drops_echoed_wrapper() {
+        let raw = "{ df -h\r\n\x1b[?2004l\r\x1b[?2004h> \r\n\x1b[?2004l\r\x1b[?2004h> }; printf '\\033_KTEND:n1:%s\\033\\\\' \"$?\"\r\n\x1b[?2004l\r/dev/sda1  50G  25G  50% /\r\n";
+        assert_eq!(clean_output(raw, "n1"), "/dev/sda1  50G  25G  50% /\n");
+    }
+
+    /// 只认本步 nonce 的回显行 —— 输出里别的 KTEND 文本是数据,不能据此砍掉前面的内容
+    #[test]
+    fn clean_keeps_output_when_no_echo_of_this_step() {
+        let raw = "line1\nprintf '\\033_KTEND:other:%s'\nline3\n";
+        assert_eq!(clean_output(raw, "n1"), raw);
     }
 
     // ---- AgentGate:一个会话里 agent 步骤的等待状态(#5) ----
