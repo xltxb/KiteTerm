@@ -85,6 +85,8 @@ export function AgentStepCard({
         <div className="row gap-6 t-muted fs-sm">
           <Loader2 size={13} className="spin" />
           执行中…{elapsed > 0 && `${elapsed}s`}
+          {/* 批准的命令不设时限,要中断只能靠终端里的 Ctrl-C —— 后端会据此结束这一步 */}
+          {elapsed >= 10 && <span className="t-faint">· 要中断请在终端按 Ctrl-C</span>}
         </div>
       )}
 

@@ -111,6 +111,106 @@ impl EndProbe {
     }
 }
 
+/// 一步的回执通道
+pub type StepReply = tokio::sync::oneshot::Sender<std::result::Result<StepOutput, &'static str>>;
+
+/// 自动执行(只读)步骤等哨兵的上限。只读命令本该很快结束,超了多半是挂住了。
+///
+/// **批准的步骤没有上限**:`apt install`、`docker build` 可以合法地跑上好几分钟,
+/// 套个固定上限只会把正常的长命令报成失败。用户正看着它,要中断就在终端按 Ctrl-C。
+const AUTO_STEP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Ctrl-C 在终端输入流里的字节
+const CTRL_C: u8 = 0x03;
+
+/// 用户中断时上报的退出码:128 + SIGINT(2),与 shell 的约定一致
+const EXIT_INTERRUPTED: i32 = 130;
+
+struct Waiting {
+    probe: EndProbe,
+    reply: StepReply,
+    deadline: Option<std::time::Instant>,
+    nonce: String,
+}
+
+/// 一个会话里 agent 步骤的等待状态。会话主循环只负责把字节和事件喂进来。
+///
+/// 三种状态:空闲(可注入) / 等待某一步的哨兵 / 残留(上一步超时放弃了,
+/// 但它的命令可能还在远端跑)。残留状态**不靠计时器解除** —— 盲目放行会把下一条
+/// 命令敲进那个还在运行的程序里(比如 apt 的 `[Y/n]` 提示)。只有两件事能解除它:
+/// 迟到的哨兵到了,或用户在终端按了 Ctrl-C。
+#[derive(Default)]
+pub struct AgentGate {
+    waiting: Option<Waiting>,
+    stale: Option<EndProbe>,
+}
+
+impl AgentGate {
+    /// 登记一步。返回 true 表示可以注入命令;返回 false 时已经通过 `reply` 回了错误,
+    /// 调用方什么都不要发。
+    pub fn begin(&mut self, nonce: String, auto: bool, reply: StepReply, now: std::time::Instant) -> bool {
+        if self.waiting.is_some() {
+            let _ = reply.send(Err("AGENT_BUSY: 上一步还在执行"));
+            return false;
+        }
+        if self.stale.is_some() {
+            let _ = reply.send(Err(
+                "AGENT_BUSY_STALE: 上一步已超时,它的命令可能还在远端运行。等它结束,或在终端按 Ctrl-C 中断后再试。",
+            ));
+            return false;
+        }
+        self.waiting = Some(Waiting {
+            probe: EndProbe::new(&nonce),
+            reply,
+            deadline: auto.then(|| now + AUTO_STEP_TIMEOUT),
+            nonce,
+        });
+        true
+    }
+
+    /// 远端输出
+    pub fn on_output(&mut self, data: &[u8]) {
+        if let Some(stale) = self.stale.as_mut() {
+            if stale.push(data).is_some() {
+                self.stale = None;
+            }
+        }
+        if let Some(w) = self.waiting.as_mut() {
+            if let Some(step) = w.probe.push(data) {
+                let w = self.waiting.take().unwrap();
+                let _ = w.reply.send(Ok(step));
+            }
+        }
+    }
+
+    /// 用户在终端里的键入。Ctrl-C 会让 bash 中止整条命令列表,哨兵永远不会来 ——
+    /// 这一步就此结束,残留状态也随之解除。
+    pub fn on_user_input(&mut self, data: &[u8]) {
+        if !data.contains(&CTRL_C) {
+            return;
+        }
+        self.stale = None;
+        if let Some(w) = self.waiting.take() {
+            let (output, truncated) = w.probe.into_buffered();
+            let _ = w.reply.send(Ok(StepOutput { output, exit_code: EXIT_INTERRUPTED, truncated }));
+        }
+    }
+
+    /// 当前步骤的超时时刻;没有在等、或这一步不设上限时为 None
+    pub fn deadline(&self) -> Option<std::time::Instant> {
+        self.waiting.as_ref().and_then(|w| w.deadline)
+    }
+
+    /// 超时:把已收到的输出交出去,转入残留状态等它迟到的哨兵
+    pub fn on_deadline(&mut self) {
+        if let Some(w) = self.waiting.take() {
+            self.stale = Some(EndProbe::new(&w.nonce));
+            let (output, truncated) = w.probe.into_buffered();
+            let _ = w.reply.send(Ok(StepOutput { output, exit_code: -1, truncated }));
+        }
+    }
+}
+
 use crate::cmdguard::{judge, Verdict};
 use crate::error::{AppError, Result};
 use crate::ssh::{Ctl, SessionManager};
@@ -173,7 +273,7 @@ pub async fn exec_step(
             .ok_or_else(|| AppError(format!("AGENT_NO_SESSION: 会话不存在: {session_id}")))?;
         entry
             .ctl
-            .send(Ctl::AgentStep(wrap_command(command, !approved, &nonce), nonce.clone(), tx))
+            .send(Ctl::AgentStep(wrap_command(command, !approved, &nonce), nonce.clone(), !approved, tx))
             .map_err(|_| AppError("AGENT_SESSION_CLOSED: 会话已关闭".to_string()))?;
     }
     let step = rx
@@ -371,6 +471,110 @@ mod tests {
             assert_eq!(run_wrapped("false", auto), Some(1), "退出码要透传 auto={auto}");
             assert_eq!(run_wrapped("ls /nonexistent-kt", auto), Some(2), "auto={auto}");
         }
+    }
+
+    // ---- AgentGate:一个会话里 agent 步骤的等待状态(#5) ----
+
+    use super::AgentGate;
+    use std::time::{Duration, Instant};
+    use tokio::sync::oneshot;
+
+    type Rx = oneshot::Receiver<Result<StepOutput, &'static str>>;
+
+    fn begin(g: &mut AgentGate, auto: bool) -> (bool, Rx) {
+        let (tx, rx) = oneshot::channel();
+        (g.begin("n1".into(), auto, tx, Instant::now()), rx)
+    }
+
+    #[test]
+    fn gate_completes_on_sentinel() {
+        let mut g = AgentGate::default();
+        let (ok, mut rx) = begin(&mut g, true);
+        assert!(ok);
+        g.on_output(b"hello\n\x1b_KTEND:n1:0\x1b\\");
+        let got = rx.try_recv().unwrap().unwrap();
+        assert_eq!((got.output.as_str(), got.exit_code), ("hello\n", 0));
+        assert!(begin(&mut g, true).0, "上一步收完了,下一步应能注入");
+    }
+
+    #[test]
+    fn gate_refuses_while_waiting() {
+        let mut g = AgentGate::default();
+        let (_ok, _rx) = begin(&mut g, false);
+        let (ok, mut rx2) = begin(&mut g, true);
+        assert!(!ok, "上一步还在等,不能注入");
+        assert!(rx2.try_recv().unwrap().is_err(), "要回一个 BUSY 错误");
+    }
+
+    /// 批准的命令(apt install、docker build)可以跑很久,不能套 30 秒上限 ——
+    /// 超时之后它还在跑,任务却被报成失败。
+    #[test]
+    fn approved_step_has_no_deadline() {
+        let mut g = AgentGate::default();
+        let _ = begin(&mut g, false);
+        assert_eq!(g.deadline(), None);
+    }
+
+    #[test]
+    fn auto_step_has_deadline() {
+        let mut g = AgentGate::default();
+        let before = Instant::now();
+        let _ = begin(&mut g, true);
+        let d = g.deadline().expect("自动执行的只读命令要有上限");
+        assert!(d >= before + Duration::from_secs(29));
+    }
+
+    /// 超时之后命令还在远端跑。在它的哨兵到来之前,无论过多久都不能注入新命令 ——
+    /// 旧实现 120 秒后强制放行,新命令就会被敲进那个还在运行的程序里。
+    #[test]
+    fn timed_out_step_blocks_until_its_sentinel() {
+        let mut g = AgentGate::default();
+        let (_, mut rx) = begin(&mut g, true);
+        g.on_output(b"partial");
+        g.on_deadline();
+        let got = rx.try_recv().unwrap().unwrap();
+        assert_eq!((got.output.as_str(), got.exit_code), ("partial", -1));
+
+        assert_eq!(g.deadline(), None, "残留状态不能靠计时器解除");
+        let (ok, mut rx2) = begin(&mut g, true);
+        assert!(!ok);
+        assert!(rx2.try_recv().unwrap().unwrap_err().contains("Ctrl-C"), "要告诉用户怎么解除");
+
+        g.on_output(b"\x1b_KTEND:n1:0\x1b\\"); // 迟到的哨兵
+        assert!(begin(&mut g, true).0, "收到迟到的哨兵后才放行");
+    }
+
+    /// 用户在终端按 Ctrl-C:bash 会中止整条命令列表,哨兵永远不来。
+    /// 这是用户明确表示「不跑了」,残留状态随之解除。
+    #[test]
+    fn ctrl_c_clears_stale_state() {
+        let mut g = AgentGate::default();
+        let _ = begin(&mut g, true);
+        g.on_deadline();
+        g.on_user_input(b"\x03");
+        assert!(begin(&mut g, true).0);
+    }
+
+    /// 等待中按 Ctrl-C:这一步立刻结束,退出码按 130(SIGINT)算,已收到的输出照交
+    #[test]
+    fn ctrl_c_during_wait_ends_the_step() {
+        let mut g = AgentGate::default();
+        let (_, mut rx) = begin(&mut g, false);
+        g.on_output(b"Reading package lists...");
+        g.on_user_input(b"\x03");
+        let got = rx.try_recv().unwrap().unwrap();
+        assert_eq!(got.exit_code, 130);
+        assert_eq!(got.output, "Reading package lists...");
+        assert!(begin(&mut g, true).0);
+    }
+
+    /// 普通按键不影响等待
+    #[test]
+    fn ordinary_input_does_not_end_the_step() {
+        let mut g = AgentGate::default();
+        let (_, mut rx) = begin(&mut g, false);
+        g.on_user_input(b"y\r"); // 比如回答 apt 的 [Y/n]
+        assert!(rx.try_recv().is_err(), "还没结束");
     }
 
     /// wrap_command 的拼接顺序 —— 只查子串会漏掉位置错误
