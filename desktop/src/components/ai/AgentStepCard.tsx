@@ -85,10 +85,17 @@ export function AgentStepCard({
         <div className="row gap-6 t-muted fs-sm">
           <Loader2 size={13} className="spin" />
           执行中…{elapsed > 0 && `${elapsed}s`}
+          {/* 批准的命令不设时限,要中断只能靠终端里的 Ctrl-C —— 后端会据此结束这一步 */}
+          {elapsed >= 10 && <span className="t-faint">· 要中断请在终端按 Ctrl-C</span>}
         </div>
       )}
 
-      {(step.state === "ok" || step.state === "failed") && (
+      {/* 执行本身出错(会话断开等)时没有退出码,显示原因而不是一个空的「退出码」 */}
+      {step.state === "failed" && step.exitCode === undefined && (
+        <p className="t-danger fs-sm">{step.error ?? "执行出错"}</p>
+      )}
+
+      {(step.state === "ok" || (step.state === "failed" && step.exitCode !== undefined)) && (
         <>
           <Badge color={step.exitCode === 0 ? "success" : "danger"}>
             退出码 {step.exitCode}

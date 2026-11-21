@@ -31,16 +31,23 @@ pub struct StepOutput {
 /// stdin 等一个永远不会来的 EOF。批准执行的命令**不加**:`sudo` 要从 tty 读密码,
 /// 断掉 stdin 它就直接失败了;而用户正看着屏幕,交互他自己能处理。
 ///
-/// **前置契约**:`cmd` 里不能含未加引号的 `#` —— 那会把后面的哨兵整段变成注释,
-/// 这一步就永远等不到结束。自动执行路径由 cmdguard 的 SHELL_META 保证这一点。
+/// 命令放在 `{ … }` 组里、并用**两个**换行收尾,哨兵挂在组外。批准的命令不过
+/// cmdguard,尾部什么语法都可能有,这样写三种情况都不会吞掉哨兵:
+/// - 行内 `#` 注释:注释止于第一个换行
+/// - 行尾 `&`:`cmd &` 换行是合法的,而旧写法 `cmd &; printf` 是语法错误
+/// - 行尾 `\`:续行只吃掉第一个换行,第二个换行照常结束命令
+///
+/// 用 `{ }` 而不是子 shell:批准的 `cd /x` 要对后续步骤生效。交互式 shell 读到
+/// 未闭合的 `{` 会继续读后面的行(显示 PS2),整组读完才开始执行。
 pub fn wrap_command(cmd: &str, auto: bool, nonce: &str) -> String {
-    let body = if auto {
-        // 前缀赋值只对这条命令生效;三个分页变量分别管通用、git、systemd
-        format!("PAGER=cat GIT_PAGER=cat SYSTEMD_PAGER=cat {cmd} < /dev/null")
+    let group = if auto {
+        // 前缀赋值只对这条命令生效;三个分页变量分别管通用、git、systemd。
+        // stdin 重定向挂在组上,不跟在命令尾巴后面 —— 那样会被行尾的 `\` 或 `#` 吞掉
+        format!("{{ PAGER=cat GIT_PAGER=cat SYSTEMD_PAGER=cat {cmd}\r\r}} < /dev/null")
     } else {
-        cmd.to_string()
+        format!("{{ {cmd}\r\r}}")
     };
-    format!("{body}; printf '\\033_KTEND:{nonce}:%s\\033\\\\' \"$?\"\r")
+    format!("{group}; printf '\\033_KTEND:{nonce}:%s\\033\\\\' \"$?\"\r")
 }
 
 pub struct EndProbe {
@@ -101,6 +108,176 @@ impl EndProbe {
     /// 谎报完整会让 AI 拿半截输出当全部去推理。
     pub fn into_buffered(self) -> (String, bool) {
         (String::from_utf8_lossy(&self.buf).into_owned(), self.truncated)
+    }
+}
+
+/// 把一步的原始 PTY 输出整理成给人看、给 AI 读的纯文本。
+///
+/// 原始字节里有两类噪音:shell 回显的整条包装命令(`{ cmd`、PS2 续行、带 nonce 的
+/// printf),以及终端控制序列(颜色、窗口标题、bracketed paste 开关)。前者占掉卡片
+/// 的前几行,后者在 `<pre>` 里显示成 `[0m` 之类的乱码,两者都白白吃掉回灌给 AI 的额度。
+///
+/// 回显只认本步 nonce 的那一行:printf 的格式串原样回显成 `KTEND:<nonce>:%s` 文本,
+/// 而真正的哨兵是 ESC 字节、早被 EndProbe 切掉了。找不到这一行(远端关了回显)就不砍。
+pub fn clean_output(raw: &str, nonce: &str) -> String {
+    let echo_mark = format!("KTEND:{nonce}:%s");
+    let body = match raw.find(&echo_mark) {
+        Some(at) => match raw[at..].find('\n') {
+            Some(nl) => &raw[at + nl + 1..],
+            None => "",
+        },
+        None => raw,
+    };
+    let plain = strip_ansi(body);
+    // 单独的 \r 是「回到行首」,后面的内容会覆盖前面的(进度条就是这么刷新的),
+    // 所以每行只留最后一个 \r 之后的部分;\r\n 里的 \r 也就顺带去掉了
+    plain
+        .split('\n')
+        .map(|line| {
+            let line = line.strip_suffix('\r').unwrap_or(line);
+            line.rsplit('\r').next().unwrap_or(line)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// 去掉终端控制序列:CSI(颜色、光标、私有模式)、OSC(窗口标题等)、
+/// DCS/APC/PM/SOS 字符串,以及其余双字节 ESC 序列和不可见控制字符。
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut it = s.chars().peekable();
+    while let Some(c) = it.next() {
+        if c != '\x1b' {
+            if !c.is_control() || matches!(c, '\n' | '\r' | '\t') {
+                out.push(c);
+            }
+            continue;
+        }
+        match it.next() {
+            // CSI:参数与中间字节之后,以 0x40..=0x7E 的终止字节结束
+            Some('[') => {
+                for c in it.by_ref() {
+                    if ('\x40'..='\x7e').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            // OSC / DCS / APC / PM / SOS:以 BEL 或 ST(ESC \)结束
+            Some(']' | 'P' | '_' | '^' | 'X') => {
+                while let Some(c) = it.next() {
+                    if c == '\x07' {
+                        break;
+                    }
+                    if c == '\x1b' && it.peek() == Some(&'\\') {
+                        it.next();
+                        break;
+                    }
+                }
+            }
+            // 其余 ESC x 双字节序列(字符集切换等)
+            _ => {}
+        }
+    }
+    out
+}
+
+/// 一步的回执通道
+pub type StepReply = tokio::sync::oneshot::Sender<std::result::Result<StepOutput, &'static str>>;
+
+/// 自动执行(只读)步骤等哨兵的上限。只读命令本该很快结束,超了多半是挂住了。
+///
+/// **批准的步骤没有上限**:`apt install`、`docker build` 可以合法地跑上好几分钟,
+/// 套个固定上限只会把正常的长命令报成失败。用户正看着它,要中断就在终端按 Ctrl-C。
+const AUTO_STEP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Ctrl-C 在终端输入流里的字节
+const CTRL_C: u8 = 0x03;
+
+/// 用户中断时上报的退出码:128 + SIGINT(2),与 shell 的约定一致
+const EXIT_INTERRUPTED: i32 = 130;
+
+struct Waiting {
+    probe: EndProbe,
+    reply: StepReply,
+    deadline: Option<std::time::Instant>,
+    nonce: String,
+}
+
+/// 一个会话里 agent 步骤的等待状态。会话主循环只负责把字节和事件喂进来。
+///
+/// 三种状态:空闲(可注入) / 等待某一步的哨兵 / 残留(上一步超时放弃了,
+/// 但它的命令可能还在远端跑)。残留状态**不靠计时器解除** —— 盲目放行会把下一条
+/// 命令敲进那个还在运行的程序里(比如 apt 的 `[Y/n]` 提示)。只有两件事能解除它:
+/// 迟到的哨兵到了,或用户在终端按了 Ctrl-C。
+#[derive(Default)]
+pub struct AgentGate {
+    waiting: Option<Waiting>,
+    stale: Option<EndProbe>,
+}
+
+impl AgentGate {
+    /// 登记一步。返回 true 表示可以注入命令;返回 false 时已经通过 `reply` 回了错误,
+    /// 调用方什么都不要发。
+    pub fn begin(&mut self, nonce: String, auto: bool, reply: StepReply, now: std::time::Instant) -> bool {
+        if self.waiting.is_some() {
+            let _ = reply.send(Err("AGENT_BUSY: 上一步还在执行"));
+            return false;
+        }
+        if self.stale.is_some() {
+            let _ = reply.send(Err(
+                "AGENT_BUSY_STALE: 上一步已超时,它的命令可能还在远端运行。等它结束,或在终端按 Ctrl-C 中断后再试。",
+            ));
+            return false;
+        }
+        self.waiting = Some(Waiting {
+            probe: EndProbe::new(&nonce),
+            reply,
+            deadline: auto.then(|| now + AUTO_STEP_TIMEOUT),
+            nonce,
+        });
+        true
+    }
+
+    /// 远端输出
+    pub fn on_output(&mut self, data: &[u8]) {
+        if let Some(stale) = self.stale.as_mut() {
+            if stale.push(data).is_some() {
+                self.stale = None;
+            }
+        }
+        if let Some(w) = self.waiting.as_mut() {
+            if let Some(step) = w.probe.push(data) {
+                let w = self.waiting.take().unwrap();
+                let _ = w.reply.send(Ok(step));
+            }
+        }
+    }
+
+    /// 用户在终端里的键入。Ctrl-C 会让 bash 中止整条命令列表,哨兵永远不会来 ——
+    /// 这一步就此结束,残留状态也随之解除。
+    pub fn on_user_input(&mut self, data: &[u8]) {
+        if !data.contains(&CTRL_C) {
+            return;
+        }
+        self.stale = None;
+        if let Some(w) = self.waiting.take() {
+            let (output, truncated) = w.probe.into_buffered();
+            let _ = w.reply.send(Ok(StepOutput { output, exit_code: EXIT_INTERRUPTED, truncated }));
+        }
+    }
+
+    /// 当前步骤的超时时刻;没有在等、或这一步不设上限时为 None
+    pub fn deadline(&self) -> Option<std::time::Instant> {
+        self.waiting.as_ref().and_then(|w| w.deadline)
+    }
+
+    /// 超时:把已收到的输出交出去,转入残留状态等它迟到的哨兵
+    pub fn on_deadline(&mut self) {
+        if let Some(w) = self.waiting.take() {
+            self.stale = Some(EndProbe::new(&w.nonce));
+            let (output, truncated) = w.probe.into_buffered();
+            let _ = w.reply.send(Ok(StepOutput { output, exit_code: -1, truncated }));
+        }
     }
 }
 
@@ -166,7 +343,7 @@ pub async fn exec_step(
             .ok_or_else(|| AppError(format!("AGENT_NO_SESSION: 会话不存在: {session_id}")))?;
         entry
             .ctl
-            .send(Ctl::AgentStep(wrap_command(command, !approved, &nonce), nonce.clone(), tx))
+            .send(Ctl::AgentStep(wrap_command(command, !approved, &nonce), nonce.clone(), !approved, tx))
             .map_err(|_| AppError("AGENT_SESSION_CLOSED: 会话已关闭".to_string()))?;
     }
     let step = rx
@@ -178,7 +355,7 @@ pub async fn exec_step(
         auto_ran: !approved,
         verdict: if local_ro { "readonly" } else { "needs_approval" }.into(),
         reason: String::new(),
-        output: step.output,
+        output: clean_output(&step.output, &nonce),
         exit_code: step.exit_code,
         truncated: step.truncated,
     })
@@ -191,7 +368,7 @@ mod tests {
     #[test]
     fn wrap_appends_apc_sentinel() {
         let w = wrap_command("ls -la", false, "n1");
-        assert!(w.starts_with("ls -la; printf "), "原命令须在前: {w}");
+        assert!(w.starts_with("{ ls -la\r\r}; printf "), "原命令须在前,且包在组里: {w:?}");
         assert!(w.contains("_KTEND:"), "须带哨兵标记: {w}");
         assert!(w.contains("_KTEND:n1:"), "须带 nonce: {w}");
         assert!(w.contains("\\033"), "须用八进制 ESC 而非裸字节: {w}");
@@ -336,6 +513,169 @@ mod tests {
         let (out, truncated) = p.into_buffered();
         assert!(!truncated, "没溢出不该报截断");
         assert_eq!(out, "short output\n");
+    }
+
+    /// 让真实的 bash 跑一遍包装后的命令,取出哨兵里的退出码。
+    ///
+    /// 注入时 `\r` 是回车键;`bash -c` 没有终端行规程,这里换成 `\n` 等价模拟。
+    fn run_wrapped(cmd: &str, auto: bool) -> Option<i32> {
+        let w = wrap_command(cmd, auto, "n1").replace('\r', "\n");
+        let out = std::process::Command::new("bash").arg("-c").arg(&w).output().ok()?;
+        let mut p = EndProbe::new("n1");
+        p.push(&out.stdout).map(|s| s.exit_code)
+    }
+
+    /// 批准的命令不过 cmdguard,命令尾部的语法不能吞掉哨兵。(#8)
+    ///
+    /// 旧写法 `{cmd}; printf …` 下:`#` 把哨兵变成注释;`cmd &; printf` 是语法错误,
+    /// 连原命令都不执行;行尾 `\` 把哨兵吞成续行。三种都等到 30 秒超时。
+    #[test]
+    fn sentinel_survives_trailing_shell_syntax() {
+        if std::process::Command::new("bash").arg("-c").arg("true").status().is_err() {
+            return; // 没有 bash 的环境跳过
+        }
+        for auto in [false, true] {
+            assert_eq!(run_wrapped("true # 启动服务", auto), Some(0), "行内注释 auto={auto}");
+            assert_eq!(run_wrapped("sleep 0 &", auto), Some(0), "行尾 & auto={auto}");
+            assert_eq!(run_wrapped("true \\", auto), Some(0), "行尾反斜杠 auto={auto}");
+            assert_eq!(run_wrapped("false", auto), Some(1), "退出码要透传 auto={auto}");
+            assert_eq!(run_wrapped("ls /nonexistent-kt", auto), Some(2), "auto={auto}");
+        }
+    }
+
+    // ---- clean_output:去掉终端控制序列与命令回显(#9) ----
+
+    use super::clean_output;
+
+    #[test]
+    fn clean_strips_colors_and_carriage_returns() {
+        assert_eq!(clean_output("\x1b[01;34mdir\x1b[0m\r\nfile\r\n", "n1"), "dir\nfile\n");
+    }
+
+    #[test]
+    fn clean_strips_osc_and_private_modes() {
+        // 窗口标题(OSC,BEL 结尾 / ST 结尾)与 bracketed paste 开关
+        assert_eq!(clean_output("\x1b]0;root@host: ~\x07ok\n", "n1"), "ok\n");
+        assert_eq!(clean_output("\x1b]2;t\x1b\\ok\n", "n1"), "ok\n");
+        assert_eq!(clean_output("\x1b[?2004lok\n", "n1"), "ok\n");
+    }
+
+    /// 真实 PTY 里抓到的字节:shell 先回显整条包装命令(含 PS2 续行),然后才是输出
+    #[test]
+    fn clean_drops_echoed_wrapper() {
+        let raw = "{ df -h\r\n\x1b[?2004l\r\x1b[?2004h> \r\n\x1b[?2004l\r\x1b[?2004h> }; printf '\\033_KTEND:n1:%s\\033\\\\' \"$?\"\r\n\x1b[?2004l\r/dev/sda1  50G  25G  50% /\r\n";
+        assert_eq!(clean_output(raw, "n1"), "/dev/sda1  50G  25G  50% /\n");
+    }
+
+    /// 只认本步 nonce 的回显行 —— 输出里别的 KTEND 文本是数据,不能据此砍掉前面的内容
+    #[test]
+    fn clean_keeps_output_when_no_echo_of_this_step() {
+        let raw = "line1\nprintf '\\033_KTEND:other:%s'\nline3\n";
+        assert_eq!(clean_output(raw, "n1"), raw);
+    }
+
+    // ---- AgentGate:一个会话里 agent 步骤的等待状态(#5) ----
+
+    use super::AgentGate;
+    use std::time::{Duration, Instant};
+    use tokio::sync::oneshot;
+
+    type Rx = oneshot::Receiver<Result<StepOutput, &'static str>>;
+
+    fn begin(g: &mut AgentGate, auto: bool) -> (bool, Rx) {
+        let (tx, rx) = oneshot::channel();
+        (g.begin("n1".into(), auto, tx, Instant::now()), rx)
+    }
+
+    #[test]
+    fn gate_completes_on_sentinel() {
+        let mut g = AgentGate::default();
+        let (ok, mut rx) = begin(&mut g, true);
+        assert!(ok);
+        g.on_output(b"hello\n\x1b_KTEND:n1:0\x1b\\");
+        let got = rx.try_recv().unwrap().unwrap();
+        assert_eq!((got.output.as_str(), got.exit_code), ("hello\n", 0));
+        assert!(begin(&mut g, true).0, "上一步收完了,下一步应能注入");
+    }
+
+    #[test]
+    fn gate_refuses_while_waiting() {
+        let mut g = AgentGate::default();
+        let (_ok, _rx) = begin(&mut g, false);
+        let (ok, mut rx2) = begin(&mut g, true);
+        assert!(!ok, "上一步还在等,不能注入");
+        assert!(rx2.try_recv().unwrap().is_err(), "要回一个 BUSY 错误");
+    }
+
+    /// 批准的命令(apt install、docker build)可以跑很久,不能套 30 秒上限 ——
+    /// 超时之后它还在跑,任务却被报成失败。
+    #[test]
+    fn approved_step_has_no_deadline() {
+        let mut g = AgentGate::default();
+        let _ = begin(&mut g, false);
+        assert_eq!(g.deadline(), None);
+    }
+
+    #[test]
+    fn auto_step_has_deadline() {
+        let mut g = AgentGate::default();
+        let before = Instant::now();
+        let _ = begin(&mut g, true);
+        let d = g.deadline().expect("自动执行的只读命令要有上限");
+        assert!(d >= before + Duration::from_secs(29));
+    }
+
+    /// 超时之后命令还在远端跑。在它的哨兵到来之前,无论过多久都不能注入新命令 ——
+    /// 旧实现 120 秒后强制放行,新命令就会被敲进那个还在运行的程序里。
+    #[test]
+    fn timed_out_step_blocks_until_its_sentinel() {
+        let mut g = AgentGate::default();
+        let (_, mut rx) = begin(&mut g, true);
+        g.on_output(b"partial");
+        g.on_deadline();
+        let got = rx.try_recv().unwrap().unwrap();
+        assert_eq!((got.output.as_str(), got.exit_code), ("partial", -1));
+
+        assert_eq!(g.deadline(), None, "残留状态不能靠计时器解除");
+        let (ok, mut rx2) = begin(&mut g, true);
+        assert!(!ok);
+        assert!(rx2.try_recv().unwrap().unwrap_err().contains("Ctrl-C"), "要告诉用户怎么解除");
+
+        g.on_output(b"\x1b_KTEND:n1:0\x1b\\"); // 迟到的哨兵
+        assert!(begin(&mut g, true).0, "收到迟到的哨兵后才放行");
+    }
+
+    /// 用户在终端按 Ctrl-C:bash 会中止整条命令列表,哨兵永远不来。
+    /// 这是用户明确表示「不跑了」,残留状态随之解除。
+    #[test]
+    fn ctrl_c_clears_stale_state() {
+        let mut g = AgentGate::default();
+        let _ = begin(&mut g, true);
+        g.on_deadline();
+        g.on_user_input(b"\x03");
+        assert!(begin(&mut g, true).0);
+    }
+
+    /// 等待中按 Ctrl-C:这一步立刻结束,退出码按 130(SIGINT)算,已收到的输出照交
+    #[test]
+    fn ctrl_c_during_wait_ends_the_step() {
+        let mut g = AgentGate::default();
+        let (_, mut rx) = begin(&mut g, false);
+        g.on_output(b"Reading package lists...");
+        g.on_user_input(b"\x03");
+        let got = rx.try_recv().unwrap().unwrap();
+        assert_eq!(got.exit_code, 130);
+        assert_eq!(got.output, "Reading package lists...");
+        assert!(begin(&mut g, true).0);
+    }
+
+    /// 普通按键不影响等待
+    #[test]
+    fn ordinary_input_does_not_end_the_step() {
+        let mut g = AgentGate::default();
+        let (_, mut rx) = begin(&mut g, false);
+        g.on_user_input(b"y\r"); // 比如回答 apt 的 [Y/n]
+        assert!(rx.try_recv().is_err(), "还没结束");
     }
 
     /// wrap_command 的拼接顺序 —— 只查子串会漏掉位置错误
