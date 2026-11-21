@@ -25,3 +25,5 @@ server/dist/
 .claude/
 .scratch/
 .superpowers/
+# 设计与实施计划文档:只留本地,不进仓库
+docs/superpowers/

@@ -2,14 +2,13 @@
   "name": "kiteterm",
   "private": true,
   "version": "0.1.0",
-  "description": "KiteTerm — 桌面端 SSH 终端(desktop/)与管理系统(server/)",
+  "description": "KiteTerm — 桌面端 SSH 终端(desktop/)",
   "packageManager": "pnpm@10.33.2",
   "scripts": {
     "install:desktop": "pnpm -C desktop install",
     "dev": "pnpm -C desktop dev",
     "build": "pnpm -C desktop build",
     "tauri": "pnpm -C desktop tauri",
-    "test": "pnpm -C desktop test",
-    "server": "cargo run --manifest-path server/Cargo.toml"
+    "test": "pnpm -C desktop test"
   }
 }
