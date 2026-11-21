@@ -58,7 +58,7 @@ cargo run --manifest-path server/Cargo.toml   # 或 pnpm server
 #   用户与同步:用户列表/搜索、同步启停开关、强制下线(吊销令牌)、按用户存储用量、
 #     手工标记邮箱已验证、重置某用户 2FA、注册策略与邀请码、新用户默认同步开关、平台统计
 #   S3 存储:端点/区域/桶/密钥/前缀/Path-style/STS 模式 + 保存即热生效 + 连通性测试
-#   功能开关:11 项两类(见下文「功能开关」一节)
+#   功能开关:12 项两类(见下文「功能开关」一节)
 # 账户 API:POST /api/register、GET /api/register/policy、POST /api/login、POST /api/logout、
 #   GET /api/me、GET /api/sync/credentials、GET /api/features、
 #   POST /api/verify-email、POST /api/verify-email/resend、
@@ -97,8 +97,9 @@ desktop/                    ── 客户端(macOS / Windows 桌面端)
       hosts/                  主机屏拆分:HostRow / HostModal / GroupsModal / PasswordModal
       sync/                   同步屏拆分:账户 / 范围 / 设备 / 加密 / 恢复短语等卡片
     components/             Button、Switch、Badge 等基础组件 + AI 面板(components/ai/)
-    lib/                    无依赖工具:nlDetect(白话识别)、format(字节/时长格式化)
-    stores/                 ui / data / session / transfer / sync / monitor / ai
+    lib/                    无依赖工具:nlDetect(白话识别)、format(字节/时长格式化)、
+                              agentEngine(AI 分步执行循环,依赖注入,node 直接测)
+    stores/                 ui / data / session / transfer / sync / monitor / ai / agent / certs / features
     ipc/                    IPC 契约 + Tauri 实现(桌面端唯一实现)
     theme/                  设计系统四层:
                               token           colors / typography / spacing / effects / motion / terminal
@@ -108,6 +109,8 @@ desktop/                    ── 客户端(macOS / Windows 桌面端)
                               terminal.ts     读取 --term-* 变量组装 xterm 调色板
   src-tauri/
     src/ssh.rs              russh 会话、PTY、输出事件流
+    src/agent.rs            AI 分步执行:命令包装与退出码哨兵、单步等待状态机、输出清理
+    src/cmdguard.rs         AI 分步执行的只读判定(自动执行的安全边界)
     src/sftp.rs             SFTP 列目录 + 传输队列(进度事件、重试)
     src/forward.rs          L 本地转发 / D 动态 SOCKS5(实时流量统计)
     src/vault.rs            密钥生成(Ed25519/RSA4096)/导入/指纹,私钥经设备密钥加密落库
@@ -122,7 +125,7 @@ server/                     ── 管理系统(Web)
   Cargo.toml                独立 crate,与客户端零代码共享
   src/main.rs               axum:账户注册/登录、注册策略与邀请码、令牌、同步授权、S3 凭据下发
   src/sts.rs                STS AssumeRole(手写 SigV4),按用户前缀下发限权临时凭据
-  src/features.rs           功能开关注册表:11 项两类(产品开关受总闸约束 / 安全策略恒生效),camelCase 下发与管理接口读写
+  src/features.rs           功能开关注册表:12 项两类(产品开关受总闸约束 / 安全策略恒生效),camelCase 下发与管理接口读写
   src/mail.rs               邮箱验证码发信:SMTP 未配置时验证码打服务端日志
   src/storage.rs            S3 存储配置:DB 优先、环境变量仅作初值,运行期热改(RwLock)
   src/totp.rs               RFC 6238 TOTP:密钥生成、6 位码校验、otpauth:// URL
@@ -151,12 +154,19 @@ server/                     ── 管理系统(Web)
   识别规则偏保守(首词是已知命令、含 shell 语法一律按命令执行;加 `?` 前缀可强制走 AI),
   可在设置里关闭;
   右栏对话可读取会话输出,回复中的命令一键「在终端运行」✅
+- **AI 分步执行(任务模式)**:右栏 AI 面板切到「任务」,给一个目标,AI 逐步给出命令并根据每步的输出决定下一步。
+  只读命令自动执行,其余停下来等你批准(破坏性命令需二次确认);每步一张卡片,命令原文与 AI 的描述在视觉上分开。
+  **只读判定在本地做,不信 AI 的声明**(`cmdguard.rs`):白名单命令 + 参数检查,含管道/重定向/引号/变量展开等
+  会改写参数的 shell 语法一律要批准;AI 的「只读」声明只能让执行更谨慎,不能更宽松。
+  命令尾部挂带随机 nonce 的隐形哨兵取退出码;终端输出包进每轮随机界标的数据块再交给 AI,防 prompt 注入。
+  闸门:连续失败 2 次或满 12 步交回给你;自动执行的步骤 30 秒超时,批准的步骤不限时,在终端按 Ctrl-C 可中断。
+  目前仅支持 SSH 会话 ✅
 
 - **账户注册**:平台三档注册策略(开放 / 仅邀请码 / 关闭),邀请码支持次数上限、有效期、备注与停用;
   邮箱结构校验 + 口令强度规则(长度、字符种类、常见弱口令黑名单,前后端同规则)、确认密码与实时强度提示;
   按 IP 滑动窗口限流(前置于校验以防邮箱枚举);新用户默认同步开关可配;注册成功即签发令牌免二次登录 ✅
 
-**功能开关**:11 项由管理平台统一下发,管理控制台「功能开关」页可随时改,分两类:
+**功能开关**:12 项由管理平台统一下发,管理控制台「功能开关」页可随时改,分两类:
 
 | 开关 | 类别 | 默认 | 受总闸约束 | 拦截点 / 客户端行为 |
 |---|---|---|---|---|
@@ -168,12 +178,13 @@ server/                     ── 管理系统(Web)
 | `ai_command` | 产品开关(AI 子项) | 开 | 是 | 客户端:白话识别/命令生成隐藏,与 `ai` 取与 |
 | `ai_diagnose` | 产品开关(AI 子项) | 开 | 是 | 客户端:失败输出诊断提示隐藏,与 `ai` 取与 |
 | `ai_summary` | 产品开关(AI 子项) | 开 | 是 | 客户端:输出摘要模式(`⌘⇧S`)隐藏,与 `ai` 取与 |
+| `ai_agent` | 产品开关(AI 子项) | 开 | 是 | 客户端:AI 面板「任务」模式(分步执行)不可用,进行中的任务立即停止,与 `ai` 取与。会执行命令,与前三项「生成文本给人看」性质不同,故单独可禁 |
 | `email_verify` | 安全策略 | 关 | 否(恒生效) | 服务端:`/api/sync/credentials` 返回 403 `EMAIL_UNVERIFIED`;未验证邮箱仍可登录,只是拿不到同步凭据 |
 | `totp_required` | 安全策略 | 关 | 否(恒生效) | 服务端:用户本人已绑定 2FA 时登录要求验证码(401 `TOTP_REQUIRED`,与本开关无关);本开关开启且用户未绑定时,登录成功但响应体标记 `totpSetupRequired`,同步接口返回 403 `TOTP_SETUP_REQUIRED`;解绑返回 403 `TOTP_ENFORCED` |
 | `multi_device` | 安全策略 | 开 | 否(恒生效) | 服务端:关闭时登录成功即吊销该用户其余设备已持有的令牌 |
 
-- 8 个「产品开关」受总闸约束;3 个「安全策略」(邮箱验证、强制 2FA、多设备)不受总闸影响,始终按各自设置生效。
-- **总闸(部署配置)**:`KITE_FEATURE_GATING=on|off`,**默认 `off`**。关闭时上表 8 个产品开关
+- 9 个「产品开关」受总闸约束;3 个「安全策略」(邮箱验证、强制 2FA、多设备)不受总闸影响,始终按各自设置生效。
+- **总闸(部署配置)**:`KITE_FEATURE_GATING=on|off`,**默认 `off`**。关闭时上表 9 个产品开关
   全部失效(视为恒开)—— 客户端不隐藏任何入口,服务端也不据此拦截,平台只当账户与凭据的中枢;
   3 个安全策略照常生效。做成部署配置而非控制台开关,是因为它决定这套管控要不要存在,属于部署形态,
   不该被日常运维误点;控制台会把总闸状态显示出来并置灰那些受约束的开关,免得以为"点了没反应"。
@@ -182,7 +193,7 @@ server/                     ── 管理系统(Web)
   客户端启动时先读本地缓存上屏,再后台拉一次刷新,此后每 **60 秒**轮询一次(全应用只起一个定时器)。
 - **取值顺序**:能连上平台 → 用刚拉到的并落缓存;连不上但有缓存 → 沿用上次下发的
   (断网既不该把已被管控的机器一键解锁,也不该把没被管控的机器忽然锁上);
-  **连不上且从未拉到过 → 按未启用门禁处理**,8 个产品开关全开,3 个安全策略按各自默认值
+  **连不上且从未拉到过 → 按未启用门禁处理**,9 个产品开关全开,3 个安全策略按各自默认值
   (邮箱验证、强制 2FA 默认关,多设备默认开)。
   最后一条是刻意的:没配过平台的纯本地用户不该被一套他从未启用的管控挡住。
 - 「设置 → 管理平台」里可随时改平台地址并立即重新拉取,页面同时显示总闸与各项状态。
