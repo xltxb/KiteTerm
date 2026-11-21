@@ -10,7 +10,7 @@
 | 组件 | 形态 | 说明 |
 |---|---|---|
 | **KiteTerm(APP)** | **macOS / Windows 桌面端** | 无 Web 版本 —— SSH/SFTP/密钥/同步能力均由本地 Rust 核心提供,前端只在 Tauri WebView 内运行;直接用浏览器打开开发服务器会显示提示页而非应用 |
-| **管理平台** | **Web** | `server/` 提供管理控制台(`/admin`)与账户、授权、凭据下发接口;也可部署到 Cloudflare Workers,见 `server-worker/README.md` |
+| **管理平台** | **Web** | 独立的私有仓库,提供管理控制台与账户、授权、凭据下发接口;客户端只通过 HTTP 接口与它往来 |
 
 ## 技术栈
 
@@ -25,11 +25,11 @@
 | 存储 | SQLite(rusqlite,配置/片段/密钥/录制索引) |
 | 加密 | XChaCha20-Poly1305 + Argon2id(密钥落库、同步 E2E) |
 | 同步 | **管理平台管控**:注册/登录后由平台下发 S3 凭据(平台持桶,按用户前缀隔离);桶内仅密文,平台零知识 |
-| 管理平台 | `server/`(Rust axum + SQLite):账户注册/登录、注册策略与邀请码、令牌、**功能开关下发**、同步授权、凭据下发 + 内嵌 Web 管理控制台(`/admin`) |
+| 管理平台 | 独立私有仓库:账户注册/登录、注册策略与邀请码、令牌、**功能开关下发**、同步授权、凭据下发 + Web 管理控制台 |
 
 ## 开发
 
-客户端在 `desktop/`,管理系统在 `server/`,两者互不依赖、各自独立构建。
+本仓库只含桌面客户端(`desktop/`)。管理平台在独立的私有仓库,两者零代码共享,只通过 HTTP 接口往来。
 根目录只放一层命令转发,下面的 `pnpm` 命令在仓库根和 `desktop/` 里都能跑。
 
 ```bash
@@ -41,34 +41,8 @@ pnpm tauri dev
 # 构建(macOS 产出 .app/.dmg;Windows 产出 .msi/.nsis,需在对应系统上执行)
 pnpm tauri build
 
-# 管理平台(账户/同步授权/凭据下发;S3 指向任意兼容存储,如本地 MinIO)
-KITE_ADMIN_KEY=<管理密钥> \
-S3_ENDPOINT=http://127.0.0.1:19000 S3_BUCKET=vela-sync \
-S3_ACCESS_KEY=<ak> S3_SECRET_KEY=<sk> \
-cargo run --manifest-path server/Cargo.toml   # 或 pnpm server
-# 可选:KITE_FEATURE_GATING=on|off       功能门禁总闸,默认 off(关闭时产品开关全部失效,安全策略类不受影响)
-#       KITE_REGISTRATION=open|invite|closed 注册策略初值(之后以管理后台设置为准)
-#       KITE_REGISTER_LIMIT=5            同一 IP 每小时注册尝试上限
-#       S3_PREFIX / S3_PATH_STYLE / KITE_STS=auto|require|off  存储配置的其余初值
-#       KITE_SMTP_HOST/PORT/USER/PASS/FROM  邮箱验证码发信配置;不设置 HOST 时验证码只打进服务端日志
-# 以上 S3_* 与 KITE_STS 仅在数据库尚无存储配置时生效 —— 控制台「S3 存储」页保存后以 DB 为准,不再读环境变量
 # 应用内平台地址固定为 https://m.kiteterm.com,不提供修改入口;
 #   本地联调用 KITE_PLATFORM_URL=http://127.0.0.1:8787 pnpm tauri dev 覆盖(公网地址强制 https,http 仅限本机)
-# Web 管理控制台:http://127.0.0.1:8787/admin(输入管理密钥)—— 三个页签:
-#   用户与同步:用户列表/搜索、同步启停开关、强制下线(吊销令牌)、按用户存储用量、
-#     手工标记邮箱已验证、重置某用户 2FA、注册策略与邀请码、新用户默认同步开关、平台统计
-#   S3 存储:端点/区域/桶/密钥/前缀/Path-style/STS 模式 + 保存即热生效 + 连通性测试
-#   功能开关:12 项两类(见下文「功能开关」一节)
-# 账户 API:POST /api/register、GET /api/register/policy、POST /api/login、POST /api/logout、
-#   GET /api/me、GET /api/sync/credentials、GET /api/features、
-#   POST /api/verify-email、POST /api/verify-email/resend、
-#   POST /api/2fa/setup、POST /api/2fa/enable、POST /api/2fa/disable
-# 管理 API(X-Admin-Key):GET /api/admin/stats、GET|POST /api/admin/settings、
-#   GET|POST /api/admin/storage、POST /api/admin/storage/test、
-#   GET|POST /api/admin/invites、POST /api/admin/invites/{code}/disable、
-#   GET /api/admin/users、POST /api/admin/users/{email}/sync {enabled}、
-#   POST /api/admin/users/{email}/revoke、GET /api/admin/users/{email}/usage、
-#   POST /api/admin/users/{email}/verify、POST /api/admin/users/{email}/2fa/reset
 ```
 
 > 开发提示:`pnpm tauri dev` 建议加 `KITE_NO_KEYCHAIN=1`。每次重新编译都会产生新二进制,
@@ -82,10 +56,8 @@ cargo run --manifest-path server/Cargo.toml   # 或 pnpm server
 
 ## 目录结构
 
-客户端与管理系统是两个顶层目录,零代码共享 —— 只通过 HTTP 接口往来。
-
 ```
-package.json         # 只做命令转发(pnpm dev/build/tauri/test → desktop,pnpm server → server)
+package.json         # 只做命令转发(pnpm dev/build/tauri/test → desktop)
 design/              # 一次性设计产物(不入库):原型 prototype.html、图标 icon.svg、说明 NOTES.md
 
 desktop/                    ── 客户端(macOS / Windows 桌面端)
@@ -120,16 +92,6 @@ desktop/                    ── 客户端(macOS / Windows 桌面端)
     src/sync.rs             S3 兼容桶 E2E 加密增量同步
     src/db.rs               SQLite 模型(hosts/keys/snippets/forwards/recordings)
     examples/               集成自检(见文末)
-
-server/                     ── 管理系统(Web)
-  Cargo.toml                独立 crate,与客户端零代码共享
-  src/main.rs               axum:账户注册/登录、注册策略与邀请码、令牌、同步授权、S3 凭据下发
-  src/sts.rs                STS AssumeRole(手写 SigV4),按用户前缀下发限权临时凭据
-  src/features.rs           功能开关注册表:12 项两类(产品开关受总闸约束 / 安全策略恒生效),camelCase 下发与管理接口读写
-  src/mail.rs               邮箱验证码发信:SMTP 未配置时验证码打服务端日志
-  src/storage.rs            S3 存储配置:DB 优先、环境变量仅作初值,运行期热改(RwLock)
-  src/totp.rs               RFC 6238 TOTP:密钥生成、6 位码校验、otpauth:// URL
-  src/admin.html            内嵌 Web 管理控制台(include_str!,随二进制分发)
 ```
 
 ## 功能对照(PRD F1–F10)
@@ -210,9 +172,6 @@ server/                     ── 管理系统(Web)
 已知简化(与开发文档 3.x 的差异,均标注于代码注释):
 - 监控采样命令面向 Linux 远端(/proc);macOS 远端显示离线
 - Keychain 不可用的平台回退应用数据目录 0600 文件
-- MinIO 的 STS AssumeRole 需以非 root 服务账号运行平台(root 不可 AssumeRole)
-- S3 secret 与 TOTP 密钥明文存 SQLite(与此前明文环境变量同强度)
-- 未配 SMTP 时验证码打服务端日志,管理员可在控制台手工标记已验证
 - 录制同步整文件读入内存单次 PUT,无分片
 
 前端用例:`pnpm test`(白话识别规则的正反例 —— 中文/英文意图句判为白话,已知命令、
