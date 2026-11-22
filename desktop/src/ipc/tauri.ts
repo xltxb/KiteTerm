@@ -131,6 +131,8 @@ export function createTauriIpc(): KiteIpc {
       invoke("ai_ask", { messages, terminalContext, mode }),
     agentExec: (sessionId, command, aiReadonly, approved) =>
       invoke("agent_exec", { sessionId, command, aiReadonly, approved }),
+    agentCancel: (sessionId) => invoke("agent_cancel", { sessionId }),
+    agentReset: (sessionId) => invoke("agent_reset", { sessionId }),
 
     restoreTargets: () => invoke("restore_targets"),
     appQuit: () => invoke("app_quit"),

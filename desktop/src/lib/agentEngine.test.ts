@@ -19,6 +19,8 @@ function env() {
   const tasks: Record<string, AgentTask> = {};
   const asks: { content: string; d: Deferred<string> }[] = [];
   const execs: { sessionId: string; command: string; approved: boolean; d: Deferred<AgentStepResult> }[] = [];
+  const cancels: string[] = [];
+  const resets: string[] = [];
   let id = 0;
   const state = { enabled: true };
   const deps: EngineDeps = {
@@ -35,12 +37,14 @@ function env() {
       execs.push({ sessionId, command, approved, d });
       return d.promise;
     },
+    agentCancel: async (sessionId) => { cancels.push(sessionId); },
+    agentReset: async (sessionId) => { resets.push(sessionId); },
     hasProvider: () => true,
     enabled: () => state.enabled,
     newId: () => `id${++id}`,
     nonce: () => `nonce${++id}`,
   };
-  return { tasks, asks, execs, state, engine: createAgentEngine(deps) };
+  return { tasks, asks, execs, cancels, resets, state, engine: createAgentEngine(deps) };
 }
 
 const next = (command: string, readonly = true) =>
@@ -206,6 +210,83 @@ const needsApproval: AgentStepResult =
   const st = e.tasks.s.steps[0];
   check(st.state === "failed", "步骤标为失败");
   check(st.exitCode === undefined && (st.error ?? "").includes("会话可能已关闭"), "记下出错原因");
+}
+
+// ---- #18:后端说上一步可能还在运行时,这一步停下等用户确认终端已空闲 ----
+const BUSY_STALE = "AGENT_BUSY_STALE: 上一步的命令可能还在终端里运行。确认终端已回到命令提示符后,点「终端已空闲」继续。";
+{
+  const e = env();
+  void e.engine.start("s", "g");
+  await tick();
+  e.asks[0].d.resolve(next("df -h"));
+  await tick();
+  e.execs[0].d.reject(BUSY_STALE);
+  await tick();
+  const st = e.tasks.s.steps[0];
+  check(e.tasks.s.status === "waiting", "被阻塞时任务进入 waiting,而不是直接结束");
+  check(st.state === "pending" && st.blocked === "busy", "这一步标为被阻塞");
+  check((st.reason ?? "").includes("终端已空闲") && !(st.reason ?? "").includes("AGENT_BUSY"),
+    "原因给人看:写明怎么解除,不带错误码");
+
+  // 用户确认终端已空闲:先通知后端清掉残留,再按自动执行重试(approved=false)
+  void e.engine.approve("s", st.id);
+  await tick();
+  check(e.resets.length === 1 && e.resets[0] === "s", "先通知后端清掉残留");
+  check(e.execs.length === 2 && !e.execs[1].approved, "重试时不算用户批准,仍要过只读判定");
+  e.execs[1].d.resolve(ran("/dev/sda1 50%"));
+  await tick();
+  check(e.tasks.s.steps[0].state === "ok" && !e.tasks.s.steps[0].blocked, "重试成功后解除阻塞标记");
+  check(e.asks.length === 2, "照常推进到下一轮");
+}
+
+// ---- #18:被阻塞的步骤重试后如果需要批准,照常停下等批准 ----
+{
+  const e = env();
+  void e.engine.start("s", "g");
+  await tick();
+  e.asks[0].d.resolve(next("systemctl restart nginx", false));
+  await tick();
+  e.execs[0].d.reject(BUSY_STALE);
+  await tick();
+  void e.engine.approve("s", e.tasks.s.steps[0].id);
+  await tick();
+  e.execs[1].d.resolve(needsApproval);
+  await tick();
+  const st = e.tasks.s.steps[0];
+  check(st.state === "pending" && !st.blocked && st.reason === "不在只读白名单内", "转为普通的待批准");
+  void e.engine.approve("s", st.id);
+  await tick();
+  check(e.execs.length === 3 && e.execs[2].approved, "这次才是用户批准执行");
+  check(e.resets.length === 1, "普通批准不再通知后端清残留");
+}
+
+// ---- #18:停止时若有一步正在执行,要通知后端作废这一步 ----
+{
+  const e = env();
+  void e.engine.start("s", "g");
+  await tick();
+  e.asks[0].d.resolve(next("sudo -i", false));
+  await tick();
+  e.execs[0].d.resolve(needsApproval);
+  await tick();
+  e.engine.stop("s");
+  check(e.cancels.length === 0, "停在等批准时后端没有在等,不用通知");
+
+  const e2 = env();
+  void e2.engine.start("s", "g");
+  await tick();
+  e2.asks[0].d.resolve(next("df -h"));
+  await tick();
+  e2.engine.stop("s");
+  check(e2.cancels.length === 1 && e2.cancels[0] === "s", "有一步正在执行时通知后端作废");
+
+  const e3 = env();
+  void e3.engine.start("a", "g");
+  await tick();
+  e3.asks[0].d.resolve(next("df -h"));
+  await tick();
+  e3.engine.stopAll("管理员已关闭 AI 分步执行");
+  check(e3.cancels.length === 1, "stopAll 同样通知");
 }
 
 if (failed > 0) {
