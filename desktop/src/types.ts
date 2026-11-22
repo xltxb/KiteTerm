@@ -212,6 +212,8 @@ export interface AgentStepResult {
   exitCode: number;
   /** 输出超了上限、前半截被丢掉了 —— 界面要标出来,别让人以为这就是全部 */
   truncated: boolean;
+  /** 这一步怎么结束的。timeout / interrupted 时退出码(-1 / 130)只是占位 */
+  endedBy: "exit" | "timeout" | "interrupted";
 }
 
 /** 管理平台账户 */

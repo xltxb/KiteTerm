@@ -110,6 +110,8 @@ pub fn run() {
             commands::session_resize,
             commands::session_close,
             commands::agent_exec,
+            commands::agent_cancel,
+            commands::agent_reset,
             commands::sftp_list,
             commands::local_list,
             commands::local_home,

@@ -149,7 +149,7 @@ pub fn open_local_session(app: AppHandle, manager: Arc<SessionManager>) -> Resul
                 Ctl::SendFiles(_) | Ctl::ReceiveInto(_) | Ctl::DropUpload(_) | Ctl::CancelTransfer => {}
                 // 本地会话暂不支持 AI 分步执行,直接丢掉 —— sender 一 drop,
                 // 等在另一头的 exec_step 就会收到 AGENT_STEP_ABORTED
-                Ctl::AgentStep(..) => {}
+                Ctl::AgentStep(..) | Ctl::AgentCancel | Ctl::AgentReset => {}
             }
         }
         let _ = child.kill();

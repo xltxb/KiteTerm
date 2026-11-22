@@ -68,11 +68,6 @@ async fn connect_full(
     (handle, r_targets)
 }
 
-/// 找一个当前空闲的本机端口(绑定后立即释放)。R 转发要事先指定远端监听端口
-async fn free_port() -> u16 {
-    let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    l.local_addr().unwrap().port()
-}
 
 /// 造一对互联的 TcpStream:返回 (交给被测函数的一端, 测试自己持有的一端)
 async fn stream_pair() -> (TcpStream, TcpStream) {
@@ -210,19 +205,20 @@ async fn remote_forward_pipes_server_side_connections_to_local_target() {
     let echo_port = spawn_echo_server().await;
     let ssh_port = spawn_ssh_server().await;
     let (handle, r_targets) = connect_full("remote", ssh_port).await;
-    let remote_port = free_port().await;
     let (up, down) = counters();
 
-    open_remote_forward(
+    // 端口传 0 由服务器分配:先取空闲端口再让服务器去绑,两步之间可能被别人抢走(#20)
+    let remote_port = open_remote_forward(
         &handle,
         &r_targets,
-        remote_port,
+        0,
         &format!("127.0.0.1:{echo_port}"),
         up.clone(),
         down.clone(),
     )
     .await
     .expect("服务器应接受 tcpip-forward");
+    assert_ne!(remote_port, 0, "应返回服务器实际分配的端口");
 
     // 扮演服务器那一侧的用户:连服务器上被监听的端口
     let mut client = TcpStream::connect(("127.0.0.1", remote_port)).await.unwrap();
@@ -243,13 +239,12 @@ async fn remote_forward_pipes_server_side_connections_to_local_target() {
 async fn remote_forward_rejects_unregistered_port() {
     let ssh_port = spawn_ssh_server().await;
     let (handle, _r_targets) = connect_full("remote-unreg", ssh_port).await;
-    let remote_port = free_port().await;
 
     // 绕过 open_remote_forward:只请求远端监听,不登记本地目标
-    handle
-        .tcpip_forward("127.0.0.1", remote_port as u32)
+    let remote_port = handle
+        .tcpip_forward("127.0.0.1", 0)
         .await
-        .expect("服务器应接受 tcpip-forward");
+        .expect("服务器应接受 tcpip-forward") as u16;
 
     let mut client = TcpStream::connect(("127.0.0.1", remote_port)).await.unwrap();
     let _ = client.write_all(b"x").await;
@@ -268,11 +263,11 @@ async fn dropping_the_connection_stops_the_remote_listener() {
     let echo_port = spawn_echo_server().await;
     let ssh_port = spawn_ssh_server().await;
     let (handle, r_targets) = connect_full("remote-drop", ssh_port).await;
-    let remote_port = free_port().await;
     let (up, down) = counters();
-    open_remote_forward(&handle, &r_targets, remote_port, &format!("127.0.0.1:{echo_port}"), up, down)
-        .await
-        .expect("服务器应接受 tcpip-forward");
+    let remote_port =
+        open_remote_forward(&handle, &r_targets, 0, &format!("127.0.0.1:{echo_port}"), up, down)
+            .await
+            .expect("服务器应接受 tcpip-forward");
     assert!(TcpStream::connect(("127.0.0.1", remote_port)).await.is_ok(), "转发生效时应能连上");
 
     drop(handle);

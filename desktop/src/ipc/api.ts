@@ -198,6 +198,10 @@ export interface KiteIpc {
     aiReadonly: boolean,
     approved: boolean,
   ): Promise<AgentStepResult>;
+  /** AI 分步执行:任务面板点了停止,后端当前这一步作废 */
+  agentCancel(sessionId: string): Promise<void>;
+  /** AI 分步执行:用户确认终端已空闲,后端清掉等待与残留 */
+  agentReset(sessionId: string): Promise<void>;
 
   // ---- 会话恢复 / 退出 ----
   restoreTargets(): Promise<string[]>;

@@ -14,14 +14,18 @@ export interface AgentStep {
   /** AI 自己的声明 */
   aiReadonly: boolean;
   state: "pending" | "running" | "ok" | "failed" | "skipped";
-  /** 本地判定为需批准时的原因 */
+  /** 本地判定为需批准时的原因;被阻塞时是给用户看的解除办法 */
   reason?: string;
+  /** 后端说上一步可能还在终端里运行(BUSY),这一步没能执行。等用户确认终端已空闲后重试 */
+  blocked?: "busy";
   output?: string;
   exitCode?: number;
   /** 执行本身出错(会话断开等),没有退出码 —— 卡片显示这个而不是空的退出码 */
   error?: string;
   /** 输出超了上限、前半截被丢掉了 —— 卡片要标出来,别让人(和 AI)以为这就是全部 */
   truncated?: boolean;
+  /** 这一步怎么结束的。timeout / interrupted 时退出码只是占位,AI 与卡片都要看这个 */
+  endedBy?: AgentStepResult["endedBy"];
   /** AI 对这步输出的解读 */
   analysis?: string;
   /** 第几次尝试(自我修正时 > 1) */
@@ -58,6 +62,10 @@ export interface EngineDeps {
   allSessionIds(): string[];
   aiAsk(messages: ChatMessage[]): Promise<string>;
   agentExec(sessionId: string, command: string, aiReadonly: boolean, approved: boolean): Promise<AgentStepResult>;
+  /** 通知后端:正在执行的这一步作废(命令可能还在跑,后端转入残留状态) */
+  agentCancel(sessionId: string): Promise<void>;
+  /** 通知后端:用户确认终端已回到命令提示符,清掉等待与残留 */
+  agentReset(sessionId: string): Promise<void>;
   /** 是否配置了可用的 AI 模型 */
   hasProvider(): boolean;
   /** 管理员是否允许 AI 分步执行。任务进行中也可能被关掉,循环每轮都要看 */
@@ -98,6 +106,13 @@ function describeStep(step: AgentStep, n: number, nonce: string, limit: number):
     return lines.join("\n");
   }
   lines.push(`退出码: ${step.exitCode}`);
+  // 退出码 -1 / 130 本身说不清怎么回事:不写明的话,AI 会把还在跑的命令当成已失败、
+  // 马上重试同一条,结果撞上后端的残留状态(#19)
+  if (step.endedBy === "timeout") {
+    lines.push("结果: 等待超时,命令可能仍在终端里运行,上面的退出码只是占位。不要马上重试同一条命令。");
+  } else if (step.endedBy === "interrupted") {
+    lines.push("结果: 已被用户中断(Ctrl-C 或停止),上面的退出码只是占位。");
+  }
   lines.push(`--- BEGIN TERMINAL OUTPUT ${nonce} ---`);
   // 只在真截断时才加这一行 —— 缓冲溢出后前半截已被丢弃,AI 必须知道
   // 自己看到的不是完整输出,否则会据此做出错误判断。
@@ -121,11 +136,16 @@ function buildPrompt(task: AgentTask, nonce: string): string {
   return [`目标: ${task.goal}`, `本轮数据块标识: ${nonce}`, "已执行的步骤(从早到晚):", ...blocks].join("\n\n");
 }
 
+/** 去掉 ipc 错误前面的 `Error:` 与 `ERROR_CODE:`,只留给人看的那句 */
+function stripCode(e: unknown): string {
+  return String(e).replace(/^(?:Error:\s*)?[A-Za-z_]+:\s*/, "");
+}
+
 /** 把 ipc 抛出的错误整理成用户能看懂的文案,与 stores/ai 里的同名逻辑保持一致。 */
 export function friendly(e: unknown): string {
   const s = String(e);
   if (s.includes("AI_NOT_CONFIGURED")) return "尚未配置可用的 AI 模型 —— 点右上角齿轮添加。";
-  return "请求失败:" + s.replace(/^(?:Error:\s*)?[A-Za-z_]+:\s*/, "");
+  return "请求失败:" + stripCode(s);
 }
 
 export function createAgentEngine(deps: EngineDeps) {
@@ -155,13 +175,59 @@ export function createAgentEngine(deps: EngineDeps) {
   function settle(sessionId: string, runId: string, stepId: string, r: AgentStepResult) {
     const ok = r.exitCode === 0;
     patchStep(sessionId, runId, stepId, {
+      blocked: undefined,
       state: ok ? "ok" : "failed",
       output: r.output,
       exitCode: r.exitCode,
       truncated: r.truncated,
+      endedBy: r.endedBy,
     });
     const t = taskOf(sessionId, runId);
     if (t) patch(sessionId, runId, { consecutiveFailures: ok ? 0 : t.consecutiveFailures + 1 });
+  }
+
+  /** 执行一步并落结果。返回 "next" 表示可以继续问 AI;"halt" 表示停下了 ——
+   *  等用户批准、等用户确认终端已空闲,或任务已经结束。 */
+  async function execute(
+    sessionId: string,
+    runId: string,
+    step: AgentStep,
+    approved: boolean,
+  ): Promise<"next" | "halt"> {
+    let r: AgentStepResult;
+    try {
+      r = await deps.agentExec(sessionId, step.command, step.aiReadonly, approved);
+    } catch (e) {
+      if (String(e).includes("AGENT_BUSY")) {
+        // 上一步的命令可能还在终端里运行(#18)。不能直接结束任务 —— 停下来,让用户看一眼
+        // 终端,确认回到命令提示符后点「终端已空闲」,approve() 会通知后端清掉残留再重试
+        const t = taskOf(sessionId, runId);
+        if (!t || t.stopped) return "halt";
+        patchStep(sessionId, runId, step.id, { state: "pending", blocked: "busy", reason: stripCode(e) });
+        patch(sessionId, runId, { running: false, status: "waiting" });
+        return "halt";
+      }
+      // 会话已关闭 / SSH 掉线 / 已中止等:后端会返回 Err,不能让任务永远卡在 running
+      patchStep(sessionId, runId, step.id, { state: "failed", error: friendly(e) });
+      finish(sessionId, runId, friendly(e));
+      return "halt";
+    }
+
+    if (r.verdict === "needs_approval" && !r.autoRan) {
+      // 用户可能正好在这个窗口点了停止 —— stop() 已经把 status 置成了终态,
+      // 这里不能把它拉回 waiting:卡片会重新出现,而 stopped 守卫又让批准/跳过
+      // 点了没反应。taskOf 对不上(已开新任务)时同样直接交回。
+      const t = taskOf(sessionId, runId);
+      if (!t || t.stopped) return "halt";
+      // 停下等用户点批准,approve() 会续上循环。status 必须显式置成 waiting ——
+      // return 之后再没有代码会来补终态。
+      patchStep(sessionId, runId, step.id, { state: "pending", blocked: undefined, reason: r.reason });
+      patch(sessionId, runId, { running: false, status: "waiting" });
+      return "halt";
+    }
+
+    settle(sessionId, runId, step.id, r);
+    return "next";
   }
 
   /** 推进循环,直到需要用户介入或闸门触发。每次 await 回来都要重新确认任务还是自己的。 */
@@ -210,29 +276,7 @@ export function createAgentEngine(deps: EngineDeps) {
       const cur = taskOf(sessionId, runId)!;
       deps.putTask(sessionId, { ...cur, steps: [...cur.steps, step] });
 
-      let r: AgentStepResult;
-      try {
-        r = await deps.agentExec(sessionId, next.command, next.readonly, false);
-      } catch (e) {
-        // 会话已关闭 / SSH 掉线 / 已中止等:后端会返回 Err,不能让任务永远卡在 running
-        patchStep(sessionId, runId, step.id, { state: "failed", error: friendly(e) });
-        return finish(sessionId, runId, friendly(e));
-      }
-
-      if (r.verdict === "needs_approval" && !r.autoRan) {
-        // 用户可能正好在这个窗口点了停止 —— stop() 已经把 status 置成了终态,
-        // 这里不能把它拉回 waiting:卡片会重新出现,而 stopped 守卫又让批准/跳过
-        // 点了没反应。taskOf 对不上(已开新任务)时同样直接交回。
-        const t = taskOf(sessionId, runId);
-        if (!t || t.stopped) return;
-        // 停下等用户点批准,approve() 会续上循环。status 必须显式置成 waiting ——
-        // return 之后再没有代码会来补终态。
-        patchStep(sessionId, runId, step.id, { state: "pending", reason: r.reason });
-        patch(sessionId, runId, { running: false, status: "waiting" });
-        return;
-      }
-
-      settle(sessionId, runId, step.id, r);
+      if ((await execute(sessionId, runId, step, false)) === "halt") return;
     }
   }
 
@@ -249,6 +293,11 @@ export function createAgentEngine(deps: EngineDeps) {
     const t = deps.getTask(sessionId);
     if (!t || t.status === "ended") return;
     // 已经发出去的命令仍在远端跑,这里管不着 —— 界面上如实说明。
+    // 但后端还占着「等这一步」的状态:不通知它作废,下一个任务会一直撞上 BUSY(#18)。
+    // 停在等批准 / 被阻塞时后端并没有在等,不用通知。
+    if (t.steps.some((st) => st.state === "running")) {
+      void deps.agentCancel(sessionId).catch(() => {});
+    }
     deps.putTask(sessionId, { ...t, stopped: true, running: false, status: "ended", endReason });
   }
 
@@ -278,18 +327,25 @@ export function createAgentEngine(deps: EngineDeps) {
       // 用户已经点过停止:这一步不再放行,否则「停止」形同虚设
       if (!task || !step || step.state !== "pending" || task.stopped) return;
       const { runId } = task;
+      // 被阻塞的步骤:用户确认的是「终端已空闲」,不是批准这条命令 ——
+      // 先让后端清掉残留,再按自动执行重试,命令仍要过只读判定
+      const wasBlocked = step.blocked === "busy";
       try {
-        patchStep(sessionId, runId, stepId, { state: "running" });
+        patchStep(sessionId, runId, stepId, { state: "running", blocked: undefined });
         patch(sessionId, runId, { running: true, status: "running" });
-        let r: AgentStepResult;
-        try {
-          r = await deps.agentExec(sessionId, step.command, step.aiReadonly, true);
-        } catch (e) {
-          patchStep(sessionId, runId, stepId, { state: "failed", error: friendly(e) });
-          return finish(sessionId, runId, friendly(e));
+        if (wasBlocked) {
+          try {
+            await deps.agentReset(sessionId);
+          } catch (e) {
+            patchStep(sessionId, runId, stepId, { state: "failed", error: friendly(e) });
+            return finish(sessionId, runId, friendly(e));
+          }
         }
-        settle(sessionId, runId, stepId, r);
-        await safeRun(sessionId, runId);
+        const cur = taskOf(sessionId, runId)?.steps.find((st) => st.id === stepId);
+        if (!cur) return;
+        if ((await execute(sessionId, runId, cur, !wasBlocked)) === "next") {
+          await safeRun(sessionId, runId);
+        }
       } catch (e) {
         finish(sessionId, runId, friendly(e));
       }

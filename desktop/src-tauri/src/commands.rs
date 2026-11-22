@@ -266,6 +266,18 @@ pub async fn agent_exec(
     crate::agent::exec_step(&state.sessions, &session_id, &command, ai_readonly, approved).await
 }
 
+/// 任务面板点了停止:后端这一步作废,转入残留状态
+#[tauri::command]
+pub fn agent_cancel(state: State<AppState>, session_id: String) -> Result<()> {
+    crate::agent::send_gate_control(&state.sessions, &session_id, crate::ssh::Ctl::AgentCancel)
+}
+
+/// 用户确认终端已空闲:清掉等待与残留
+#[tauri::command]
+pub fn agent_reset(state: State<AppState>, session_id: String) -> Result<()> {
+    crate::agent::send_gate_control(&state.sessions, &session_id, crate::ssh::Ctl::AgentReset)
+}
+
 // ---- sftp / transfer ----
 
 #[tauri::command]

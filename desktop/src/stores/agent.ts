@@ -33,6 +33,8 @@ export const useAgentStore = create<AgentState>((set, get) => {
     aiAsk: (messages) => ipc.aiAsk(messages, "", "agent"),
     agentExec: (sessionId, command, aiReadonly, approved) =>
       ipc.agentExec(sessionId, command, aiReadonly, approved),
+    agentCancel: (sessionId) => ipc.agentCancel(sessionId),
+    agentReset: (sessionId) => ipc.agentReset(sessionId),
     hasProvider: () => !!useAiStore.getState().activeProvider(),
     enabled: agentEnabled,
     newId: () => crypto.randomUUID(),

@@ -62,6 +62,17 @@ export function AgentStepCard({
         stopped ? (
           <p className="t-faint fs-sm">任务已停止,这一步不再受理批准或跳过。</p>
         ) : (
+          step.blocked === "busy" ? (
+            // 上一步的命令可能还在终端里运行:这里要用户确认的是「终端已空闲」,不是批准命令。
+            // 点了之后命令仍按自动执行重试,照样要过只读判定
+            <>
+              <p className="t-muted fs-sm">{step.reason}</p>
+              <div className="row gap-8">
+                <Button variant="primary" onClick={onApprove}>终端已空闲,继续</Button>
+                <Button variant="ghost" onClick={onSkip}>跳过这步</Button>
+              </div>
+            </>
+          ) : (
           <>
             {step.reason && <p className="t-muted fs-sm">需要批准:{step.reason}</p>}
             {risky && <p className="t-danger fs-sm">这条命令有破坏性,请确认后再执行。</p>}
@@ -78,6 +89,7 @@ export function AgentStepCard({
               <Button variant="ghost" onClick={onSkip}>跳过这步</Button>
             </div>
           </>
+          )
         )
       )}
 
@@ -101,6 +113,9 @@ export function AgentStepCard({
             退出码 {step.exitCode}
           </Badge>
           {step.truncated && <Badge color="warning">输出已截断</Badge>}
+          {/* 退出码 -1 / 130 只是占位,要说清是超时还是中断 */}
+          {step.endedBy === "timeout" && <Badge color="warning">等待超时,命令可能仍在运行</Badge>}
+          {step.endedBy === "interrupted" && <Badge color="warning">已中断</Badge>}
           <pre className="agent-out">
             {open ? step.output : clamp(step.output ?? "", MAX_LINES)}
           </pre>
