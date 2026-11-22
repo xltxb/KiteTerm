@@ -27,10 +27,16 @@ const SHELL_META: &[&str] = &[">", "<", "|", ";", "&", "$(", "`", "\n", "\r", "#
 /// - `!`:历史展开 —— 命令是作为键盘输入注入交互式 shell 的,`!rm` 会被换成之前的命令
 const SHELL_REWRITE: &[char] = &['\'', '"', '\\', '$', '{', '}', '!'];
 
-/// token 开头的通配符:展开结果取决于远端目录里有哪些文件名。
-/// 攻击者若能在目录里放一个名为 `-delete` 的文件,`find *` 展开后就带上了这个选项。
-/// 通配符不在开头时(`/var/log/*.log`)展开结果以固定前缀开头,不会变成选项。
-const GLOB_START: &[char] = &['*', '?', '['];
+/// 通配符字符。展开结果取决于远端目录里有哪些文件名 —— 攻击者若能在目录里放一个
+/// 名为 `-delete` 的文件,`find *` 或 `find . -de*` 展开后就带上了这个选项。
+const GLOB: &[char] = &['*', '?', '['];
+
+/// 参数展开后可能变成选项:以通配符开头(`*`),或本身以 `-` 开头又含通配符(`-de*`)。
+/// 以其他固定前缀开头的通配符(`/var/log/*.log`、`app-*.log`)展开结果也以该前缀开头,
+/// 不会变成选项,照常放行。
+fn may_expand_to_option(token: &str) -> bool {
+    token.starts_with(GLOB) || (token.starts_with('-') && token.contains(GLOB))
+}
 
 /// 只读白名单。宁可漏(多问一次)不可多(误放写操作)。
 /// 注意 sed / awk / perl / python 都不在其中:它们能写文件。
@@ -76,8 +82,8 @@ pub fn judge(command: &str) -> Verdict {
     if cmd.contains(SHELL_REWRITE) {
         return Verdict::NeedsApproval("含引号/转义/变量/花括号/历史展开等会改写参数的 shell 语法");
     }
-    if cmd.split_whitespace().any(|t| t.starts_with(GLOB_START)) {
-        return Verdict::NeedsApproval("参数以通配符开头,展开后可能变成选项");
+    if cmd.split_whitespace().any(may_expand_to_option) {
+        return Verdict::NeedsApproval("参数含通配符,展开后可能变成选项");
     }
 
     let mut parts = cmd.split_whitespace();
@@ -573,6 +579,21 @@ mod tests {
         ro("ls -la /var/log/nginx");
         ro("grep -rn error /var/log/app.log");
         ro("ls /var/log/*.log");             // 通配符不在开头,展开结果以 / 开头
+    }
+
+    /// 以 `-` 开头、中间带通配符的参数同样会被 shell 展开:远端目录里有名为
+    /// `-delete` 的文件时,`-de*` 就展开成了 `-delete`。(#16)
+    #[test]
+    fn option_shaped_globs_cannot_smuggle_flags() {
+        need("find . -de*");
+        need("find . -[d]elete");
+        need("find . -delet?");
+        need("tail -? /var/log/syslog");
+        need("sort --out* x");
+
+        // 不像选项的通配符仍放行:展开结果以固定的非 `-` 前缀开头
+        ro("ls /var/log/*.log");
+        ro("grep -n error app-*.log");
     }
 
     /// GNU getopt_long 与 git 都接受无歧义的长选项缩写,`--outp` 就是 `--output`。(#3)
