@@ -34,8 +34,21 @@ const GLOB: &[char] = &['*', '?', '['];
 /// 参数展开后可能变成选项:以通配符开头(`*`),或本身以 `-` 开头又含通配符(`-de*`)。
 /// 以其他固定前缀开头的通配符(`/var/log/*.log`、`app-*.log`)展开结果也以该前缀开头,
 /// 不会变成选项,照常放行。
+///
+/// `--名字=值` 只看 `=` 前面:通配符在值里时(`--include=*.py`),展开结果仍以
+/// `--include=` 开头,还是同一个选项(#25);选项名部分带通配符(`--out*=x`)照拦。
 fn may_expand_to_option(token: &str) -> bool {
-    token.starts_with(GLOB) || (token.starts_with('-') && token.contains(GLOB))
+    if token.starts_with(GLOB) {
+        return true;
+    }
+    if !token.starts_with('-') {
+        return false;
+    }
+    let name = match token.strip_prefix("--").and_then(|rest| rest.split_once('=')) {
+        Some((name, _value)) => name,
+        None => token,
+    };
+    name.contains(GLOB)
 }
 
 /// 只读白名单。宁可漏(多问一次)不可多(误放写操作)。
@@ -594,6 +607,21 @@ mod tests {
         // 不像选项的通配符仍放行:展开结果以固定的非 `-` 前缀开头
         ro("ls /var/log/*.log");
         ro("grep -n error app-*.log");
+    }
+
+    /// `--名字=值` 里通配符只在值的部分时,展开结果仍以 `--名字=` 开头,
+    /// 还是同一个选项,不会变成别的选项 —— 不该拦。(#25)
+    #[test]
+    fn globs_in_long_option_values_are_fine() {
+        ro("grep -rn old_api --include=*.py /srv/app");
+        ro("grep -rn TODO --exclude=*.min.js .");
+
+        // 选项名部分带通配符仍要拦:可能展开成任意选项
+        need("find . --de*=x");
+        need("sort --out*=/tmp/x f");
+        // 短选项与没有 = 的长选项照旧
+        need("find . -de*");
+        need("sort --out* x");
     }
 
     /// GNU getopt_long 与 git 都接受无歧义的长选项缩写,`--outp` 就是 `--output`。(#3)
