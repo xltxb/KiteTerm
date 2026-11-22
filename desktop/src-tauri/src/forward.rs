@@ -205,24 +205,10 @@ async fn start_remote_forward<R: Runtime>(
 ) -> Result<()> {
     let (handle, _, _, r_targets) =
         ssh::connect_host_full(db.clone(), &vault, &rule.via_host_id, None).await?;
-    let (host, port) = split_target(&rule.target)?;
-
     let up = Arc::new(AtomicU64::new(0));
     let down = Arc::new(AtomicU64::new(0));
-    r_targets.lock().unwrap().insert(
-        rule.local_port as u32,
-        crate::ssh::RTarget {
-            host: host.to_string(),
-            port,
-            up: up.clone(),
-            down: down.clone(),
-        },
-    );
-
-    handle
-        .tcpip_forward("127.0.0.1", rule.local_port as u32)
-        .await
-        .map_err(|e| AppError(format!("远端监听 127.0.0.1:{} 被拒绝: {e}", rule.local_port)))?;
+    open_remote_forward(&handle, &r_targets, rule.local_port, &rule.target, up.clone(), down.clone())
+        .await?;
 
     // keeper:持有专用连接;取消(或 abort)后丢弃 handle → 连接关闭,远端监听随之
     // 失效,服务器侧已建立的 channel 也一并断开
@@ -237,6 +223,32 @@ async fn start_remote_forward<R: Runtime>(
         ActiveForward { task, cancel, up: up.clone(), down: down.clone() },
     );
     spawn_traffic_flush(app, db, rule.id.clone(), up, down);
+    Ok(())
+}
+
+/// R 型的核心:先在这条连接的登记表里记下「远端端口 → 本地目标」,再请服务器监听
+/// `127.0.0.1:<remote_port>`。之后服务器每收到一条连接,都会经 forwarded-tcpip 通道
+/// 回送过来,由 `ClientHandler::server_channel_open_forwarded_tcpip` 按登记表接到本地目标。
+///
+/// 必须先登记再请求监听 —— 反过来的话,监听一开就进来的连接会因查不到目标而被拒。
+/// 从 `start_remote_forward` 拆出来,是因为那边要 `AppHandle`,端到端测试拿不到。
+async fn open_remote_forward(
+    handle: &russh::client::Handle<ClientHandler>,
+    r_targets: &crate::ssh::RForwardMap,
+    remote_port: u16,
+    target: &str,
+    up: Arc<AtomicU64>,
+    down: Arc<AtomicU64>,
+) -> Result<()> {
+    let (host, port) = split_target(target)?;
+    r_targets.lock().unwrap().insert(
+        remote_port as u32,
+        crate::ssh::RTarget { host: host.to_string(), port, up, down },
+    );
+    handle
+        .tcpip_forward("127.0.0.1", remote_port as u32)
+        .await
+        .map_err(|e| AppError(format!("远端监听 127.0.0.1:{remote_port} 被拒绝: {e}")))?;
     Ok(())
 }
 
