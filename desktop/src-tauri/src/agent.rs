@@ -219,6 +219,8 @@ struct Waiting {
     nonce: String,
     /// 自动执行的只读步骤(stdin 接 /dev/null、白名单命令),而非用户批准的步骤
     auto: bool,
+    /// 前端的步骤 id。停止时的作废只认它,晚到的作废不会误伤新任务的步骤(#23)
+    step_id: String,
 }
 
 /// 上一步放弃等待了,但它的命令可能还在远端跑
@@ -254,7 +256,14 @@ pub struct AgentGate {
 impl AgentGate {
     /// 登记一步。返回 true 表示可以注入命令;返回 false 时已经通过 `reply` 回了错误,
     /// 调用方什么都不要发。
-    pub fn begin(&mut self, nonce: String, auto: bool, reply: StepReply, now: std::time::Instant) -> bool {
+    pub fn begin(
+        &mut self,
+        nonce: String,
+        step_id: String,
+        auto: bool,
+        reply: StepReply,
+        now: std::time::Instant,
+    ) -> bool {
         if self.waiting.is_some() {
             let _ = reply.send(Err(BUSY_WAITING));
             return false;
@@ -269,6 +278,7 @@ impl AgentGate {
             deadline: auto.then(|| now + AUTO_STEP_TIMEOUT),
             nonce,
             auto,
+            step_id,
         });
         true
     }
@@ -321,9 +331,14 @@ impl AgentGate {
     }
 
     /// 用户在任务面板点了「停止」:这一步作废、报为中断。命令可能还在跑,转入残留状态,
-    /// 而不是继续占着「等待中」—— 否则下一个任务会一直撞上 BUSY(#18)
-    pub fn cancel(&mut self) {
-        self.abandon(EXIT_INTERRUPTED, StepEnd::Interrupted);
+    /// 而不是继续占着「等待中」—— 否则下一个任务会一直撞上 BUSY(#18)。
+    ///
+    /// 只作废 `step_id` 指明的那一步:作废请求晚到时,后端可能已经在等新任务的步骤了,
+    /// 不能把它作废掉(#23)。对不上就什么都不做。
+    pub fn cancel(&mut self, step_id: &str) {
+        if self.waiting.as_ref().is_some_and(|w| w.step_id == step_id) {
+            self.abandon(EXIT_INTERRUPTED, StepEnd::Interrupted);
+        }
     }
 
     /// 用户确认终端已回到命令提示符:清掉等待与残留,下一步可以注入(#18)
@@ -375,6 +390,7 @@ pub struct AgentStepResult {
 pub async fn exec_step(
     manager: &SessionManager,
     session_id: &str,
+    step_id: &str,
     command: &str,
     ai_readonly: bool,
     approved: bool,
@@ -411,7 +427,13 @@ pub async fn exec_step(
             .ok_or_else(|| AppError(format!("AGENT_NO_SESSION: 会话不存在: {session_id}")))?;
         entry
             .ctl
-            .send(Ctl::AgentStep(wrap_command(command, !approved, &nonce), nonce.clone(), !approved, tx))
+            .send(Ctl::AgentStep(
+                wrap_command(command, !approved, &nonce),
+                nonce.clone(),
+                step_id.to_string(),
+                !approved,
+                tx,
+            ))
             .map_err(|_| AppError("AGENT_SESSION_CLOSED: 会话已关闭".to_string()))?;
     }
     let step = rx
@@ -663,9 +685,28 @@ mod tests {
 
     type Rx = oneshot::Receiver<Result<StepOutput, &'static str>>;
 
+    /// 测试里每一步的前端步骤 id 都是 "s1",除非专门测 id 不同的情况
     fn begin(g: &mut AgentGate, auto: bool) -> (bool, Rx) {
+        begin_as(g, "s1", auto)
+    }
+
+    fn begin_as(g: &mut AgentGate, step_id: &str, auto: bool) -> (bool, Rx) {
         let (tx, rx) = oneshot::channel();
-        (g.begin("n1".into(), auto, tx, Instant::now()), rx)
+        (g.begin("n1".into(), step_id.into(), auto, tx, Instant::now()), rx)
+    }
+
+    /// 停止时的作废只针对发出时正在执行的那一步。它晚到时,后端可能已经在等
+    /// 新任务的步骤了 —— 不能把新步骤作废掉。(#23)
+    #[test]
+    fn cancel_only_abandons_the_step_it_names() {
+        let mut g = AgentGate::default();
+        let (_, mut rx) = begin_as(&mut g, "new-step", true);
+        g.cancel("old-step"); // 上一个任务那一步的作废,晚到了
+        assert!(rx.try_recv().is_err(), "新步骤不能被作废,还在等它的哨兵");
+        assert!(g.deadline().is_some(), "仍在等待中");
+
+        g.cancel("new-step");
+        assert_eq!(rx.try_recv().unwrap().unwrap().ended, StepEnd::Interrupted, "对上了才作废");
     }
 
     #[test]
@@ -780,7 +821,7 @@ mod tests {
     fn cancel_moves_the_waiting_step_to_stale() {
         let mut g = AgentGate::default();
         let (_, mut rx) = begin(&mut g, false);
-        g.cancel();
+        g.cancel("s1");
         assert_eq!(rx.try_recv().unwrap().unwrap().exit_code, 130);
         let (ok, mut rx2) = begin(&mut g, true);
         assert!(!ok);
@@ -812,7 +853,7 @@ mod tests {
         let busy = rx.try_recv().unwrap().unwrap_err();
         assert!(busy.contains("终端已空闲"), "{busy}");
 
-        g.cancel();
+        g.cancel("s1");
         let (_, mut rx) = begin(&mut g, true);
         let stale = rx.try_recv().unwrap().unwrap_err();
         assert!(stale.contains("终端已空闲"), "{stale}");
@@ -842,7 +883,7 @@ mod tests {
 
         let mut g = AgentGate::default();
         let (_, mut rx) = begin(&mut g, false);
-        g.cancel();
+        g.cancel("s1");
         assert_eq!(rx.try_recv().unwrap().unwrap().ended, StepEnd::Interrupted, "停止");
 
         let (_, mut rx) = begin(&mut g, false); // 残留中被拒;reset 后再来

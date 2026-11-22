@@ -194,12 +194,14 @@ export interface KiteIpc {
   /** AI 分步执行:注入一条命令并等它跑完这一步 */
   agentExec(
     sessionId: string,
+    /** 前端步骤 id,停止时的作废靠它认出是哪一步 */
+    stepId: string,
     command: string,
     aiReadonly: boolean,
     approved: boolean,
   ): Promise<AgentStepResult>;
-  /** AI 分步执行:任务面板点了停止,后端当前这一步作废 */
-  agentCancel(sessionId: string): Promise<void>;
+  /** AI 分步执行:任务面板点了停止,后端作废 stepId 那一步 */
+  agentCancel(sessionId: string, stepId: string): Promise<void>;
   /** AI 分步执行:用户确认终端已空闲,后端清掉等待与残留 */
   agentReset(sessionId: string): Promise<void>;
 

@@ -259,17 +259,19 @@ pub fn session_close(app: AppHandle, state: State<AppState>, id: String) -> Resu
 pub async fn agent_exec(
     state: State<'_, AppState>,
     session_id: String,
+    step_id: String,
     command: String,
     ai_readonly: bool,
     approved: bool,
 ) -> Result<crate::agent::AgentStepResult> {
-    crate::agent::exec_step(&state.sessions, &session_id, &command, ai_readonly, approved).await
+    crate::agent::exec_step(&state.sessions, &session_id, &step_id, &command, ai_readonly, approved)
+        .await
 }
 
-/// 任务面板点了停止:后端这一步作废,转入残留状态
+/// 任务面板点了停止:后端作废 step_id 指明的那一步,转入残留状态
 #[tauri::command]
-pub fn agent_cancel(state: State<AppState>, session_id: String) -> Result<()> {
-    crate::agent::send_gate_control(&state.sessions, &session_id, crate::ssh::Ctl::AgentCancel)
+pub fn agent_cancel(state: State<AppState>, session_id: String, step_id: String) -> Result<()> {
+    crate::agent::send_gate_control(&state.sessions, &session_id, crate::ssh::Ctl::AgentCancel(step_id))
 }
 
 /// 用户确认终端已空闲:清掉等待与残留

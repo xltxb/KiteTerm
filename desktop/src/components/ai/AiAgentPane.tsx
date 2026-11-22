@@ -17,6 +17,7 @@ export function AiAgentPane() {
   const approve = useAgentStore((s) => s.approve);
   const skip = useAgentStore((s) => s.skip);
   const stop = useAgentStore((s) => s.stop);
+  const resume = useAgentStore((s) => s.resume);
   const [goal, setGoal] = useState("");
 
   if (!aiAgentOn) {
@@ -58,9 +59,18 @@ export function AiAgentPane() {
 
         {active ? (
           <>
-            <Button variant="secondary" onClick={() => session && stop(session.id)}>
-              <Square size={13} />停止
-            </Button>
+            {/* 一步被中断后暂停:不自动推进,等用户选继续还是停止 */}
+            {task?.paused && <p className="t-muted fs-sm">{task.paused}</p>}
+            <div className="row gap-8">
+              {task?.paused && (
+                <Button variant="primary" onClick={() => session && resume(session.id)}>
+                  <Play size={13} />继续
+                </Button>
+              )}
+              <Button variant="secondary" onClick={() => session && stop(session.id)}>
+                <Square size={13} />停止
+              </Button>
+            </div>
             <p className="fs-xs t-faint lh-relaxed">
               停止只会中断后续步骤。已经发出的命令仍在远端运行,需要的话请在终端按 Ctrl-C。
             </p>

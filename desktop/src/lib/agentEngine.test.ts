@@ -15,12 +15,14 @@ function deferred<T>(): Deferred<T> {
 }
 const tick = async () => { for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0)); };
 
-function env() {
+function env(opts: { holdReset?: boolean } = {}) {
   const tasks: Record<string, AgentTask> = {};
   const asks: { content: string; d: Deferred<string> }[] = [];
-  const execs: { sessionId: string; command: string; approved: boolean; d: Deferred<AgentStepResult> }[] = [];
-  const cancels: string[] = [];
+  const execs: { sessionId: string; stepId: string; command: string; approved: boolean; d: Deferred<AgentStepResult> }[] = [];
+  const cancels: { sessionId: string; stepId: string }[] = [];
   const resets: string[] = [];
+  /** holdReset 时 agentReset 挂起,直到测试调用 releaseReset() */
+  const heldResets: (() => void)[] = [];
   let id = 0;
   const state = { enabled: true };
   const deps: EngineDeps = {
@@ -32,19 +34,24 @@ function env() {
       asks.push({ content: messages.map((m) => m.content).join("\n"), d });
       return d.promise;
     },
-    agentExec: (sessionId, command, _ro, approved) => {
+    agentExec: (sessionId, stepId, command, _ro, approved) => {
       const d = deferred<AgentStepResult>();
-      execs.push({ sessionId, command, approved, d });
+      execs.push({ sessionId, stepId, command, approved, d });
       return d.promise;
     },
-    agentCancel: async (sessionId) => { cancels.push(sessionId); },
-    agentReset: async (sessionId) => { resets.push(sessionId); },
+    agentCancel: async (sessionId, stepId) => { cancels.push({ sessionId, stepId }); },
+    agentReset: (sessionId) => {
+      resets.push(sessionId);
+      if (!opts.holdReset) return Promise.resolve();
+      return new Promise<void>((res) => heldResets.push(res));
+    },
     hasProvider: () => true,
     enabled: () => state.enabled,
     newId: () => `id${++id}`,
     nonce: () => `nonce${++id}`,
   };
-  return { tasks, asks, execs, cancels, resets, state, engine: createAgentEngine(deps) };
+  const releaseReset = () => heldResets.shift()?.();
+  return { tasks, asks, execs, cancels, resets, releaseReset, state, engine: createAgentEngine(deps) };
 }
 
 const next = (command: string, readonly = true) =>
@@ -278,7 +285,10 @@ const BUSY_STALE = "AGENT_BUSY_STALE: 上一步的命令可能还在终端里运
   e2.asks[0].d.resolve(next("df -h"));
   await tick();
   e2.engine.stop("s");
-  check(e2.cancels.length === 1 && e2.cancels[0] === "s", "有一步正在执行时通知后端作废");
+  check(e2.cancels.length === 1 && e2.cancels[0].sessionId === "s", "有一步正在执行时通知后端作废");
+  // 作废请求指明是哪一步:晚到时后端可能已在等新任务的步骤,只认这个 id(#23)
+  check(e2.cancels[0].stepId === e2.tasks.s.steps[0].id, "作废的正是正在执行的那一步");
+  check(e2.execs[0].stepId === e2.tasks.s.steps[0].id, "执行时也带上同一个步骤 id");
 
   const e3 = env();
   void e3.engine.start("a", "g");
@@ -299,6 +309,11 @@ async function oneStep(result: AgentStepResult) {
   await tick();
   e.execs[0].d.resolve(result);
   await tick();
+  // 被中断的步骤会先暂停(#24),点「继续」才会把它带进下一轮发给 AI
+  if (e.tasks.s.paused) {
+    e.engine.resume("s");
+    await tick();
+  }
   return { content: e.asks[1]?.content ?? "", step: e.tasks.s.steps[0] };
 }
 {
@@ -312,6 +327,63 @@ async function oneStep(result: AgentStepResult) {
 
   const ok = await oneStep(ran("12G\t/var", 0));
   check(!ok.content.includes("超时") && !ok.content.includes("中断"), "正常结束的步骤不加多余说明");
+}
+
+// ---- #24:一步被中断(Ctrl-C)后不自动推进,停下等用户选「继续」或「停止」 ----
+{
+  const e = env();
+  void e.engine.start("s", "g");
+  await tick();
+  e.asks[0].d.resolve(next("sudo apt upgrade", false));
+  await tick();
+  e.execs[0].d.resolve(needsApproval);
+  await tick();
+  void e.engine.approve("s", e.tasks.s.steps[0].id);
+  await tick();
+  e.execs[1].d.resolve(ran("Do you want to continue? [Y/n] ^C", 130, "interrupted"));
+  await tick();
+  check(e.asks.length === 1, "被中断后不自动去问 AI");
+  check(e.tasks.s.status === "waiting" && !!e.tasks.s.paused, "任务暂停,等用户选择");
+  check(e.tasks.s.steps[0].state === "failed" && e.tasks.s.steps[0].endedBy === "interrupted", "这一步照实落下中断结果");
+
+  e.engine.resume("s");
+  await tick();
+  check(e.asks.length === 2 && !e.tasks.s.paused && e.tasks.s.status === "running", "点继续后照常推进");
+  check(e.asks[1].content.includes("中断"), "AI 看得到这一步被中断了");
+}
+{
+  const e = env();
+  void e.engine.start("s", "g");
+  await tick();
+  e.asks[0].d.resolve(next("df -h"));
+  await tick();
+  e.execs[0].d.resolve(ran("", 130, "interrupted"));
+  await tick();
+  e.engine.stop("s");
+  check(e.tasks.s.status === "ended", "暂停时也能直接停止");
+  e.engine.resume("s");
+  await tick();
+  check(e.asks.length === 1, "停止之后点继续不再推进");
+}
+
+// ---- #22:确认终端已空闲后、后端还没回话时点了停止,命令不能再执行 ----
+{
+  const e = env({ holdReset: true });
+  void e.engine.start("s", "g");
+  await tick();
+  e.asks[0].d.resolve(next("df -h"));
+  await tick();
+  e.execs[0].d.reject(BUSY_STALE);
+  await tick();
+  void e.engine.approve("s", e.tasks.s.steps[0].id); // 点「终端已空闲,继续」
+  await tick();
+  check(e.resets.length === 1, "已通知后端清残留,正在等它回话");
+  e.engine.stop("s"); // 反悔
+  e.releaseReset();
+  await tick();
+  check(e.execs.length === 1, "停止之后不能再把命令发出去");
+  check(e.tasks.s.status === "ended", "任务保持结束");
+  check(e.tasks.s.steps[0].state !== "running", "这一步不能一直显示执行中");
 }
 
 if (failed > 0) {
