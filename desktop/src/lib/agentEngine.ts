@@ -49,6 +49,8 @@ export interface AgentTask {
   summary?: string;
   /** 停止原因 */
   endReason?: string;
+  /** 一步被中断后暂停在这里,等用户选「继续」或「停止」。值是给用户看的说明 */
+  paused?: string;
 }
 
 export interface ChatMessage {
@@ -235,6 +237,19 @@ export function createAgentEngine(deps: EngineDeps) {
     }
 
     settle(sessionId, runId, step.id, r);
+
+    // 被中断(Ctrl-C)多半是用户想停下来:不自动去问 AI 下一步,先暂停等用户选。
+    // 而且批准的步骤被中断后后端处于残留状态,自动推进的下一步必然被阻塞(#24)
+    if (r.endedBy === "interrupted") {
+      const t = taskOf(sessionId, runId);
+      if (!t || t.stopped) return "halt";
+      patch(sessionId, runId, {
+        running: false,
+        status: "waiting",
+        paused: "这一步被中断了。要让 AI 接着推进就点「继续」,否则点「停止」。",
+      });
+      return "halt";
+    }
     return "next";
   }
 
@@ -373,6 +388,15 @@ export function createAgentEngine(deps: EngineDeps) {
 
     stop(sessionId: string) {
       stopTask(sessionId, "已按你的要求停止");
+    },
+
+    /** 一步被中断后暂停着,用户选择继续推进 */
+    resume(sessionId: string) {
+      const task = deps.getTask(sessionId);
+      if (!task || !task.paused || task.stopped) return;
+      const { runId } = task;
+      patch(sessionId, runId, { paused: undefined, running: true, status: "running" });
+      void safeRun(sessionId, runId);
     },
 
     /** 停掉所有会话的任务 —— 管理员关闭功能开关时调用 */

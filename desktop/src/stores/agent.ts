@@ -12,6 +12,8 @@ interface AgentState {
   approve: (sessionId: string, stepId: string) => Promise<void>;
   skip: (sessionId: string, stepId: string) => void;
   stop: (sessionId: string) => void;
+  /** 一步被中断后暂停着,用户选择继续 */
+  resume: (sessionId: string) => void;
   /** 停掉所有会话的任务 */
   stopAll: (endReason: string) => void;
 }
@@ -47,6 +49,7 @@ export const useAgentStore = create<AgentState>((set, get) => {
     approve: engine.approve,
     skip: engine.skip,
     stop: engine.stop,
+    resume: engine.resume,
     stopAll: engine.stopAll,
   };
 });

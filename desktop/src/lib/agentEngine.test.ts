@@ -306,6 +306,11 @@ async function oneStep(result: AgentStepResult) {
   await tick();
   e.execs[0].d.resolve(result);
   await tick();
+  // 被中断的步骤会先暂停(#24),点「继续」才会把它带进下一轮发给 AI
+  if (e.tasks.s.paused) {
+    e.engine.resume("s");
+    await tick();
+  }
   return { content: e.asks[1]?.content ?? "", step: e.tasks.s.steps[0] };
 }
 {
@@ -319,6 +324,43 @@ async function oneStep(result: AgentStepResult) {
 
   const ok = await oneStep(ran("12G\t/var", 0));
   check(!ok.content.includes("超时") && !ok.content.includes("中断"), "正常结束的步骤不加多余说明");
+}
+
+// ---- #24:一步被中断(Ctrl-C)后不自动推进,停下等用户选「继续」或「停止」 ----
+{
+  const e = env();
+  void e.engine.start("s", "g");
+  await tick();
+  e.asks[0].d.resolve(next("sudo apt upgrade", false));
+  await tick();
+  e.execs[0].d.resolve(needsApproval);
+  await tick();
+  void e.engine.approve("s", e.tasks.s.steps[0].id);
+  await tick();
+  e.execs[1].d.resolve(ran("Do you want to continue? [Y/n] ^C", 130, "interrupted"));
+  await tick();
+  check(e.asks.length === 1, "被中断后不自动去问 AI");
+  check(e.tasks.s.status === "waiting" && !!e.tasks.s.paused, "任务暂停,等用户选择");
+  check(e.tasks.s.steps[0].state === "failed" && e.tasks.s.steps[0].endedBy === "interrupted", "这一步照实落下中断结果");
+
+  e.engine.resume("s");
+  await tick();
+  check(e.asks.length === 2 && !e.tasks.s.paused && e.tasks.s.status === "running", "点继续后照常推进");
+  check(e.asks[1].content.includes("中断"), "AI 看得到这一步被中断了");
+}
+{
+  const e = env();
+  void e.engine.start("s", "g");
+  await tick();
+  e.asks[0].d.resolve(next("df -h"));
+  await tick();
+  e.execs[0].d.resolve(ran("", 130, "interrupted"));
+  await tick();
+  e.engine.stop("s");
+  check(e.tasks.s.status === "ended", "暂停时也能直接停止");
+  e.engine.resume("s");
+  await tick();
+  check(e.asks.length === 1, "停止之后点继续不再推进");
 }
 
 // ---- #22:确认终端已空闲后、后端还没回话时点了停止,命令不能再执行 ----
