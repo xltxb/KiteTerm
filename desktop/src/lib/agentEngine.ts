@@ -194,6 +194,14 @@ export function createAgentEngine(deps: EngineDeps) {
     step: AgentStep,
     approved: boolean,
   ): Promise<"next" | "halt"> {
+    // 发命令前最后确认一次:调用方可能刚 await 过别的(approve 里等 agentReset),
+    // 用户在这期间点了停止的话,命令不能再发出去(#22)。这一步放回 pending,
+    // 卡片会显示「任务已停止」,而不是一直转圈
+    const before = taskOf(sessionId, runId);
+    if (!before || before.stopped) {
+      patchStep(sessionId, runId, step.id, { state: "pending" });
+      return "halt";
+    }
     let r: AgentStepResult;
     try {
       r = await deps.agentExec(sessionId, step.command, step.aiReadonly, approved);
