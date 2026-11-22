@@ -33,9 +33,9 @@ export const useAgentStore = create<AgentState>((set, get) => {
     // system prompt 由 Rust 侧按 "agent" mode 决定;terminalContext 传空串 ——
     // 循环自己把历史步骤包成数据块放进 messages
     aiAsk: (messages) => ipc.aiAsk(messages, "", "agent"),
-    agentExec: (sessionId, command, aiReadonly, approved) =>
-      ipc.agentExec(sessionId, command, aiReadonly, approved),
-    agentCancel: (sessionId) => ipc.agentCancel(sessionId),
+    agentExec: (sessionId, stepId, command, aiReadonly, approved) =>
+      ipc.agentExec(sessionId, stepId, command, aiReadonly, approved),
+    agentCancel: (sessionId, stepId) => ipc.agentCancel(sessionId, stepId),
     agentReset: (sessionId) => ipc.agentReset(sessionId),
     hasProvider: () => !!useAiStore.getState().activeProvider(),
     enabled: agentEnabled,

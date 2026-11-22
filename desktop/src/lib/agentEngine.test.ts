@@ -18,8 +18,8 @@ const tick = async () => { for (let i = 0; i < 10; i++) await new Promise((r) =>
 function env(opts: { holdReset?: boolean } = {}) {
   const tasks: Record<string, AgentTask> = {};
   const asks: { content: string; d: Deferred<string> }[] = [];
-  const execs: { sessionId: string; command: string; approved: boolean; d: Deferred<AgentStepResult> }[] = [];
-  const cancels: string[] = [];
+  const execs: { sessionId: string; stepId: string; command: string; approved: boolean; d: Deferred<AgentStepResult> }[] = [];
+  const cancels: { sessionId: string; stepId: string }[] = [];
   const resets: string[] = [];
   /** holdReset 时 agentReset 挂起,直到测试调用 releaseReset() */
   const heldResets: (() => void)[] = [];
@@ -34,12 +34,12 @@ function env(opts: { holdReset?: boolean } = {}) {
       asks.push({ content: messages.map((m) => m.content).join("\n"), d });
       return d.promise;
     },
-    agentExec: (sessionId, command, _ro, approved) => {
+    agentExec: (sessionId, stepId, command, _ro, approved) => {
       const d = deferred<AgentStepResult>();
-      execs.push({ sessionId, command, approved, d });
+      execs.push({ sessionId, stepId, command, approved, d });
       return d.promise;
     },
-    agentCancel: async (sessionId) => { cancels.push(sessionId); },
+    agentCancel: async (sessionId, stepId) => { cancels.push({ sessionId, stepId }); },
     agentReset: (sessionId) => {
       resets.push(sessionId);
       if (!opts.holdReset) return Promise.resolve();
@@ -285,7 +285,10 @@ const BUSY_STALE = "AGENT_BUSY_STALE: 上一步的命令可能还在终端里运
   e2.asks[0].d.resolve(next("df -h"));
   await tick();
   e2.engine.stop("s");
-  check(e2.cancels.length === 1 && e2.cancels[0] === "s", "有一步正在执行时通知后端作废");
+  check(e2.cancels.length === 1 && e2.cancels[0].sessionId === "s", "有一步正在执行时通知后端作废");
+  // 作废请求指明是哪一步:晚到时后端可能已在等新任务的步骤,只认这个 id(#23)
+  check(e2.cancels[0].stepId === e2.tasks.s.steps[0].id, "作废的正是正在执行的那一步");
+  check(e2.execs[0].stepId === e2.tasks.s.steps[0].id, "执行时也带上同一个步骤 id");
 
   const e3 = env();
   void e3.engine.start("a", "g");

@@ -63,9 +63,17 @@ export interface EngineDeps {
   putTask(sessionId: string, task: AgentTask): void;
   allSessionIds(): string[];
   aiAsk(messages: ChatMessage[]): Promise<string>;
-  agentExec(sessionId: string, command: string, aiReadonly: boolean, approved: boolean): Promise<AgentStepResult>;
-  /** 通知后端:正在执行的这一步作废(命令可能还在跑,后端转入残留状态) */
-  agentCancel(sessionId: string): Promise<void>;
+  /** `stepId` 是这一步的前端 id,停止时的作废靠它认出是哪一步 */
+  agentExec(
+    sessionId: string,
+    stepId: string,
+    command: string,
+    aiReadonly: boolean,
+    approved: boolean,
+  ): Promise<AgentStepResult>;
+  /** 通知后端:`stepId` 那一步作废(命令可能还在跑,后端转入残留状态)。
+   *  后端正在等的若已不是这一步(作废请求晚到了),什么都不做 */
+  agentCancel(sessionId: string, stepId: string): Promise<void>;
   /** 通知后端:用户确认终端已回到命令提示符,清掉等待与残留 */
   agentReset(sessionId: string): Promise<void>;
   /** 是否配置了可用的 AI 模型 */
@@ -206,7 +214,7 @@ export function createAgentEngine(deps: EngineDeps) {
     }
     let r: AgentStepResult;
     try {
-      r = await deps.agentExec(sessionId, step.command, step.aiReadonly, approved);
+      r = await deps.agentExec(sessionId, step.id, step.command, step.aiReadonly, approved);
     } catch (e) {
       if (String(e).includes("AGENT_BUSY")) {
         // 上一步的命令可能还在终端里运行(#18)。不能直接结束任务 —— 停下来,让用户看一眼
@@ -318,8 +326,10 @@ export function createAgentEngine(deps: EngineDeps) {
     // 已经发出去的命令仍在远端跑,这里管不着 —— 界面上如实说明。
     // 但后端还占着「等这一步」的状态:不通知它作废,下一个任务会一直撞上 BUSY(#18)。
     // 停在等批准 / 被阻塞时后端并没有在等,不用通知。
-    if (t.steps.some((st) => st.state === "running")) {
-      void deps.agentCancel(sessionId).catch(() => {});
+    // 带上这一步的 id:作废请求晚到时,后端可能已经在等新任务的步骤了(#23)
+    const running = t.steps.find((st) => st.state === "running");
+    if (running) {
+      void deps.agentCancel(sessionId, running.id).catch(() => {});
     }
     deps.putTask(sessionId, { ...t, stopped: true, running: false, status: "ended", endReason });
   }

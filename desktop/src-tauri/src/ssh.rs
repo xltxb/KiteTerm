@@ -152,9 +152,10 @@ pub enum Ctl {
     DropUpload(Vec<std::path::PathBuf>),
     /// AI 分步执行:注入一条带哨兵的命令,并把这一步的输出与退出码回传
     /// 字段:包装好的命令、本步 nonce、是否自动执行(决定有没有超时上限)、回执
-    AgentStep(String, String, bool, crate::agent::StepReply),
-    /// AI 分步执行:用户在任务面板点了停止,当前这一步作废(命令可能还在跑,转入残留)
-    AgentCancel,
+    /// 字段:包装好的命令、本步 nonce、前端步骤 id、是否自动执行、回执
+    AgentStep(String, String, String, bool, crate::agent::StepReply),
+    /// AI 分步执行:用户在任务面板点了停止,作废指明的那一步(命令可能还在跑,转入残留)
+    AgentCancel(String),
     /// AI 分步执行:用户确认终端已回到命令提示符,清掉等待与残留
     AgentReset,
     /// 用户在浮条点取消
@@ -541,11 +542,11 @@ async fn run_session(
                             let _ = channel.eof().await;
                             break;
                         }
-                        Some(Ctl::AgentCancel) => agent.cancel(),
+                        Some(Ctl::AgentCancel(step_id)) => agent.cancel(&step_id),
                         Some(Ctl::AgentReset) => agent.reset(),
-                        Some(Ctl::AgentStep(cmd, nonce, auto, reply)) => {
+                        Some(Ctl::AgentStep(cmd, nonce, step_id, auto, reply)) => {
                             // 上一步还在等哨兵、或上一步超时后的残留还没解除时,begin 会回错误
-                            if agent.begin(nonce, auto, reply, Instant::now()) {
+                            if agent.begin(nonce, step_id, auto, reply, Instant::now()) {
                                 // 先清掉用户可能敲了一半的输入 —— 只读命令是自动注入的,
                                 // 用户没机会先把手挪开。\x15 是 readline 的 kill-line。
                                 // (这挡不住用户正开着 vim/less 的情况,那属于已知限制。)
@@ -1018,7 +1019,7 @@ async fn run_with_cancel(
                     Some(Ctl::Data(_)) | Some(Ctl::SendFiles(_)) | Some(Ctl::ReceiveInto(_)) | Some(Ctl::DropUpload(_)) => {}
                     // 传输期间来的 agent 步骤直接丢掉 —— sender 一 drop,
                     // 等在另一头的 exec_step 就会收到 AGENT_STEP_ABORTED
-                    Some(Ctl::AgentStep(..)) | Some(Ctl::AgentCancel) | Some(Ctl::AgentReset) => {}
+                    Some(Ctl::AgentStep(..)) | Some(Ctl::AgentCancel(_)) | Some(Ctl::AgentReset) => {}
                 },
             }
         };
@@ -1056,7 +1057,7 @@ async fn await_receive_dir(
             Some(Ctl::Data(_)) | Some(Ctl::SendFiles(_)) | Some(Ctl::DropUpload(_)) => {}
             // 等前端选保存目录期间来的 agent 步骤直接丢掉 —— sender 一 drop,
             // 等在另一头的 exec_step 就会收到 AGENT_STEP_ABORTED
-            Some(Ctl::AgentStep(..)) | Some(Ctl::AgentCancel) | Some(Ctl::AgentReset) => {}
+            Some(Ctl::AgentStep(..)) | Some(Ctl::AgentCancel(_)) | Some(Ctl::AgentReset) => {}
         }
     }
 }
@@ -1129,7 +1130,7 @@ async fn handle_zmodem(
                         Some(Ctl::Data(_)) | Some(Ctl::ReceiveInto(_)) | Some(Ctl::DropUpload(_)) => {}
                         // 等前端选发送文件期间来的 agent 步骤直接丢掉 —— sender 一 drop,
                         // 等在另一头的 exec_step 就会收到 AGENT_STEP_ABORTED
-                        Some(Ctl::AgentStep(..)) | Some(Ctl::AgentCancel) | Some(Ctl::AgentReset) => {}
+                        Some(Ctl::AgentStep(..)) | Some(Ctl::AgentCancel(_)) | Some(Ctl::AgentReset) => {}
                     }
                 }
             }
