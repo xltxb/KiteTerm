@@ -24,6 +24,8 @@ export interface AgentStep {
   error?: string;
   /** 输出超了上限、前半截被丢掉了 —— 卡片要标出来,别让人(和 AI)以为这就是全部 */
   truncated?: boolean;
+  /** 这一步怎么结束的。timeout / interrupted 时退出码只是占位,AI 与卡片都要看这个 */
+  endedBy?: AgentStepResult["endedBy"];
   /** AI 对这步输出的解读 */
   analysis?: string;
   /** 第几次尝试(自我修正时 > 1) */
@@ -104,6 +106,13 @@ function describeStep(step: AgentStep, n: number, nonce: string, limit: number):
     return lines.join("\n");
   }
   lines.push(`退出码: ${step.exitCode}`);
+  // 退出码 -1 / 130 本身说不清怎么回事:不写明的话,AI 会把还在跑的命令当成已失败、
+  // 马上重试同一条,结果撞上后端的残留状态(#19)
+  if (step.endedBy === "timeout") {
+    lines.push("结果: 等待超时,命令可能仍在终端里运行,上面的退出码只是占位。不要马上重试同一条命令。");
+  } else if (step.endedBy === "interrupted") {
+    lines.push("结果: 已被用户中断(Ctrl-C 或停止),上面的退出码只是占位。");
+  }
   lines.push(`--- BEGIN TERMINAL OUTPUT ${nonce} ---`);
   // 只在真截断时才加这一行 —— 缓冲溢出后前半截已被丢弃,AI 必须知道
   // 自己看到的不是完整输出,否则会据此做出错误判断。
@@ -171,6 +180,7 @@ export function createAgentEngine(deps: EngineDeps) {
       output: r.output,
       exitCode: r.exitCode,
       truncated: r.truncated,
+      endedBy: r.endedBy,
     });
     const t = taskOf(sessionId, runId);
     if (t) patch(sessionId, runId, { consecutiveFailures: ok ? 0 : t.consecutiveFailures + 1 });

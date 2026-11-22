@@ -113,6 +113,9 @@ export function AgentStepCard({
             退出码 {step.exitCode}
           </Badge>
           {step.truncated && <Badge color="warning">输出已截断</Badge>}
+          {/* 退出码 -1 / 130 只是占位,要说清是超时还是中断 */}
+          {step.endedBy === "timeout" && <Badge color="warning">等待超时,命令可能仍在运行</Badge>}
+          {step.endedBy === "interrupted" && <Badge color="warning">已中断</Badge>}
           <pre className="agent-out">
             {open ? step.output : clamp(step.output ?? "", MAX_LINES)}
           </pre>

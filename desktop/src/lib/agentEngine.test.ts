@@ -49,10 +49,10 @@ function env() {
 
 const next = (command: string, readonly = true) =>
   JSON.stringify({ analysis: `分析:${command}`, next: { intent: "意图", command, readonly }, done: false });
-const ran = (output: string, exitCode = 0): AgentStepResult =>
-  ({ autoRan: true, verdict: "readonly", reason: "", output, exitCode, truncated: false });
+const ran = (output: string, exitCode = 0, endedBy: AgentStepResult["endedBy"] = "exit"): AgentStepResult =>
+  ({ autoRan: true, verdict: "readonly", reason: "", output, exitCode, truncated: false, endedBy });
 const needsApproval: AgentStepResult =
-  { autoRan: false, verdict: "needs_approval", reason: "不在只读白名单内", output: "", exitCode: 0, truncated: false };
+  { autoRan: false, verdict: "needs_approval", reason: "不在只读白名单内", output: "", exitCode: 0, truncated: false, endedBy: "exit" };
 
 // ---- 基本流程 ----
 {
@@ -287,6 +287,31 @@ const BUSY_STALE = "AGENT_BUSY_STALE: 上一步的命令可能还在终端里运
   await tick();
   e3.engine.stopAll("管理员已关闭 AI 分步执行");
   check(e3.cancels.length === 1, "stopAll 同样通知");
+}
+
+// ---- #19:超时 / 中断的步骤要在历史里写明,不能只给一个 -1 / 130 ----
+/** 跑一步,返回下一轮发给 AI 的内容与这一步 */
+async function oneStep(result: AgentStepResult) {
+  const e = env();
+  void e.engine.start("s", "g");
+  await tick();
+  e.asks[0].d.resolve(next("du -sh /var"));
+  await tick();
+  e.execs[0].d.resolve(result);
+  await tick();
+  return { content: e.asks[1]?.content ?? "", step: e.tasks.s.steps[0] };
+}
+{
+  const t = await oneStep(ran("12G\t/var/lib", -1, "timeout"));
+  check(t.content.includes("等待超时") && t.content.includes("可能仍在"), "超时的步骤写明命令可能仍在运行");
+  check(t.step.endedBy === "timeout", "步骤上记下结束方式,卡片据此显示");
+
+  const i = await oneStep(ran("", 130, "interrupted"));
+  check(i.content.includes("中断"), "被中断的步骤写明是中断");
+  check(i.step.endedBy === "interrupted", "记下被中断");
+
+  const ok = await oneStep(ran("12G\t/var", 0));
+  check(!ok.content.includes("超时") && !ok.content.includes("中断"), "正常结束的步骤不加多余说明");
 }
 
 if (failed > 0) {

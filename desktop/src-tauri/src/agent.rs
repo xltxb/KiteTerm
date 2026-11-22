@@ -11,12 +11,28 @@ pub const END_MARK_TAIL: &[u8] = b"\x1b\\";
 /// 缓冲上限:远超任何合理的单步输出,涨到这里说明流里根本没有标记
 const PROBE_CAP: usize = 256 * 1024;
 
+/// 一步是怎么结束的。序列化成固定字符串交给前端,前端据此分支,不要改名。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum StepEnd {
+    /// 收到哨兵:命令自己结束了,退出码可信
+    #[serde(rename = "exit")]
+    Exit,
+    /// 自动步骤等待超时:命令**可能仍在运行**,退出码记 -1 只是占位
+    #[serde(rename = "timeout")]
+    TimedOut,
+    /// 用户按 Ctrl-C、点了停止,或确认终端已空闲:退出码记 130 只是占位
+    #[serde(rename = "interrupted")]
+    Interrupted,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StepOutput {
     pub output: String,
     pub exit_code: i32,
     /// 输出超了缓冲上限、前半截被丢掉了 —— AI 不能把砍过的输出当完整结果推理
     pub truncated: bool,
+    /// 这一步是怎么结束的 —— 退出码 -1 / 130 本身说不清是超时还是被中断
+    pub ended: StepEnd,
 }
 
 /// 给命令挂上隐形哨兵。`$?` 取的是前一条命令的退出码,故必须用 `;` 分隔
@@ -99,7 +115,7 @@ impl EndProbe {
         self.buf.clear();
         let truncated = self.truncated;
         self.truncated = false;
-        Some(StepOutput { output, exit_code, truncated })
+        Some(StepOutput { output, exit_code, truncated, ended: StepEnd::Exit })
     }
 
     /// 超时放弃这一步时,把已经攒下的输出连同截断状态一起交出去。
@@ -273,11 +289,11 @@ impl AgentGate {
     }
 
     /// 放弃等待当前这一步:已收到的输出连同 `exit_code` 交出去,转入残留状态
-    fn abandon(&mut self, exit_code: i32) {
+    fn abandon(&mut self, exit_code: i32, ended: StepEnd) {
         if let Some(w) = self.waiting.take() {
             self.stale = Some(Stale { probe: EndProbe::new(&w.nonce), interactive: !w.auto });
             let (output, truncated) = w.probe.into_buffered();
-            let _ = w.reply.send(Ok(StepOutput { output, exit_code, truncated }));
+            let _ = w.reply.send(Ok(StepOutput { output, exit_code, truncated, ended }));
         }
     }
 
@@ -297,9 +313,9 @@ impl AgentGate {
             Some(true) => {
                 let w = self.waiting.take().unwrap();
                 let (output, truncated) = w.probe.into_buffered();
-                let _ = w.reply.send(Ok(StepOutput { output, exit_code: EXIT_INTERRUPTED, truncated }));
+                let _ = w.reply.send(Ok(StepOutput { output, exit_code: EXIT_INTERRUPTED, truncated, ended: StepEnd::Interrupted }));
             }
-            Some(false) => self.abandon(EXIT_INTERRUPTED),
+            Some(false) => self.abandon(EXIT_INTERRUPTED, StepEnd::Interrupted),
             None => {}
         }
     }
@@ -307,14 +323,14 @@ impl AgentGate {
     /// 用户在任务面板点了「停止」:这一步作废、报为中断。命令可能还在跑,转入残留状态,
     /// 而不是继续占着「等待中」—— 否则下一个任务会一直撞上 BUSY(#18)
     pub fn cancel(&mut self) {
-        self.abandon(EXIT_INTERRUPTED);
+        self.abandon(EXIT_INTERRUPTED, StepEnd::Interrupted);
     }
 
     /// 用户确认终端已回到命令提示符:清掉等待与残留,下一步可以注入(#18)
     pub fn reset(&mut self) {
         if let Some(w) = self.waiting.take() {
             let (output, truncated) = w.probe.into_buffered();
-            let _ = w.reply.send(Ok(StepOutput { output, exit_code: EXIT_INTERRUPTED, truncated }));
+            let _ = w.reply.send(Ok(StepOutput { output, exit_code: EXIT_INTERRUPTED, truncated, ended: StepEnd::Interrupted }));
         }
         self.stale = None;
     }
@@ -326,7 +342,7 @@ impl AgentGate {
 
     /// 超时(只有自动步骤有):把已收到的输出交出去,转入残留状态等它迟到的哨兵
     pub fn on_deadline(&mut self) {
-        self.abandon(-1);
+        self.abandon(-1, StepEnd::TimedOut);
     }
 }
 
@@ -348,6 +364,8 @@ pub struct AgentStepResult {
     /// 输出超了缓冲上限、前半截被丢掉了。
     /// **必须透传到前端** —— 不能让 AI 把砍过的输出当完整结果来推理
     pub truncated: bool,
+    /// 这一步是怎么结束的(正常退出 / 等待超时 / 被中断),前端写进给 AI 的历史与卡片
+    pub ended_by: StepEnd,
 }
 
 /// 执行一步。`ai_readonly` 是 AI 自己的声明 —— 它只能让自动执行更少,不能更多:
@@ -377,6 +395,7 @@ pub async fn exec_step(
             output: String::new(),
             exit_code: 0,
             truncated: false,
+            ended_by: StepEnd::Exit, // 没有执行,这个字段前端不看
         });
     }
 
@@ -407,6 +426,7 @@ pub async fn exec_step(
         output: clean_output(&step.output, &nonce),
         exit_code: step.exit_code,
         truncated: step.truncated,
+        ended_by: step.ended,
     })
 }
 
@@ -424,7 +444,7 @@ pub fn send_gate_control(manager: &SessionManager, session_id: &str, ctl: Ctl) -
 
 #[cfg(test)]
 mod tests {
-    use super::{EndProbe, StepOutput, wrap_command};
+    use super::{EndProbe, StepEnd, StepOutput, wrap_command};
 
     #[test]
     fn wrap_appends_apc_sentinel() {
@@ -468,7 +488,7 @@ mod tests {
         let got = p.push(b"total 8\nfile.txt\n\x1b_KTEND:n1:0\x1b\\");
         assert_eq!(
             got,
-            Some(StepOutput { output: "total 8\nfile.txt\n".into(), exit_code: 0, truncated: false })
+            Some(StepOutput { output: "total 8\nfile.txt\n".into(), exit_code: 0, truncated: false, ended: StepEnd::Exit })
         );
     }
 
@@ -478,7 +498,7 @@ mod tests {
         let mut p = EndProbe::new("n1");
         assert_eq!(p.push(b"out\n\x1b_KTEND:n1"), None);
         let got = p.push(b":1\x1b\\");
-        assert_eq!(got, Some(StepOutput { output: "out\n".into(), exit_code: 1, truncated: false }));
+        assert_eq!(got, Some(StepOutput { output: "out\n".into(), exit_code: 1, truncated: false, ended: StepEnd::Exit }));
     }
 
     #[test]
@@ -796,6 +816,49 @@ mod tests {
         let (_, mut rx) = begin(&mut g, true);
         let stale = rx.try_recv().unwrap().unwrap_err();
         assert!(stale.contains("终端已空闲"), "{stale}");
+    }
+
+    /// 每一步要带上「怎么结束的」:退出码 -1 / 130 本身说不清是超时还是中断,
+    /// AI 会把还在跑的命令当成已失败而马上重试。(#19)
+    #[test]
+    fn step_output_says_how_the_step_ended() {
+        let mut g = AgentGate::default();
+        let (_, mut rx) = begin(&mut g, true);
+        g.on_output(b"ok\x1b_KTEND:n1:0\x1b\\");
+        assert_eq!(rx.try_recv().unwrap().unwrap().ended, StepEnd::Exit);
+
+        let (_, mut rx) = begin(&mut g, true);
+        g.on_deadline();
+        assert_eq!(rx.try_recv().unwrap().unwrap().ended, StepEnd::TimedOut);
+
+        let mut g = AgentGate::default();
+        let (_, mut rx) = begin(&mut g, true);
+        g.on_user_input(b"\x03");
+        assert_eq!(rx.try_recv().unwrap().unwrap().ended, StepEnd::Interrupted, "自动步骤按 Ctrl-C");
+
+        let (_, mut rx) = begin(&mut g, false);
+        g.on_user_input(b"\x03");
+        assert_eq!(rx.try_recv().unwrap().unwrap().ended, StepEnd::Interrupted, "批准步骤按 Ctrl-C");
+
+        let mut g = AgentGate::default();
+        let (_, mut rx) = begin(&mut g, false);
+        g.cancel();
+        assert_eq!(rx.try_recv().unwrap().unwrap().ended, StepEnd::Interrupted, "停止");
+
+        let (_, mut rx) = begin(&mut g, false); // 残留中被拒;reset 后再来
+        let _ = rx.try_recv();
+        g.reset();
+        let (_, mut rx) = begin(&mut g, false);
+        g.reset();
+        assert_eq!(rx.try_recv().unwrap().unwrap().ended, StepEnd::Interrupted, "确认终端已空闲");
+    }
+
+    /// 前端按这几个固定字符串分支,改名会悄悄失效
+    #[test]
+    fn step_end_serializes_to_stable_strings() {
+        assert_eq!(serde_json::to_value(StepEnd::Exit).unwrap(), "exit");
+        assert_eq!(serde_json::to_value(StepEnd::TimedOut).unwrap(), "timeout");
+        assert_eq!(serde_json::to_value(StepEnd::Interrupted).unwrap(), "interrupted");
     }
 
     /// 普通按键不影响等待
