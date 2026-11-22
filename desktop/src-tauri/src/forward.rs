@@ -208,7 +208,7 @@ async fn start_remote_forward<R: Runtime>(
     let up = Arc::new(AtomicU64::new(0));
     let down = Arc::new(AtomicU64::new(0));
     open_remote_forward(&handle, &r_targets, rule.local_port, &rule.target, up.clone(), down.clone())
-        .await?;
+        .await?; // 规则总是指定端口,返回值即 rule.local_port
 
     // keeper:持有专用连接;取消(或 abort)后丢弃 handle → 连接关闭,远端监听随之
     // 失效,服务器侧已建立的 channel 也一并断开
@@ -226,11 +226,15 @@ async fn start_remote_forward<R: Runtime>(
     Ok(())
 }
 
-/// R 型的核心:先在这条连接的登记表里记下「远端端口 → 本地目标」,再请服务器监听
-/// `127.0.0.1:<remote_port>`。之后服务器每收到一条连接,都会经 forwarded-tcpip 通道
-/// 回送过来,由 `ClientHandler::server_channel_open_forwarded_tcpip` 按登记表接到本地目标。
+/// R 型的核心:在这条连接的登记表里记下「远端端口 → 本地目标」,并请服务器监听
+/// `127.0.0.1:<remote_port>`,返回服务器实际监听的端口。之后服务器每收到一条连接,
+/// 都会经 forwarded-tcpip 通道回送过来,由 `ClientHandler::server_channel_open_forwarded_tcpip`
+/// 按登记表接到本地目标。
 ///
-/// 必须先登记再请求监听 —— 反过来的话,监听一开就进来的连接会因查不到目标而被拒。
+/// 指定端口时必须先登记再请求监听 —— 反过来的话,监听一开就进来的连接会因查不到目标
+/// 而被拒。`remote_port` 为 0 时由服务器分配,只能拿到端口后再登记:这个端口此前只有
+/// 调用方知道,登记前不会有连接进来。产品规则总是指定端口;0 供测试避开端口抢占。
+///
 /// 从 `start_remote_forward` 拆出来,是因为那边要 `AppHandle`,端到端测试拿不到。
 async fn open_remote_forward(
     handle: &russh::client::Handle<ClientHandler>,
@@ -239,17 +243,23 @@ async fn open_remote_forward(
     target: &str,
     up: Arc<AtomicU64>,
     down: Arc<AtomicU64>,
-) -> Result<()> {
+) -> Result<u16> {
     let (host, port) = split_target(target)?;
-    r_targets.lock().unwrap().insert(
-        remote_port as u32,
-        crate::ssh::RTarget { host: host.to_string(), port, up, down },
-    );
+    let entry = crate::ssh::RTarget { host: host.to_string(), port, up, down };
+    if remote_port == 0 {
+        let actual = handle
+            .tcpip_forward("127.0.0.1", 0)
+            .await
+            .map_err(|e| AppError(format!("远端监听 127.0.0.1(服务器分配端口)被拒绝: {e}")))?;
+        r_targets.lock().unwrap().insert(actual, entry);
+        return Ok(actual as u16);
+    }
+    r_targets.lock().unwrap().insert(remote_port as u32, entry);
     handle
         .tcpip_forward("127.0.0.1", remote_port as u32)
         .await
         .map_err(|e| AppError(format!("远端监听 127.0.0.1:{remote_port} 被拒绝: {e}")))?;
-    Ok(())
+    Ok(remote_port)
 }
 
 async fn direct_conn(
